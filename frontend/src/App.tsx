@@ -1,0 +1,69 @@
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './contexts/AuthContext'
+import Login from './pages/Login'
+import Dashboard from './pages/Dashboard'
+import Containers from './pages/Containers'
+import ContainerDetail from './pages/ContainerDetail'
+import Oversell from './pages/Oversell'
+import Security from './pages/Security'
+import AuditLogs from './pages/AuditLogs'
+import ApiIntegration from './pages/ApiIntegration'
+import Settings from './pages/Settings'
+import ImageManagement from './pages/ImageManagement'
+import Layout from './components/Layout'
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-black"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+
+  return <>{children}</>
+}
+
+function HomeRoute() {
+  const { isSubUser, containerIdentifiers } = useAuth()
+  if (isSubUser) {
+    const firstContainer = containerIdentifiers[0]
+    return <Navigate to={firstContainer ? `/container/${encodeURIComponent(firstContainer)}` : '/containers'} replace />
+  }
+  return <Dashboard />
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <Layout />
+          </ProtectedRoute>
+        }
+      >
+        <Route index element={<HomeRoute />} />
+        <Route path="containers" element={<Containers />} />
+        <Route path="images" element={<ImageManagement />} />
+        <Route path="container/:id" element={<ContainerDetail />} />
+        <Route path="oversell" element={<Oversell />} />
+        <Route path="security" element={<Security />} />
+        <Route path="audit-logs" element={<AuditLogs />} />
+        <Route path="api-integration" element={<ApiIntegration />} />
+        <Route path="settings" element={<Settings />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
+}
+
+export default App

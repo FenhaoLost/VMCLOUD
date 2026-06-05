@@ -1,0 +1,224 @@
+import { ReactNode } from 'react'
+import { RefreshCw } from 'lucide-react'
+
+export type StatsRangeKey = '30m' | '1h' | '1d' | '1w'
+
+export type ChartPoint = {
+  ts: number
+  value: number
+}
+
+export type ResourceChartConfig = {
+  title: string
+  icon: ReactNode
+  points: ChartPoint[]
+  current: number
+  detail?: string
+  max?: number
+  unitLabel?: string
+  formatValue: (value: number) => string
+}
+
+const rangeLabels: Record<StatsRangeKey, string> = {
+  '30m': '30分钟',
+  '1h': '1小时',
+  '1d': '1天',
+  '1w': '1周',
+}
+
+export const statsRanges: Record<StatsRangeKey, number> = {
+  '30m': 30 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '1w': 7 * 24 * 60 * 60 * 1000,
+}
+
+export default function ResourceStatsPanel({
+  range,
+  onRangeChange,
+  onRefresh,
+  charts,
+}: {
+  range: StatsRangeKey
+  onRangeChange: (range: StatsRangeKey) => void
+  onRefresh: () => void
+  charts: ResourceChartConfig[]
+}) {
+  return (
+    <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-gray-200 bg-white">
+        <h2 className="text-sm font-semibold text-gray-950">统计信息</h2>
+        <div className="flex items-center gap-1.5">
+          <div className="inline-flex rounded border border-gray-200 bg-gray-50 p-0.5">
+            {(Object.keys(rangeLabels) as StatsRangeKey[]).map((item) => (
+              <button
+                key={item}
+                onClick={() => onRangeChange(item)}
+                className={`h-7 px-3 rounded text-xs font-medium transition-colors ${
+                  range === item ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                }`}
+              >
+                {rangeLabels[item]}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={onRefresh}
+            className="h-8 w-8 inline-flex items-center justify-center rounded border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+            title="刷新"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2">
+        {charts.map((chart, index) => (
+          <DetailedChart key={chart.title} chart={chart} className={chartBorderClass(index)} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function DetailedChart({ chart, className }: { chart: ResourceChartConfig; className: string }) {
+  const values = chart.points.map((point) => point.value)
+  const avg = values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+  const peak = values.length > 0 ? Math.max(...values) : 0
+
+  return (
+    <div className={`p-4 ${className}`}>
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div>
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-950">
+            <span className="text-gray-500">{chart.icon}</span>
+            <span>{chart.title}</span>
+          </div>
+          {chart.detail && <p className="mt-0.5 text-[11px] text-gray-400">{chart.detail}</p>}
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-right">
+          <Stat label="当前" value={chart.formatValue(chart.current)} />
+          <Stat label="平均" value={chart.formatValue(avg)} />
+          <Stat label="峰值" value={chart.formatValue(peak)} />
+        </div>
+      </div>
+      <LineAreaChart
+        points={chart.points}
+        max={chart.max}
+        formatValue={chart.formatValue}
+        unitLabel={chart.unitLabel}
+      />
+    </div>
+  )
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] text-gray-400">{label}</div>
+      <div className="text-xs font-semibold text-gray-900 tabular-nums whitespace-nowrap">{value}</div>
+    </div>
+  )
+}
+
+function LineAreaChart({
+  points,
+  max,
+  formatValue,
+  unitLabel,
+}: {
+  points: ChartPoint[]
+  max?: number
+  formatValue: (value: number) => string
+  unitLabel?: string
+}) {
+  const width = 520
+  const height = 150
+  const left = 50
+  const right = 10
+  const top = 8
+  const bottom = 28
+  const innerWidth = width - left - right
+  const innerHeight = height - top - bottom
+  const values = points.length > 0 ? points : [{ ts: Date.now(), value: 0 }]
+  const maxValue = Math.max(max || 0, ...values.map((point) => point.value), 1)
+  const minTs = values[0]?.ts || Date.now()
+  const maxTs = values[values.length - 1]?.ts || minTs + 1
+  const span = Math.max(maxTs - minTs, 1)
+
+  const coords = values.map((point, index) => {
+    const x = left + ((point.ts - minTs) / span) * innerWidth
+    const y = top + innerHeight - (point.value / maxValue) * innerHeight
+    return `${Number.isFinite(x) ? x : left},${Number.isFinite(y) ? y : top + innerHeight}`
+  })
+  const fallbackX = left
+  const fallbackY = top + innerHeight
+  const line = coords.length > 1 ? coords.join(' ') : `${fallbackX},${fallbackY} ${left + innerWidth},${fallbackY}`
+  const area = `${left},${top + innerHeight} ${line} ${left + innerWidth},${top + innerHeight}`
+  const yTicks = [1, 0.5, 0]
+  const xTicks = [0, 0.5, 1]
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[140px]" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="resource-chart-fill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#555" stopOpacity="0.25" />
+          <stop offset="100%" stopColor="#555" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+
+      {yTicks.map((tick) => {
+        const y = top + (1 - tick) * innerHeight
+        return (
+          <g key={tick}>
+            <line x1={left} y1={y} x2={left + innerWidth} y2={y} stroke="#e5e7eb" strokeDasharray="3 3" />
+            <text x={left - 8} y={y + 3} textAnchor="end" fontSize="10" fill="#888">
+              {formatValue(maxValue * tick)}
+            </text>
+          </g>
+        )
+      })}
+
+      {xTicks.map((tick) => {
+        const x = left + tick * innerWidth
+        const ts = minTs + tick * span
+        return (
+          <g key={tick}>
+            <line x1={x} y1={top} x2={x} y2={top + innerHeight} stroke="#edf0f2" strokeDasharray="3 3" />
+            <text x={x} y={height - 5} textAnchor={tick === 0 ? 'start' : tick === 1 ? 'end' : 'middle'} fontSize="10" fill="#888">
+              {formatTime(ts)}
+            </text>
+          </g>
+        )
+      })}
+
+      {unitLabel && (
+        <text x={left - 45} y={top + 10} fontSize="10" fill="#888">
+          {unitLabel}
+        </text>
+      )}
+
+      <line x1={left} y1={top} x2={left} y2={top + innerHeight} stroke="#888" />
+      <line x1={left} y1={top + innerHeight} x2={left + innerWidth} y2={top + innerHeight} stroke="#888" />
+      <polygon points={area} fill="url(#resource-chart-fill)" />
+      <polyline points={line} fill="none" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function chartBorderClass(index: number) {
+  const right = index % 2 === 0 ? 'xl:border-r' : ''
+  const top = index > 1 ? 'border-t' : ''
+  return `${right} ${top} border-gray-200`
+}
+
+function formatTime(ts: number) {
+  return new Date(ts).toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
