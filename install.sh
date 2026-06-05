@@ -416,7 +416,17 @@ download_release_if_needed() {
 }
 
 install_binary() {
-    cp ./clicd /usr/local/bin/clicd
+    if has_cmd systemctl; then
+        systemctl stop clicd >/dev/null 2>&1 || true
+    fi
+    if has_cmd rc-service; then
+        rc-service clicd stop >/dev/null 2>&1 || true
+    fi
+
+    tmp_bin="/usr/local/bin/clicd.new.$$"
+    cp ./clicd "$tmp_bin"
+    chmod +x "$tmp_bin"
+    mv -f "$tmp_bin" /usr/local/bin/clicd
     chmod +x /usr/local/bin/clicd
     log "Installed binary: /usr/local/bin/clicd"
 }
