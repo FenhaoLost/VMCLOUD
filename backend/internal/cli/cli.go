@@ -21,7 +21,7 @@ func Run() {
 	for {
 		clearScreen()
 		printMenu()
-		fmt.Print("\nSelect action [1-9,0/q]: ")
+		fmt.Print("\nSelect action [1-10,0/q]: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
@@ -62,6 +62,10 @@ func Run() {
 			clearScreen()
 			cliToggleWebPanel()
 			waitEnter(reader)
+		case "10":
+			clearScreen()
+			cliUninstall(reader)
+			return
 		case "0":
 			clearScreen()
 			cliShowInfo()
@@ -101,6 +105,7 @@ func printMenu() {
 	fmt.Println("  7. Reinstall container")
 	fmt.Println("  8. Reset web admin password")
 	fmt.Printf("  9. %s web panel\n", webStatus)
+	fmt.Println("  10. Uninstall CLICD")
 	fmt.Println("  0. System info")
 	fmt.Println("  q. Quit")
 }
@@ -281,8 +286,7 @@ func cliResetPassword(reader *bufio.Reader) {
 
 func cliToggleWebPanel() {
 	if isWebPanelRunning() {
-		cmd := exec.Command("systemctl", "stop", "clicd")
-		if err := cmd.Run(); err != nil {
+		if err := stopService("clicd"); err != nil {
 			fmt.Printf("Failed to stop web panel: %v\n", err)
 			return
 		}
@@ -290,8 +294,7 @@ func cliToggleWebPanel() {
 		return
 	}
 
-	cmd := exec.Command("systemctl", "start", "clicd")
-	if err := cmd.Run(); err != nil {
+	if err := startService("clicd"); err != nil {
 		fmt.Printf("Failed to start web panel: %v\n", err)
 		return
 	}
@@ -299,12 +302,143 @@ func cliToggleWebPanel() {
 }
 
 func isWebPanelRunning() bool {
-	cmd := exec.Command("systemctl", "is-active", "clicd")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
+	if commandExists("systemctl") {
+		cmd := exec.Command("systemctl", "is-active", "clicd")
+		output, err := cmd.Output()
+		if err == nil && strings.TrimSpace(string(output)) == "active" {
+			return true
+		}
 	}
-	return strings.TrimSpace(string(output)) == "active"
+	if commandExists("rc-service") {
+		cmd := exec.Command("rc-service", "clicd", "status")
+		return cmd.Run() == nil
+	}
+	return false
+}
+
+func cliUninstall(reader *bufio.Reader) {
+	fmt.Println("\n--- Uninstall CLICD ---")
+	fmt.Println("This removes the CLICD service and /usr/local/bin/clicd.")
+	fmt.Println("LXC containers and /root/.clicd are kept unless you explicitly choose to delete them.")
+
+	if os.Geteuid() != 0 {
+		fmt.Println("Uninstall must be run as root.")
+		fmt.Println("Run: sudo clicd cli --no-web")
+		return
+	}
+
+	confirm := promptString(reader, "Type uninstall to continue", "no")
+	if strings.ToLower(confirm) != "uninstall" {
+		fmt.Println("Canceled")
+		return
+	}
+
+	removeData := strings.ToLower(promptString(reader, "Delete /root/.clicd config/data? Type delete-data", "no")) == "delete-data"
+	removeContainers := strings.ToLower(promptString(reader, "Destroy CLICD-managed LXC containers? Type delete-containers", "no")) == "delete-containers"
+
+	if removeContainers {
+		destroyManagedContainers()
+	}
+
+	stopAndRemoveService()
+	removePath("/usr/local/bin/clicd")
+	removePath("/etc/sysctl.d/99-clicd.conf")
+	removePath("/var/log/clicd.log")
+	removePath("/var/log/clicd.err")
+
+	if removeData {
+		removePath("/root/.clicd")
+	}
+
+	reloadSysctl()
+
+	fmt.Println()
+	fmt.Println("CLICD has been uninstalled.")
+	if !removeData {
+		fmt.Println("Kept data: /root/.clicd")
+	}
+	if !removeContainers {
+		fmt.Println("Kept LXC containers under /var/lib/lxc")
+	}
+}
+
+func destroyManagedContainers() {
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	if len(containers) == 0 {
+		fmt.Println("No CLICD-managed containers found in config.")
+		return
+	}
+
+	for _, c := range containers {
+		fmt.Printf("Destroying container %s...\n", c.Name)
+		if err := manager.DestroyContainer(c.ID); err != nil {
+			fmt.Printf("Failed to destroy %s: %v\n", c.Name, err)
+		}
+	}
+}
+
+func stopAndRemoveService() {
+	if commandExists("systemctl") {
+		runQuiet("systemctl", "stop", "clicd")
+		runQuiet("systemctl", "disable", "clicd")
+		removePath("/etc/systemd/system/clicd.service")
+		runQuiet("systemctl", "daemon-reload")
+		runQuiet("systemctl", "reset-failed", "clicd")
+	}
+
+	if commandExists("rc-service") {
+		runQuiet("rc-service", "clicd", "stop")
+	}
+	if commandExists("rc-update") {
+		runQuiet("rc-update", "del", "clicd", "default")
+	}
+	removePath("/etc/init.d/clicd")
+}
+
+func removePath(path string) {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return
+	}
+	if err := os.RemoveAll(path); err != nil {
+		fmt.Printf("Failed to remove %s: %v\n", path, err)
+		return
+	}
+	fmt.Printf("Removed %s\n", path)
+}
+
+func reloadSysctl() {
+	if commandExists("sysctl") {
+		runQuiet("sysctl", "--system")
+	}
+}
+
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func runQuiet(name string, args ...string) {
+	_ = exec.Command(name, args...).Run()
+}
+
+func stopService(name string) error {
+	if commandExists("systemctl") {
+		return exec.Command("systemctl", "stop", name).Run()
+	}
+	if commandExists("rc-service") {
+		return exec.Command("rc-service", name, "stop").Run()
+	}
+	return fmt.Errorf("no supported service manager found")
+}
+
+func startService(name string) error {
+	if commandExists("systemctl") {
+		return exec.Command("systemctl", "start", name).Run()
+	}
+	if commandExists("rc-service") {
+		return exec.Command("rc-service", name, "start").Run()
+	}
+	return fmt.Errorf("no supported service manager found")
 }
 
 func cliShowInfo() {
