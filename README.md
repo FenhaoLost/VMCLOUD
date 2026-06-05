@@ -72,6 +72,18 @@ Password: 随机 16 位密码
 journalctl -u clicd --no-pager -n 80 | grep -E "Username:|Password:"
 ```
 
+卸载 CLICD：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall
+```
+
+默认只删除 CLICD 服务和 `/usr/local/bin/clicd`，保留 `/root/.clicd` 配置数据和 `/var/lib/lxc` 容器。需要同时删除配置数据时：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall --purge-data
+```
+
 ![alt text](/img/image.png)
 ![alt text](/img/image-1.png)
 ![alt text](/img/image-2.png)
