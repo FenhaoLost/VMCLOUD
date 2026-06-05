@@ -354,7 +354,7 @@ func cliImportExistingContainers() {
 func cliUninstall(reader *bufio.Reader) {
 	fmt.Println("\n--- Uninstall CLICD ---")
 	fmt.Println("This removes the CLICD service and /usr/local/bin/clicd.")
-	fmt.Println("LXC containers and /root/.clicd are kept unless you explicitly choose to delete them.")
+	fmt.Println("This also deletes /root/.clicd, all LXC containers under /var/lib/lxc, and LXC image cache under /var/cache/lxc.")
 
 	if os.Geteuid() != 0 {
 		fmt.Println("Uninstall must be run as root.")
@@ -368,47 +368,38 @@ func cliUninstall(reader *bufio.Reader) {
 		return
 	}
 
-	removeData := strings.ToLower(promptString(reader, "Delete /root/.clicd config/data? Type delete-data", "no")) == "delete-data"
-	removeContainers := strings.ToLower(promptString(reader, "Destroy CLICD-managed LXC containers? Type delete-containers", "no")) == "delete-containers"
-
-	if removeContainers {
-		destroyManagedContainers()
-	}
-
+	destroyAllLXCContainers()
 	stopAndRemoveService()
 	removePath("/usr/local/bin/clicd")
 	removePath("/etc/sysctl.d/99-clicd.conf")
 	removePath("/var/log/clicd.log")
 	removePath("/var/log/clicd.err")
-
-	if removeData {
-		removePath("/root/.clicd")
-	}
+	removePath("/root/.clicd")
+	removePath("/var/lib/lxc")
+	removePath("/var/cache/lxc")
 
 	reloadSysctl()
 
 	fmt.Println()
 	fmt.Println("CLICD has been uninstalled.")
-	if !removeData {
-		fmt.Println("Kept data: /root/.clicd")
-	}
-	if !removeContainers {
-		fmt.Println("Kept LXC containers under /var/lib/lxc")
-	}
+	fmt.Println("Removed service, binary, config, containers, and LXC image cache.")
 }
 
-func destroyManagedContainers() {
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
-	if len(containers) == 0 {
-		fmt.Println("No CLICD-managed containers found in config.")
+func destroyAllLXCContainers() {
+	entries, err := os.ReadDir("/var/lib/lxc")
+	if err != nil {
 		return
 	}
 
-	for _, c := range containers {
-		fmt.Printf("Destroying container %s...\n", c.Name)
-		if err := manager.DestroyContainer(c.ID); err != nil {
-			fmt.Printf("Failed to destroy %s: %v\n", c.Name, err)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
+		name := entry.Name()
+		fmt.Printf("Destroying LXC container %s...\n", name)
+		runQuiet("lxc-stop", "-n", name, "-k")
+		runQuiet("lxc-destroy", "-n", name, "-f")
+		removePath("/var/lib/lxc/" + name)
 	}
 }
 

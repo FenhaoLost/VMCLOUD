@@ -50,7 +50,7 @@ usage() {
     cat << EOF
 Usage:
   ./install.sh
-  ./install.sh uninstall [--purge-data] [--delete-containers]
+  ./install.sh uninstall
 
 Environment:
   CLICD_REPO=owner/repo
@@ -72,29 +72,6 @@ remove_path() {
 }
 
 uninstall_clicd() {
-    purge_data=0
-    delete_containers=0
-
-    shift || true
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --purge-data)
-                purge_data=1
-                ;;
-            --delete-containers)
-                delete_containers=1
-                ;;
-            -h|--help)
-                usage
-                exit 0
-                ;;
-            *)
-                die "Unknown uninstall option: $1"
-                ;;
-        esac
-        shift
-    done
-
     log "Uninstalling CLICD..."
 
     if has_cmd systemctl; then
@@ -109,16 +86,18 @@ uninstall_clicd() {
         rc-update del clicd default >/dev/null 2>&1 || true
     fi
 
-    if [ "$delete_containers" -eq 1 ]; then
-        log "Destroying CLICD-style LXC containers named ct-*..."
-        for container_dir in /var/lib/lxc/ct-*; do
-            [ -d "$container_dir" ] || continue
-            container_name="$(basename "$container_dir")"
+    log "Destroying LXC containers under /var/lib/lxc..."
+    for container_dir in /var/lib/lxc/*; do
+        [ -d "$container_dir" ] || continue
+        container_name="$(basename "$container_dir")"
+        if has_cmd lxc-stop; then
             lxc-stop -n "$container_name" -k >/dev/null 2>&1 || true
+        fi
+        if has_cmd lxc-destroy; then
             lxc-destroy -n "$container_name" -f >/dev/null 2>&1 || true
-            remove_path "$container_dir"
-        done
-    fi
+        fi
+        remove_path "$container_dir"
+    done
 
     remove_path /etc/systemd/system/clicd.service
     remove_path /etc/init.d/clicd
@@ -126,10 +105,9 @@ uninstall_clicd() {
     remove_path /etc/sysctl.d/99-clicd.conf
     remove_path /var/log/clicd.log
     remove_path /var/log/clicd.err
-
-    if [ "$purge_data" -eq 1 ]; then
-        remove_path /root/.clicd
-    fi
+    remove_path /root/.clicd
+    remove_path /var/lib/lxc
+    remove_path /var/cache/lxc
 
     if has_cmd systemctl; then
         systemctl daemon-reload >/dev/null 2>&1 || true
@@ -143,14 +121,7 @@ uninstall_clicd() {
     echo "====================================="
     echo "  CLICD Uninstalled"
     echo "====================================="
-    if [ "$purge_data" -eq 0 ]; then
-        echo "  Kept data: /root/.clicd"
-    fi
-    if [ "$delete_containers" -eq 0 ]; then
-        echo "  Kept LXC containers: /var/lib/lxc"
-        echo "  To delete CLICD-style ct-* containers too:"
-        echo "    ./install.sh uninstall --delete-containers"
-    fi
+    echo "  Removed service, binary, config, containers, and LXC image cache."
     echo "====================================="
 }
 
@@ -158,7 +129,7 @@ case "$ACTION" in
     install|"")
         ;;
     uninstall|remove)
-        uninstall_clicd "$@"
+        uninstall_clicd
         exit 0
         ;;
     -h|--help|help)

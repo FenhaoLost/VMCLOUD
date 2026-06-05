@@ -37,51 +37,16 @@ CLICD 是一个面向 LXC 的轻量容器管理面板，提供 Web 控制台、C
 
 ## 安装
 
-推荐使用最新 Release 一键安装。在目标服务器上执行：
+一键安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
 ```
 
-也可以下载 GitHub Actions 构建出的 Release 产物 `clicd-linux-amd64.tar.gz` 后手动安装：
-
-```bash
-tar -xzf clicd-linux-amd64.tar.gz
-cd clicd-linux-amd64
-sudo ./install.sh
-```
-
-安装完成后访问：
-
-```text
-http://YOUR_SERVER_IP:8999
-```
-
-首次启动时会自动初始化管理员账号：
-
-```text
-Username: admin
-Password: 随机 16 位密码
-```
-
-安装脚本会尝试从 systemd 日志中输出初始账号密码。如果机器上已经存在 `/root/.clicd/config.json`，则不会重新生成密码。
-
-查看初始密码日志：
-
-```bash
-journalctl -u clicd --no-pager -n 80 | grep -E "Username:|Password:"
-```
-
-卸载 CLICD：
+一键卸载：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall
-```
-
-默认只删除 CLICD 服务和 `/usr/local/bin/clicd`，保留 `/root/.clicd` 配置数据和 `/var/lib/lxc` 容器。需要同时删除配置数据时：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall --purge-data
 ```
 
 ![alt text](/img/image.png)
