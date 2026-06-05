@@ -7,7 +7,38 @@ echo "====================================="
 
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root: sudo ./install.sh"
+    echo "Or: curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo bash"
     exit 1
+fi
+
+if [ ! -f "./clicd" ]; then
+    REPO="${CLICD_REPO:-MengMengCode/CLICD}"
+    VERSION="${CLICD_VERSION:-latest}"
+    ASSET="clicd-linux-amd64.tar.gz"
+
+    if [ "$VERSION" = "latest" ]; then
+        DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+    else
+        DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+    fi
+
+    echo "clicd binary not found in current directory."
+    echo "Downloading release package: ${DOWNLOAD_URL}"
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL "$DOWNLOAD_URL" -o "$TMP_DIR/$ASSET"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$TMP_DIR/$ASSET" "$DOWNLOAD_URL"
+    else
+        echo "ERROR: curl or wget is required to download the release package."
+        exit 1
+    fi
+
+    tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
+    cd "$TMP_DIR/clicd-linux-amd64"
 fi
 
 if ! command -v lxc-create >/dev/null 2>&1; then
@@ -62,11 +93,6 @@ SCRIPT
     
     # Add prjquota to fstab if not already there
     grep -q 'prjquota' /etc/fstab 2>/dev/null || sed -i 's|ext4 rw,|ext4 rw,prjquota,|' /etc/fstab
-fi
-
-if [ ! -f "./clicd" ]; then
-    echo "ERROR: clicd binary not found in current directory"
-    exit 1
 fi
 
 cp ./clicd /usr/local/bin/clicd
