@@ -19,9 +19,13 @@ func Run() {
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
+		if _, err := config.InitConfig(); err != nil {
+			fmt.Printf("Failed to reload config: %v\n", err)
+			waitEnter(reader)
+		}
 		clearScreen()
 		printMenu()
-		fmt.Print("\nSelect action [1-10,0/q]: ")
+		fmt.Print("\nSelect action [1-11,0/q]: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
@@ -64,6 +68,10 @@ func Run() {
 			waitEnter(reader)
 		case "10":
 			clearScreen()
+			cliImportExistingContainers()
+			waitEnter(reader)
+		case "11":
+			clearScreen()
 			cliUninstall(reader)
 			return
 		case "0":
@@ -105,7 +113,8 @@ func printMenu() {
 	fmt.Println("  7. Reinstall container")
 	fmt.Println("  8. Reset web admin password")
 	fmt.Printf("  9. %s web panel\n", webStatus)
-	fmt.Println("  10. Uninstall CLICD")
+	fmt.Println("  10. Import existing ct-* containers")
+	fmt.Println("  11. Uninstall CLICD")
 	fmt.Println("  0. System info")
 	fmt.Println("  q. Quit")
 }
@@ -179,6 +188,7 @@ func cliCreateContainer(reader *bufio.Reader) {
 	if container != nil {
 		fmt.Printf("SSH: root / %s, port %d -> 22\n", container.SSHPassword, container.SSHPort)
 	}
+	restartWebPanelForConfigChange()
 }
 
 func cliStartContainer(reader *bufio.Reader) {
@@ -232,6 +242,7 @@ func cliDeleteContainer(reader *bufio.Reader) {
 		return
 	}
 	fmt.Printf("Container %s deleted\n", name)
+	restartWebPanelForConfigChange()
 }
 
 func cliReinstallContainer(reader *bufio.Reader) {
@@ -263,6 +274,7 @@ func cliReinstallContainer(reader *bufio.Reader) {
 		return
 	}
 	fmt.Printf("Container %s reinstalled\n", name)
+	restartWebPanelForConfigChange()
 }
 
 func cliResetPassword(reader *bufio.Reader) {
@@ -281,7 +293,8 @@ func cliResetPassword(reader *bufio.Reader) {
 		fmt.Printf("Reset failed: %v\n", err)
 		return
 	}
-	fmt.Println("Admin password reset. Restart the web service for it to take effect.")
+	fmt.Println("Admin password reset.")
+	restartWebPanelForConfigChange()
 }
 
 func cliToggleWebPanel() {
@@ -314,6 +327,28 @@ func isWebPanelRunning() bool {
 		return cmd.Run() == nil
 	}
 	return false
+}
+
+func cliImportExistingContainers() {
+	fmt.Println("\n--- Import existing CLICD containers ---")
+	fmt.Println("This imports LXC containers named ct-{id} from /var/lib/lxc into CLICD config.")
+	fmt.Println("Containers with names like ubuntu or alpine are skipped because CLICD requires ct-{id}.")
+
+	imported, err := manager.ImportExistingClicdContainers()
+	if err != nil {
+		fmt.Printf("Import failed: %v\n", err)
+		return
+	}
+	if len(imported) == 0 {
+		fmt.Println("No new ct-* containers found to import.")
+		return
+	}
+
+	fmt.Printf("Imported %d container(s):\n", len(imported))
+	for _, c := range imported {
+		fmt.Printf("  [%d] %s [%s]\n", c.ID, c.Name, c.Status)
+	}
+	restartWebPanelForConfigChange()
 }
 
 func cliUninstall(reader *bufio.Reader) {
@@ -421,6 +456,14 @@ func runQuiet(name string, args ...string) {
 	_ = exec.Command(name, args...).Run()
 }
 
+func restartWebPanelForConfigChange() {
+	if err := restartService("clicd"); err != nil {
+		fmt.Printf("Web panel reload skipped: %v\n", err)
+		return
+	}
+	fmt.Println("Web panel reloaded to pick up config changes.")
+}
+
 func stopService(name string) error {
 	if commandExists("systemctl") {
 		return exec.Command("systemctl", "stop", name).Run()
@@ -437,6 +480,16 @@ func startService(name string) error {
 	}
 	if commandExists("rc-service") {
 		return exec.Command("rc-service", name, "start").Run()
+	}
+	return fmt.Errorf("no supported service manager found")
+}
+
+func restartService(name string) error {
+	if commandExists("systemctl") {
+		return exec.Command("systemctl", "restart", name).Run()
+	}
+	if commandExists("rc-service") {
+		return exec.Command("rc-service", name, "restart").Run()
 	}
 	return fmt.Errorf("no supported service manager found")
 }

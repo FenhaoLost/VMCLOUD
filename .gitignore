@@ -62,3 +62,4 @@ backend/tmp/
 # OS
 .DS_Store
 Thumbs.db
+linux.txt

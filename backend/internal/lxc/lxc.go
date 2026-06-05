@@ -1915,6 +1915,93 @@ func (m *Manager) ListContainers() ([]config.Container, error) {
 	return containers, nil
 }
 
+// ImportExistingClicdContainers imports LXC containers named ct-{id} into the
+// CLICD config. Containers with arbitrary LXC names cannot be imported because
+// CLICD derives the runtime LXC name from the numeric container ID.
+func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
+	entries, err := os.ReadDir(m.LxcPath)
+	if err != nil {
+		return nil, err
+	}
+
+	existingIDs := make(map[int]bool)
+	existingNames := make(map[string]bool)
+	maxID := config.AppConfig.NextContainerID - 1
+	for _, c := range config.AppConfig.Containers {
+		existingIDs[c.ID] = true
+		existingNames[c.Name] = true
+		if c.ID > maxID {
+			maxID = c.ID
+		}
+	}
+
+	re := regexp.MustCompile(`^ct-([0-9]+)$`)
+	imported := make([]config.Container, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		matches := re.FindStringSubmatch(entry.Name())
+		if len(matches) != 2 {
+			continue
+		}
+
+		id, err := strconv.Atoi(matches[1])
+		if err != nil || id <= 0 || existingIDs[id] {
+			continue
+		}
+
+		name := entry.Name()
+		if existingNames[name] {
+			name = fmt.Sprintf("imported-%d", id)
+		}
+
+		status, err := m.GetContainerStatus(entry.Name())
+		if err != nil || status == "" {
+			status = "unknown"
+		}
+
+		c := config.Container{
+			ID:               id,
+			UUID:             config.NewContainerUUID(),
+			Name:             name,
+			Template:         "imported",
+			VCPU:             1,
+			RAMMB:            512,
+			DiskGB:           10,
+			NetworkBWMbps:    100,
+			MonthlyTrafficGB: 1000,
+			TrafficMode:      "total",
+			Status:           status,
+			CreatedAt:        time.Now().Format(time.RFC3339),
+			PortMappingLimit: 2,
+		}
+
+		if status == "running" {
+			if ip, err := m.GetContainerIP(entry.Name()); err == nil {
+				c.IP = ip
+			}
+		}
+
+		config.AppConfig.Containers = append(config.AppConfig.Containers, c)
+		imported = append(imported, c)
+		existingIDs[id] = true
+		existingNames[name] = true
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	if len(imported) > 0 {
+		config.AppConfig.NextContainerID = maxID + 1
+		if err := config.SaveConfig(); err != nil {
+			return nil, err
+		}
+	}
+
+	return imported, nil
+}
+
 // ReinstallContainer reinstalls the container OS
 func (m *Manager) ReinstallContainer(id int, templateID string) error {
 	c := config.FindContainer(id)
