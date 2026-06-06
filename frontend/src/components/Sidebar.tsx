@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
+  Route,
   ScrollText,
   Server,
   Settings2,
@@ -33,6 +34,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const isImagesPage = location.pathname.startsWith('/images')
   const isOversellPage = location.pathname.startsWith('/oversell')
   const isSnapshotsPage = location.pathname.startsWith('/snapshots')
+  const isRoutingPage = location.pathname.startsWith('/routing')
   const isAuditLogsPage = location.pathname.startsWith('/audit-logs')
   const isApiIntegrationPage = location.pathname.startsWith('/api-integration')
   const isSecurityPage = location.pathname.startsWith('/security')
@@ -148,6 +150,18 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             >
               <Camera className="w-4 h-4" />
               {!collapsed && <span>快照管理</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/routing')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                isRoutingPage
+                  ? 'bg-black text-white'
+                  : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <Route className="w-4 h-4" />
+              {!collapsed && <span>路由管理</span>}
             </button>
 
             <button

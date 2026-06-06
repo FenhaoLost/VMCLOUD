@@ -1425,7 +1425,7 @@ func (m *Manager) DestroyContainer(id int) error {
 	}
 	lxcName := c.LxcName()
 	if c.IPv6 != "" && c.IPv6Interface != "" {
-		removeIPv6NAT66(c.IPv6, c.IPv6Interface)
+		removeHostIPv6Routing(c.IPv6, c.IPv6Interface)
 	}
 
 	if err := m.StopContainer(id); err != nil {

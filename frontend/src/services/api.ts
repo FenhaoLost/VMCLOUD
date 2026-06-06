@@ -283,6 +283,45 @@ export const getIPv6Status = () =>
 export const assignIPv6 = (id: ContainerIdentifier) =>
   api.post<APIResponse<Container>>(`/containers/${id}/ipv6`)
 
+export interface RouteCapacity {
+  used: number
+  remaining: string
+  total: string
+}
+
+export interface NAT4Route {
+  container_id: number
+  container_name: string
+  lxc_name: string
+  status: string
+  ip: string
+  host_port: number
+  container_port: number
+  protocol: string
+  description: string
+}
+
+export interface IPv6Route {
+  container_id: number
+  container_name: string
+  lxc_name: string
+  status: string
+  address: string
+  prefix_len: number
+  interface: string
+}
+
+export interface RoutingInfo {
+  nat4: RouteCapacity
+  ipv6: RouteCapacity
+  nat4_mappings: NAT4Route[]
+  ipv6_assignments: IPv6Route[]
+  ipv6_prefixes: IPv6PrefixInfo[]
+}
+
+export const getRoutingInfo = () =>
+  api.get<APIResponse<RoutingInfo>>('/routing')
+
 // Templates
 export const getTemplates = () =>
   api.get<APIResponse<Template[]>>('/templates')

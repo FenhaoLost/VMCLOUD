@@ -728,6 +728,27 @@ func ensureIPv6ForwardRules(ipv6 string) {
 	}
 }
 
+func removeHostIPv6Routing(ipv6, uplink string) {
+	removeIPv6NAT66(ipv6, uplink)
+	removeIPv6ForwardRules(ipv6)
+	runQuiet("ip", "-6", "route", "del", ipv6+"/128", "dev", "lxcbr0")
+	if uplink != "" {
+		runQuiet("ip", "-6", "neigh", "del", "proxy", ipv6, "dev", uplink)
+	}
+}
+
+func removeIPv6ForwardRules(ipv6 string) {
+	rules := [][]string{
+		{"FORWARD", "-i", "lxcbr0", "-s", ipv6 + "/128", "-j", "ACCEPT"},
+		{"FORWARD", "-o", "lxcbr0", "-d", ipv6 + "/128", "-j", "ACCEPT"},
+	}
+	for _, rule := range rules {
+		del := append([]string{"-D"}, rule...)
+		for exec.Command("ip6tables", del...).Run() == nil {
+		}
+	}
+}
+
 func containerIPv6ConnectivityOK(lxcName string) bool {
 	targets := []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
 	for _, target := range targets {

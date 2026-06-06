@@ -11,6 +11,7 @@ import ApiIntegration from './pages/ApiIntegration'
 import Settings from './pages/Settings'
 import ImageManagement from './pages/ImageManagement'
 import Snapshots from './pages/Snapshots'
+import Routing from './pages/Routing'
 import Layout from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -59,6 +60,7 @@ function App() {
         <Route path="oversell" element={<Oversell />} />
         <Route path="security" element={<Security />} />
         <Route path="snapshots" element={<Snapshots />} />
+        <Route path="routing" element={<Routing />} />
         <Route path="audit-logs" element={<AuditLogs />} />
         <Route path="api-integration" element={<ApiIntegration />} />
         <Route path="settings" element={<Settings />} />
