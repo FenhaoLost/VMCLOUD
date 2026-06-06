@@ -7,11 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"clicd/internal/api"
 	"clicd/internal/config"
-	"clicd/internal/lxc"
 )
 
 // webFS holds embedded frontend files
@@ -149,7 +147,6 @@ func setupRoutes(mux *http.ServeMux) {
 func Run() error {
 	// Use embedded frontend files
 	webFS = GetEmbeddedFS()
-	startExpiryMonitor()
 
 	mux := http.NewServeMux()
 	setupRoutes(mux)
@@ -166,15 +163,3 @@ func Run() error {
 	return server.ListenAndServe()
 }
 
-func startExpiryMonitor() {
-	manager := lxc.NewManager()
-	go func() {
-		manager.StopExpiredContainers(time.Now())
-
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for now := range ticker.C {
-			manager.StopExpiredContainers(now)
-		}
-	}()
-}

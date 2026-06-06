@@ -1,6 +1,7 @@
 package lxc
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -105,19 +106,23 @@ func (m *Manager) updateAllRates() {
 		}
 		lxcName := c.LxcName()
 
-		// Read raw bytes
-		memUsage := readIntCommand(fmt.Sprintf(
-			"cat /sys/fs/cgroup/lxc/%[1]s/memory.current 2>/dev/null || "+
-				"cat /sys/fs/cgroup/lxc.payload.%[1]s/memory.current 2>/dev/null || "+
-				"cat /sys/fs/cgroup/memory/lxc/%[1]s/memory.usage_in_bytes 2>/dev/null || echo 0", shellQuote(lxcName)))
+		// Cache init PID once per scan so getContainerNetworkBytes / getContainerDiskIOBytes
+		// don't each fork lxc-info separately.
+		initPID := m.getContainerInitPID(lxcName)
 
-		cpuUsec := uint64(readIntCommand(fmt.Sprintf(
-			"(cat /sys/fs/cgroup/lxc/%[1]s/cpu.stat 2>/dev/null || "+
-				"cat /sys/fs/cgroup/lxc.payload.%[1]s/cpu.stat 2>/dev/null) | "+
-				"awk '/usage_usec/ {print $2; found=1} END {if (!found) print 0}'", shellQuote(lxcName))))
+		// Read memory from cgroup directly (no shell fork)
+		memUsage := readCgroupFile(lxcName,
+			"/sys/fs/cgroup/lxc/%s/memory.current",
+			"/sys/fs/cgroup/lxc.payload.%s/memory.current",
+			"/sys/fs/cgroup/memory/lxc/%s/memory.usage_in_bytes")
 
-		rxBytes, txBytes := m.getContainerNetworkBytes(lxcName)
-		readBytes, writeBytes := m.getContainerDiskIOBytes(lxcName)
+		// Read cpu usage from cgroup directly (no shell | awk fork)
+		cpuUsec := readCgroupCPUUsec(lxcName,
+			"/sys/fs/cgroup/lxc/%s/cpu.stat",
+			"/sys/fs/cgroup/lxc.payload.%s/cpu.stat")
+
+		rxBytes, txBytes := getNetworkBytesForPID(initPID)
+		readBytes, writeBytes := getDiskIOBytesForPID(initPID)
 
 		now := time.Now()
 		sample := containerUsageSample{
@@ -2245,10 +2250,38 @@ func (m *Manager) getContainerNetworkBytes(lxcName string) (uint64, uint64) {
 	if pid == "" {
 		return 0, 0
 	}
-	dir := fmt.Sprintf("/proc/%s/net", pid)
-	rx := readIntCommand(fmt.Sprintf("cat %s/dev 2>/dev/null | awk '{rx+=$2; tx+=$10} END {print rx}' || echo 0", shellQuote(dir)))
-	tx := readIntCommand(fmt.Sprintf("cat %s/dev 2>/dev/null | awk '{rx+=$2; tx+=$10} END {print tx}' || echo 0", shellQuote(dir)))
-	return uint64(rx), uint64(tx)
+	return readProcNetDev(fmt.Sprintf("/proc/%s/net/dev", pid))
+}
+
+// readProcNetDev parses /proc/PID/net/dev directly (no shell/awk fork).
+func readProcNetDev(path string) (uint64, uint64) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0
+	}
+	var rx, tx uint64
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip header lines
+		if strings.Contains(line, "|") || strings.Contains(line, "face") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		// Fields: face | rx_bytes rx_packets rx_errs rx_drop rx_fifo rx_frame rx_compressed rx_multicast | tx_bytes tx_packets tx_errs tx_drop tx_fifo tx_colls tx_carrier tx_compressed
+		// Skip loopback (face starts with "lo")
+		if len(fields) < 10 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], "lo") {
+			continue
+		}
+		r, _ := strconv.ParseUint(fields[1], 10, 64)
+		t, _ := strconv.ParseUint(fields[9], 10, 64)
+		rx += r
+		tx += t
+	}
+	return rx, tx
 }
 
 func (m *Manager) getContainerDiskIOBytes(lxcName string) (uint64, uint64) {
@@ -2256,10 +2289,22 @@ func (m *Manager) getContainerDiskIOBytes(lxcName string) (uint64, uint64) {
 	if pid == "" {
 		return 0, 0
 	}
-	// /proc/PID/io format: "field_name: value" per line
-	// Fields: rchar, wchar, syscr, syscw, read_bytes, write_bytes, cancelled_write_bytes
-	readBytes := uint64(readIntCommand(fmt.Sprintf("awk '/^read_bytes:/ {print $2}' /proc/%s/io 2>/dev/null || echo 0", pid)))
-	writeBytes := uint64(readIntCommand(fmt.Sprintf("awk '/^write_bytes:/ {print $2}' /proc/%s/io 2>/dev/null || echo 0", pid)))
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%s/io", pid))
+	if err != nil {
+		return 0, 0
+	}
+	var readBytes, writeBytes uint64
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "read_bytes:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "read_bytes:"))
+			readBytes, _ = strconv.ParseUint(val, 10, 64)
+		} else if strings.HasPrefix(line, "write_bytes:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "write_bytes:"))
+			writeBytes, _ = strconv.ParseUint(val, 10, 64)
+		}
+	}
 	return readBytes, writeBytes
 }
 
@@ -2270,6 +2315,73 @@ func (m *Manager) getContainerInitPID(lxcName string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// readCgroupFile tries each path template in order, reads the file directly (no shell),
+// and returns the first valid int64 value.
+func readCgroupFile(name string, paths ...string) int64 {
+	for _, tmpl := range paths {
+		data, err := os.ReadFile(fmt.Sprintf(tmpl, name))
+		if err != nil {
+			continue
+		}
+		val, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err == nil && val > 0 {
+			return val
+		}
+	}
+	return 0
+}
+
+// readCgroupCPUUsec tries each path template, reads cpu.stat, and extracts usage_usec.
+func readCgroupCPUUsec(name string, paths ...string) uint64 {
+	for _, tmpl := range paths {
+		data, err := os.ReadFile(fmt.Sprintf(tmpl, name))
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "usage_usec ") {
+				val, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "usage_usec")), 10, 64)
+				if err == nil {
+					return val
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// getNetworkBytesForPID reads /proc/PID/net/dev for a given PID (no lxc-info needed).
+func getNetworkBytesForPID(pid string) (uint64, uint64) {
+	if pid == "" {
+		return 0, 0
+	}
+	return readProcNetDev(fmt.Sprintf("/proc/%s/net/dev", pid))
+}
+
+// getDiskIOBytesForPID reads /proc/PID/io for a given PID (no lxc-info needed).
+func getDiskIOBytesForPID(pid string) (uint64, uint64) {
+	if pid == "" {
+		return 0, 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%s/io", pid))
+	if err != nil {
+		return 0, 0
+	}
+	var readBytes, writeBytes uint64
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "read_bytes:") {
+			readBytes, _ = strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "read_bytes:")), 10, 64)
+		} else if strings.HasPrefix(line, "write_bytes:") {
+			writeBytes, _ = strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "write_bytes:")), 10, 64)
+		}
+	}
+	return readBytes, writeBytes
 }
 
 // getContainerUptimeSeconds returns how long the container has been running (in seconds).
@@ -2399,6 +2511,7 @@ func (m *Manager) AccumulateTraffic() {
 	lastTrafficSnapshotMu.Lock()
 	defer lastTrafficSnapshotMu.Unlock()
 
+	changed := false
 	for i := range config.AppConfig.Containers {
 		c := &config.AppConfig.Containers[i]
 		if c.Status != "running" {
@@ -2412,17 +2525,25 @@ func (m *Manager) AccumulateTraffic() {
 			c.TrafficUsedTX = 0
 			c.TrafficResetDate = currentMonth
 			delete(lastTrafficSnapshot, c.LxcName())
+			changed = true
 		}
 		rx, tx := m.getContainerNetworkBytes(c.LxcName())
 		prev, exists := lastTrafficSnapshot[c.LxcName()]
 		// Only add the DELTA (increment since last snapshot)
 		if exists && rx >= prev.RXBytes && tx >= prev.TXBytes {
-			c.TrafficUsedRX += int64(rx - prev.RXBytes)
-			c.TrafficUsedTX += int64(tx - prev.TXBytes)
+			deltaRX := int64(rx - prev.RXBytes)
+			deltaTX := int64(tx - prev.TXBytes)
+			if deltaRX > 0 || deltaTX > 0 {
+				c.TrafficUsedRX += deltaRX
+				c.TrafficUsedTX += deltaTX
+				changed = true
+			}
 		}
 		lastTrafficSnapshot[c.LxcName()] = trafficSample{RXBytes: rx, TXBytes: tx}
 	}
-	config.SaveConfig()
+	if changed {
+		config.SaveConfig()
+	}
 }
 
 // GetTrafficInfo returns traffic usage info for a container
