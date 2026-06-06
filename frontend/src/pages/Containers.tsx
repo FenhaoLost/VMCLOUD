@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowDown,
@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   Server,
   Square,
   Trash2,
@@ -46,6 +47,11 @@ export default function Containers() {
   const [showTasks, setShowTasks] = useState(false)
   const [tasks, setTasks] = useState<Task[]>([])
   const [queuedCreates, setQueuedCreates] = useState<Record<string, CreateContainerRequest>>({})
+  const [searchText, setSearchText] = useState('')
+  const [systemFilter, setSystemFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   const refreshUsage = useCallback(async (items: Container[]) => {
     const targets = items.filter((container) => container.status === 'running')
@@ -100,18 +106,6 @@ export default function Containers() {
       else next.add(id)
       return next
     })
-  }
-
-  const toggleAll = () => {
-    const selectableIDs = displayContainers
-      .filter((container) => !container.isPlaceholder && !taskStatusMap[container.id] && !taskNameMap[container.name])
-      .map((container) => container.id)
-
-    if (selected.size === selectableIDs.length) {
-      setSelected(new Set())
-    } else {
-      setSelected(new Set(selectableIDs))
-    }
   }
 
   // Map of container_id -> current task status.
@@ -170,6 +164,44 @@ export default function Containers() {
 
   const displayContainers = buildDisplayContainers(containers, queuedCreates, tasks)
   const activeTaskCount = tasks.filter((task) => task.status === 'pending' || task.status === 'running').length
+  const systemOptions = useMemo(() => buildSystemOptions(displayContainers), [displayContainers])
+  const filteredContainers = useMemo(() => {
+    return filterContainers(displayContainers, {
+      search: searchText,
+      system: systemFilter,
+      status: statusFilter,
+      taskStatusMap,
+      taskNameMap,
+    })
+  }, [displayContainers, searchText, systemFilter, statusFilter, tasks])
+  const totalPages = Math.max(1, Math.ceil(filteredContainers.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageStart = (currentPage - 1) * pageSize
+  const pageContainers = filteredContainers.slice(pageStart, pageStart + pageSize)
+  const selectableIDs = filteredContainers
+    .filter((container) => !container.isPlaceholder && !taskStatusMap[container.id] && !taskNameMap[container.name])
+    .map((container) => container.id)
+  const allFilteredSelected = selectableIDs.length > 0 && selectableIDs.every((id) => selected.has(id))
+
+  useEffect(() => {
+    setPage(1)
+  }, [searchText, systemFilter, statusFilter, pageSize])
+
+  const toggleAll = () => {
+    if (allFilteredSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        selectableIDs.forEach((id) => next.delete(id))
+        return next
+      })
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev)
+        selectableIDs.forEach((id) => next.add(id))
+        return next
+      })
+    }
+  }
 
   const handleCreateQueued = async (items: CreateContainerRequest[]) => {
     setQueuedCreates((current) => {
@@ -193,12 +225,16 @@ export default function Containers() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-[180px]">
           <h1 className="text-2xl font-bold text-black">容器管理</h1>
-          <p className="text-sm text-gray-500 mt-1">共 {displayContainers.length} 个容器{selected.size > 0 && `，已选 ${selected.size} 个`}</p>
+          <p className="text-sm text-gray-500 mt-1">
+            共 {displayContainers.length} 个容器
+            {filteredContainers.length !== displayContainers.length && `，筛选后 ${filteredContainers.length} 个`}
+            {selected.size > 0 && `，已选 ${selected.size} 个`}
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {selected.size > 0 && (
             <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-md px-3 py-1.5">
               <span className="text-xs text-gray-500 mr-1">{selected.size} 个</span>
@@ -215,6 +251,53 @@ export default function Containers() {
                 <Trash2 className="w-3 h-3" />{batchLoading ? '执行中...' : '删除'}
               </button>
             </div>
+          )}
+          {displayContainers.length > 0 && (
+            <>
+              <div className="relative w-[260px]">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  className="h-8 w-full rounded-md border border-gray-300 bg-white pl-8 pr-2 text-xs text-black outline-none focus:border-black focus:ring-2 focus:ring-black"
+                  placeholder="搜索名称、ID、UUID、IP"
+                />
+              </div>
+              <select
+                value={systemFilter}
+                onChange={(event) => setSystemFilter(event.target.value)}
+                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+                title="系统筛选"
+              >
+                <option value="all">全部系统</option>
+                {systemOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+                title="状态筛选"
+              >
+                <option value="all">全部状态</option>
+                <option value="running">在线</option>
+                <option value="stopped">离线</option>
+                <option value="task">任务中</option>
+                <option value="creating">创建中</option>
+                <option value="failed">失败</option>
+              </select>
+              <select
+                value={pageSize}
+                onChange={(event) => setPageSize(Number(event.target.value))}
+                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+                title="每页数量"
+              >
+                <option value={10}>10 / 页</option>
+                <option value={20}>20 / 页</option>
+                <option value={50}>50 / 页</option>
+              </select>
+            </>
           )}
           <button
             onClick={handleRefreshList}
@@ -267,7 +350,8 @@ export default function Containers() {
                     {!isSubUser && (
                       <input
                         type="checkbox"
-                        checked={displayContainers.length > 0 && selected.size === displayContainers.filter((container) => !container.isPlaceholder && !taskStatusMap[container.id] && !taskNameMap[container.name]).length}
+                        checked={allFilteredSelected}
+                        disabled={selectableIDs.length === 0}
                         onChange={toggleAll}
                         className="w-4 h-4 rounded border-gray-300 text-black focus:ring-black accent-black"
                       />
@@ -287,7 +371,7 @@ export default function Containers() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {displayContainers.map((container) => {
+                {pageContainers.map((container) => {
                   const isRunning = container.status === 'running'
                   const task = (container.id > 0 ? taskStatusMap[container.id] : taskNameMap[container.name]) || container.createTask
                   const isPlaceholder = !!container.isPlaceholder
@@ -398,6 +482,50 @@ export default function Containers() {
               </tbody>
             </table>
           </div>
+          {filteredContainers.length === 0 ? (
+            <div className="border-t border-gray-100 px-4 py-10 text-center text-sm text-gray-500">
+              没有匹配的容器
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3">
+              <div className="text-xs text-gray-500">
+                显示 {pageStart + 1}-{Math.min(pageStart + pageSize, filteredContainers.length)} / {filteredContainers.length}
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(1)}
+                  disabled={currentPage === 1}
+                  className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  首页
+                </button>
+                <button
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                  disabled={currentPage === 1}
+                  className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  上一页
+                </button>
+                <span className="px-2 text-xs text-gray-500">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                  disabled={currentPage === totalPages}
+                  className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  下一页
+                </button>
+                <button
+                  onClick={() => setPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  末页
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -583,6 +711,84 @@ function syncQueuedCreates(
 
 function hasActiveTasks(tasks: Task[]) {
   return tasks.some((task) => task.status === 'pending' || task.status === 'running')
+}
+
+type ContainerFilters = {
+  search: string
+  system: string
+  status: string
+  taskStatusMap: Record<number, Task>
+  taskNameMap: Record<string, Task>
+}
+
+function filterContainers(containers: DisplayContainer[], filters: ContainerFilters): DisplayContainer[] {
+  const keyword = filters.search.trim().toLowerCase()
+  return containers.filter((container) => {
+    const task = (container.id > 0 ? filters.taskStatusMap[container.id] : filters.taskNameMap[container.name]) || container.createTask
+    if (filters.system !== 'all' && getSystemFilterValue(container.template) !== filters.system) {
+      return false
+    }
+    if (filters.status !== 'all' && getContainerStatusFilterValue(container, task) !== filters.status) {
+      return false
+    }
+    if (!keyword) return true
+
+    const fields = [
+      String(container.id),
+      container.name,
+      container.uuid,
+      container.ip,
+      container.ipv6,
+      container.template,
+      getTemplateName(container.template),
+      getSystemFilterLabel(getSystemFilterValue(container.template)),
+      String(container.ssh_port || ''),
+    ]
+    return fields.some((field) => field.toLowerCase().includes(keyword))
+  })
+}
+
+function buildSystemOptions(containers: DisplayContainer[]) {
+  const systems = new Map<string, string>()
+  for (const container of containers) {
+    const value = getSystemFilterValue(container.template)
+    systems.set(value, getSystemFilterLabel(value))
+  }
+  return Array.from(systems.entries())
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function getSystemFilterValue(template: string) {
+  if (template.startsWith('ubuntu')) return 'ubuntu'
+  if (template.startsWith('debian')) return 'debian'
+  if (template.startsWith('alpine')) return 'alpine'
+  if (template.startsWith('centos')) return 'centos'
+  if (template.startsWith('archlinux')) return 'archlinux'
+  if (template.startsWith('fedora')) return 'fedora'
+  if (template.startsWith('rockylinux')) return 'rockylinux'
+  return template || 'unknown'
+}
+
+function getSystemFilterLabel(system: string) {
+  const labels: Record<string, string> = {
+    ubuntu: 'Ubuntu',
+    debian: 'Debian',
+    alpine: 'Alpine',
+    centos: 'CentOS',
+    archlinux: 'Arch Linux',
+    fedora: 'Fedora',
+    rockylinux: 'Rocky Linux',
+    unknown: '未知系统',
+  }
+  return labels[system] || system
+}
+
+function getContainerStatusFilterValue(container: DisplayContainer, task?: Task) {
+  if (task?.status === 'failed') return 'failed'
+  if (container.isPlaceholder || task?.type === 'create') return 'creating'
+  if (task && task.status !== 'done' && task.status !== 'failed') return 'task'
+  return container.status === 'running' ? 'running' : 'stopped'
 }
 
 function taskLineLabel(task: Task, actionLabels: Record<string, string>) {

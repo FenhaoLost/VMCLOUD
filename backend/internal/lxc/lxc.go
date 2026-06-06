@@ -78,6 +78,9 @@ func (m *Manager) WarmRunningContainersSSH() {
 			continue
 		}
 		config.UpdateContainerStatus(c.ID, "running")
+		if c.IP != "" && m.containerPortListening(c.LxcName(), 22) {
+			continue
+		}
 		m.WarmSSHAsync(c.ID, "running container scan")
 	}
 }
@@ -383,6 +386,7 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 
 	if err := m.shiftRootfsForUnprivileged(lxcName); err != nil {
 		_ = m.cleanupContainerStorage(lxcName)
+		config.RemoveContainer(id)
 		return err
 	}
 
@@ -459,13 +463,13 @@ IPv6AcceptRA=no
 // preconfigureSSH installs and configures SSH directly in the rootfs before first boot.
 func (m *Manager) preconfigureSSH(rootfsPath, password, templateID string) error {
 	_ = templateID
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 	cmd := m.rootfsCommand(rootfsPath, "sh", "-c", sshSetupScript(password, false))
 	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out after 120s, output: %s", string(output))
+		return fmt.Errorf("timed out after 180s, output: %s", string(output))
 	}
 	if err != nil {
 		return fmt.Errorf("%v, output: %s", err, string(output))
@@ -985,6 +989,16 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
+	m.unmountRootfsChildMounts(rootfsPath)
+	rootInfo, err := os.Lstat(rootfsPath)
+	if err != nil {
+		return err
+	}
+	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("failed to read rootfs device for %s", rootfsPath)
+	}
+	rootDev := rootStat.Dev
 
 	if err := filepath.WalkDir(rootfsPath, func(path string, _ os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -997,6 +1011,12 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			return fmt.Errorf("failed to read uid/gid for %s", path)
+		}
+		if path != rootfsPath && stat.Dev != rootDev {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		uid := int(stat.Uid)
 		gid := int(stat.Gid)
@@ -1030,6 +1050,34 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 		return fmt.Errorf("failed to fix container directory permissions: %v", err)
 	}
 	return nil
+}
+
+func (m *Manager) unmountRootfsChildMounts(rootfsPath string) {
+	rootAbs, err := filepath.Abs(rootfsPath)
+	if err != nil {
+		return
+	}
+	out, err := exec.Command("findmnt", "-R", "-n", "-o", "TARGET", rootfsPath).Output()
+	if err != nil {
+		return
+	}
+	targets := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i, j := 0, len(targets)-1; i < j; i, j = i+1, j-1 {
+		targets[i], targets[j] = targets[j], targets[i]
+	}
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		targetAbs, err := filepath.Abs(target)
+		if err != nil || targetAbs == rootAbs {
+			continue
+		}
+		if strings.HasPrefix(targetAbs, rootAbs+string(os.PathSeparator)) {
+			exec.Command("umount", "-R", "-l", targetAbs).Run()
+		}
+	}
 }
 
 func (m *Manager) rootfsShifted(lxcName string) bool {
@@ -1527,12 +1575,12 @@ func (m *Manager) EnsureSSH(id int) error {
 
 	script := sshSetupScript(c.SSHPassword, true)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "lxc-attach", "-n", lxcName, "--", "sh", "-c", script)
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timed out configuring SSH in container %d after 90s; package manager or service startup may be stuck, output: %s", id, string(output))
+		return fmt.Errorf("timed out configuring SSH in container %d after 180s; package manager or service startup may be stuck, output: %s", id, string(output))
 	}
 	if err != nil {
 		return fmt.Errorf("failed to configure SSH in container %d: %v, output: %s", id, err, string(output))
@@ -1640,7 +1688,10 @@ install_sshd() {
 			sleep 3
 		done
 	elif command -v apk >/dev/null 2>&1; then
-		run_timeout 60 apk add --no-cache openssh-server openssh-client shadow iproute2 procps net-tools && return 0
+		for i in 1 2 3; do
+			run_timeout 120 apk add --no-cache openssh-server openssh-client shadow iproute2 procps net-tools && return 0
+			sleep 3
+		done
 	elif command -v pacman >/dev/null 2>&1; then
 		run_timeout 45 pacman -Syu --noconfirm >/dev/null 2>&1 || true
 		run_timeout 90 pacman -S --noconfirm openssh shadow iproute2 procps-ng net-tools && return 0

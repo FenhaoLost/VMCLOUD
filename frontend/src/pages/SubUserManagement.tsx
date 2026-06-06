@@ -35,6 +35,8 @@ export default function SubUserManagement() {
   const [modalTitle, setModalTitle] = useState('')
   const [passwordUser, setPasswordUser] = useState<SubUserItem | null>(null)
   const [rotatingPassword, setRotatingPassword] = useState(false)
+  const [logPage, setLogPage] = useState(1)
+  const [logPageSize, setLogPageSize] = useState(10)
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -82,6 +84,7 @@ export default function SubUserManagement() {
       setAuditLogs(res.data.data || [])
       setLoginLogs(null)
       setModalTitle(`${user.username} - 操作日志`)
+      setLogPage(1)
     } catch {
       dialog.alert('错误', '获取操作日志失败')
     }
@@ -93,6 +96,7 @@ export default function SubUserManagement() {
       setLoginLogs(res.data.data || [])
       setAuditLogs(null)
       setModalTitle(`${user.username} - 登录日志`)
+      setLogPage(1)
     } catch {
       dialog.alert('错误', '获取登录日志失败')
     }
@@ -102,6 +106,13 @@ export default function SubUserManagement() {
     setAuditLogs(null)
     setLoginLogs(null)
   }
+
+  const currentLogTotal = auditLogs?.length ?? loginLogs?.length ?? 0
+  const logTotalPages = Math.max(1, Math.ceil(currentLogTotal / logPageSize))
+  const currentLogPage = Math.min(logPage, logTotalPages)
+  const logStart = (currentLogPage - 1) * logPageSize
+  const currentAuditLogs = auditLogs?.slice(logStart, logStart + logPageSize)
+  const currentLoginLogs = loginLogs?.slice(logStart, logStart + logPageSize)
 
   if (loading) {
     return (
@@ -267,7 +278,7 @@ export default function SubUserManagement() {
                   <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                     {auditLogs.length === 0 ? (
                       <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">暂无操作日志</td></tr>
-                    ) : auditLogs.map((log, i) => (
+                    ) : currentAuditLogs?.map((log, i) => (
                       <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800">
                         <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{log.time}</td>
                         <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-300">{log.action}</td>
@@ -302,7 +313,7 @@ export default function SubUserManagement() {
                   <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                     {loginLogs.length === 0 ? (
                       <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-400">暂无登录日志</td></tr>
-                    ) : loginLogs.map((log, i) => (
+                    ) : currentLoginLogs?.map((log, i) => (
                       <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800">
                         <td className="px-4 py-2 text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">{log.time}</td>
                         <td className="px-4 py-2 text-xs font-mono text-gray-500 dark:text-gray-400">{log.ip}</td>
@@ -320,6 +331,34 @@ export default function SubUserManagement() {
                 </table>
               )}
             </div>
+            {currentLogTotal > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 dark:border-gray-700 px-5 py-3">
+                <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  <span>
+                    显示 {logStart + 1}-{Math.min(logStart + logPageSize, currentLogTotal)} / {currentLogTotal}
+                  </span>
+                  <select
+                    value={logPageSize}
+                    onChange={(event) => {
+                      setLogPageSize(Number(event.target.value))
+                      setLogPage(1)
+                    }}
+                    className="h-7 rounded border border-gray-300 bg-white px-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"
+                  >
+                    <option value={10}>10 / 页</option>
+                    <option value={20}>20 / 页</option>
+                    <option value={50}>50 / 页</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setLogPage(1)} disabled={currentLogPage === 1} className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">首页</button>
+                  <button onClick={() => setLogPage((page) => Math.max(1, page - 1))} disabled={currentLogPage === 1} className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">上一页</button>
+                  <span className="px-2 text-xs text-gray-500 dark:text-gray-400">{currentLogPage} / {logTotalPages}</span>
+                  <button onClick={() => setLogPage((page) => Math.min(logTotalPages, page + 1))} disabled={currentLogPage === logTotalPages} className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">下一页</button>
+                  <button onClick={() => setLogPage(logTotalPages)} disabled={currentLogPage === logTotalPages} className="rounded border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">末页</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
