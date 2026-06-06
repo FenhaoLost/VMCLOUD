@@ -35,6 +35,15 @@ jobs:
           go-version: "1.22.x"
           cache-dependency-path: backend/go.sum
 
+      - name: Set version from tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "CLICD_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+          else
+            echo "CLICD_VERSION=dev" >> $GITHUB_ENV
+          fi
+
       - name: Build
         shell: bash
         run: bash build.sh

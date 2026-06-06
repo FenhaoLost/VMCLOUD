@@ -63,3 +63,4 @@ backend/tmp/
 .DS_Store
 Thumbs.db
 linux.txt
+push-release.ps1

@@ -404,6 +404,44 @@ func fetchLatestRelease(repo string) (*githubRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	setGitHubRequestHeaders(req)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		if fallback, fallbackErr := fetchLatestReleaseFallback(repo); fallbackErr == nil {
+			return fallback, nil
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		apiErr := fmt.Errorf("GitHub API 返回 %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		if fallback, fallbackErr := fetchLatestReleaseFallback(repo); fallbackErr == nil {
+			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+				fmt.Println("GitHub API 被限流，已切换到备用检查方式。")
+			} else {
+				fmt.Println("GitHub API 不可用，已切换到备用检查方式。")
+			}
+			return fallback, nil
+		}
+		return nil, apiErr
+	}
+
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
+	return &release, nil
+}
+
+func fetchLatestReleaseFallback(repo string) (*githubRelease, error) {
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://github.com/%s/releases/latest", repo), nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
 
 	client := &http.Client{Timeout: 20 * time.Second}
@@ -412,17 +450,54 @@ func fetchLatestRelease(repo string) (*githubRelease, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("GitHub API 返回 %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("GitHub releases/latest 返回 %s", resp.Status)
 	}
 
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, err
+	tag := latestTagFromPath(resp.Request.URL.Path)
+	if tag == "" {
+		return nil, fmt.Errorf("无法从 GitHub releases/latest 跳转结果解析最新版本")
 	}
-	return &release, nil
+
+	const assetName = "clicd-linux-amd64.tar.gz"
+	return &githubRelease{
+		TagName: tag,
+		Name:    tag,
+		HTMLURL: fmt.Sprintf("https://github.com/%s/releases/tag/%s", repo, tag),
+		Assets: []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		}{
+			{
+				Name:               assetName,
+				BrowserDownloadURL: fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, assetName),
+			},
+		},
+	}, nil
+}
+
+func latestTagFromPath(path string) string {
+	const marker = "/releases/tag/"
+	idx := strings.Index(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	tag := strings.TrimSpace(path[idx+len(marker):])
+	if slash := strings.Index(tag, "/"); slash >= 0 {
+		tag = tag[:slash]
+	}
+	return tag
+}
+
+func setGitHubRequestHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
+	token := strings.TrimSpace(os.Getenv("CLICD_GITHUB_TOKEN"))
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 func findReleaseAsset(release *githubRelease, name string) string {
@@ -495,7 +570,7 @@ func downloadFile(url, dest string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
+	setGitHubRequestHeaders(req)
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
