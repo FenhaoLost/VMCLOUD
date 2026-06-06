@@ -34,6 +34,9 @@ func updateOversell(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
 		return
 	}
+	if cfg.SubUserSnapshotLimit <= 0 {
+		cfg.SubUserSnapshotLimit = 3
+	}
 
 	// Apply KSM
 	if cfg.KSMEnabled {

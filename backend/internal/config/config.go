@@ -56,44 +56,52 @@ type AuditLog struct {
 
 // OversellConfig controls host-level overselling behavior
 type OversellConfig struct {
-	CPUOvercommit  int  `json:"cpu_overcommit"`  // multiplier, e.g. 4 means 4x oversell
-	RAMOvercommit  int  `json:"ram_overcommit"`  // multiplier
-	DiskOvercommit int  `json:"disk_overcommit"` // multiplier
-	KSMEnabled     bool `json:"ksm_enabled"`     // kernel same-page merging
-	Swappiness     int  `json:"swappiness"`      // 0-100, lower = less swap
+	CPUOvercommit        int  `json:"cpu_overcommit"`          // multiplier, e.g. 4 means 4x oversell
+	RAMOvercommit        int  `json:"ram_overcommit"`          // multiplier
+	DiskOvercommit       int  `json:"disk_overcommit"`         // multiplier
+	KSMEnabled           bool `json:"ksm_enabled"`             // kernel same-page merging
+	Swappiness           int  `json:"swappiness"`              // 0-100, lower = less swap
+	SubUserSnapshotLimit int  `json:"sub_user_snapshot_limit"` // legacy default for migrating old containers
 }
 
 // Container represents an LXC container configuration
 type Container struct {
-	ID               int           `json:"id"`
-	UUID             string        `json:"uuid"`
-	Name             string        `json:"name"`
-	LXCName          string        `json:"lxc_name,omitempty"`
-	Template         string        `json:"template"`
-	VCPU             float64       `json:"vcpu"`
-	RAMMB            int           `json:"ram_mb"`
-	DiskGB           int           `json:"disk_gb"`
-	NetworkBWMbps    int           `json:"network_bw_mbps"`
-	MonthlyTrafficGB int           `json:"monthly_traffic_gb"`
-	TrafficMode      string        `json:"traffic_mode"`   // "total" or "in_out"
-	TrafficInGB      int           `json:"traffic_in_gb"`  // 0 = unlimited
-	TrafficOutGB     int           `json:"traffic_out_gb"` // 0 = unlimited
-	TrafficUsedRX    int64         `json:"traffic_used_rx"`
-	TrafficUsedTX    int64         `json:"traffic_used_tx"`
-	TrafficResetDate string        `json:"traffic_reset_date"`
-	IOSpeedMBps      int           `json:"io_speed_mbps"`
-	Status           string        `json:"status"`
-	IP               string        `json:"ip"`
-	IPv6             string        `json:"ipv6"`
-	IPv6PrefixLen    int           `json:"ipv6_prefix_len"`
-	IPv6Interface    string        `json:"ipv6_interface"`
-	VNCPort          int           `json:"vnc_port"`
-	SSHPort          int           `json:"ssh_port"`
-	SSHPassword      string        `json:"ssh_password"`
-	PortMappings     []PortMapping `json:"port_mappings"`
-	PortMappingLimit int           `json:"port_mapping_limit"`
-	CreatedAt        string        `json:"created_at"`
-	ExpiresAt        string        `json:"expires_at"`
+	ID                            int           `json:"id"`
+	UUID                          string        `json:"uuid"`
+	Name                          string        `json:"name"`
+	LXCName                       string        `json:"lxc_name,omitempty"`
+	Template                      string        `json:"template"`
+	VCPU                          float64       `json:"vcpu"`
+	RAMMB                         int           `json:"ram_mb"`
+	DiskGB                        int           `json:"disk_gb"`
+	NetworkBWMbps                 int           `json:"network_bw_mbps"`
+	MonthlyTrafficGB              int           `json:"monthly_traffic_gb"`
+	TrafficMode                   string        `json:"traffic_mode"`   // "total" or "in_out"
+	TrafficInGB                   int           `json:"traffic_in_gb"`  // 0 = unlimited
+	TrafficOutGB                  int           `json:"traffic_out_gb"` // 0 = unlimited
+	TrafficUsedRX                 int64         `json:"traffic_used_rx"`
+	TrafficUsedTX                 int64         `json:"traffic_used_tx"`
+	TrafficResetDate              string        `json:"traffic_reset_date"`
+	IOSpeedMBps                   int           `json:"io_speed_mbps"`
+	Status                        string        `json:"status"`
+	IP                            string        `json:"ip"`
+	IPv6                          string        `json:"ipv6"`
+	IPv6PrefixLen                 int           `json:"ipv6_prefix_len"`
+	IPv6Interface                 string        `json:"ipv6_interface"`
+	VNCPort                       int           `json:"vnc_port"`
+	SSHPort                       int           `json:"ssh_port"`
+	SSHPassword                   string        `json:"ssh_password"`
+	PortMappings                  []PortMapping `json:"port_mappings"`
+	PortMappingLimit              int           `json:"port_mapping_limit"`
+	SnapshotLimit                 int           `json:"snapshot_limit"`
+	CreatedAt                     string        `json:"created_at"`
+	ExpiresAt                     string        `json:"expires_at"`
+	SnapshotScheduleEnabled       bool          `json:"snapshot_schedule_enabled"`
+	SnapshotScheduleIntervalHours int           `json:"snapshot_schedule_interval_hours"`
+	SnapshotScheduleTime          string        `json:"snapshot_schedule_time"`
+	SnapshotScheduleLastRun       string        `json:"snapshot_schedule_last_run"`
+	SnapshotScheduleNextRun       string        `json:"snapshot_schedule_next_run"`
+	SnapshotScheduleCreatedBy     string        `json:"snapshot_schedule_created_by"`
 }
 
 // LxcName returns the internal LXC container name (ct-{id})
@@ -138,6 +146,18 @@ type SubUser struct {
 	CreatedAt      string   `json:"created_at"`
 }
 
+type Snapshot struct {
+	ID            string `json:"id"`
+	ContainerID   int    `json:"container_id"`
+	ContainerName string `json:"container_name"`
+	LXCName       string `json:"lxc_name"`
+	CreatedAt     string `json:"created_at"`
+	CreatedBy     string `json:"created_by"`
+	Scheduled     bool   `json:"scheduled"`
+	Path          string `json:"path"`
+	SizeBytes     int64  `json:"size_bytes"`
+}
+
 // ClicdConfig is the main configuration structure
 type ClicdConfig struct {
 	AdminUser       string          `json:"admin_user"`
@@ -157,10 +177,13 @@ type ClicdConfig struct {
 	Tasks           []SavedTask     `json:"tasks"`
 	LoginLogs       []SavedLoginLog `json:"login_logs"`
 	EnabledImages   []string        `json:"enabled_images"`
+	Snapshots       []Snapshot      `json:"snapshots"`
 }
 
 var configPath string
 var AppConfig *ClicdConfig
+
+const DefaultSnapshotLimit = 3
 
 func getConfigPath() string {
 	if configPath != "" {
@@ -249,12 +272,14 @@ func InitConfig() (*ClicdConfig, error) {
 			Tasks:           []SavedTask{},
 			LoginLogs:       []SavedLoginLog{},
 			Oversell: OversellConfig{
-				CPUOvercommit:  4,
-				RAMOvercommit:  1,
-				DiskOvercommit: 2,
-				KSMEnabled:     true,
-				Swappiness:     10,
+				CPUOvercommit:        4,
+				RAMOvercommit:        1,
+				DiskOvercommit:       2,
+				KSMEnabled:           true,
+				Swappiness:           10,
+				SubUserSnapshotLimit: 3,
 			},
+			Snapshots: []Snapshot{},
 		}
 
 		if err := SaveConfig(); err != nil {
@@ -304,8 +329,20 @@ func InitConfig() (*ClicdConfig, error) {
 	if AppConfig.Containers == nil {
 		AppConfig.Containers = make([]Container, 0)
 	}
+	if AppConfig.Snapshots == nil {
+		AppConfig.Snapshots = make([]Snapshot, 0)
+	}
+	if AppConfig.Oversell.SubUserSnapshotLimit <= 0 {
+		AppConfig.Oversell.SubUserSnapshotLimit = 3
+	}
 	changed := ensureContainerUUIDs()
 	if ensureContainerPortMappingLimits() {
+		changed = true
+	}
+	if ensureContainerSnapshotLimits() {
+		changed = true
+	}
+	if ensureContainerSnapshotScheduleDefaults() {
 		changed = true
 	}
 	if removeLegacyVNCMappings() {
@@ -318,6 +355,21 @@ func InitConfig() (*ClicdConfig, error) {
 	}
 
 	return AppConfig, nil
+}
+
+func ensureContainerSnapshotScheduleDefaults() bool {
+	changed := false
+	for i := range AppConfig.Containers {
+		if AppConfig.Containers[i].SnapshotScheduleEnabled && AppConfig.Containers[i].SnapshotScheduleIntervalHours < 24 {
+			AppConfig.Containers[i].SnapshotScheduleIntervalHours = 24
+			changed = true
+		}
+		if AppConfig.Containers[i].SnapshotScheduleEnabled && AppConfig.Containers[i].SnapshotScheduleTime == "" {
+			AppConfig.Containers[i].SnapshotScheduleTime = "03:00"
+			changed = true
+		}
+	}
+	return changed
 }
 
 func ensureContainerUUIDs() bool {
@@ -353,6 +405,35 @@ func ensureContainerPortMappingLimits() bool {
 		}
 	}
 	return changed
+}
+
+func ensureContainerSnapshotLimits() bool {
+	changed := false
+	legacyLimit := AppConfig.Oversell.SubUserSnapshotLimit
+	if legacyLimit <= 0 {
+		legacyLimit = DefaultSnapshotLimit
+	}
+	for i := range AppConfig.Containers {
+		if AppConfig.Containers[i].SnapshotLimit <= 0 {
+			AppConfig.Containers[i].SnapshotLimit = legacyLimit
+			changed = true
+		}
+	}
+	return changed
+}
+
+func NormalizeSnapshotLimit(limit int) int {
+	if limit <= 0 {
+		return DefaultSnapshotLimit
+	}
+	return limit
+}
+
+func ContainerSnapshotLimit(c *Container) int {
+	if c == nil {
+		return DefaultSnapshotLimit
+	}
+	return NormalizeSnapshotLimit(c.SnapshotLimit)
 }
 
 func removeLegacyVNCMappings() bool {
@@ -408,12 +489,58 @@ func RemoveContainer(id int) bool {
 	for i, c := range AppConfig.Containers {
 		if c.ID == id {
 			removeSubUserContainerAccess(c.Name)
+			removeContainerSnapshotMetadata(id)
 			AppConfig.Containers = append(AppConfig.Containers[:i], AppConfig.Containers[i+1:]...)
 			SaveConfig()
 			return true
 		}
 	}
 	return false
+}
+
+func AddSnapshot(snapshot Snapshot) {
+	AppConfig.Snapshots = append(AppConfig.Snapshots, snapshot)
+	SaveConfig()
+}
+
+func FindSnapshot(id string) *Snapshot {
+	for i := range AppConfig.Snapshots {
+		if AppConfig.Snapshots[i].ID == id {
+			return &AppConfig.Snapshots[i]
+		}
+	}
+	return nil
+}
+
+func RemoveSnapshot(id string) bool {
+	for i := range AppConfig.Snapshots {
+		if AppConfig.Snapshots[i].ID == id {
+			AppConfig.Snapshots = append(AppConfig.Snapshots[:i], AppConfig.Snapshots[i+1:]...)
+			SaveConfig()
+			return true
+		}
+	}
+	return false
+}
+
+func ContainerSnapshots(containerID int) []Snapshot {
+	result := make([]Snapshot, 0)
+	for _, snapshot := range AppConfig.Snapshots {
+		if snapshot.ContainerID == containerID {
+			result = append(result, snapshot)
+		}
+	}
+	return result
+}
+
+func removeContainerSnapshotMetadata(containerID int) {
+	filtered := make([]Snapshot, 0, len(AppConfig.Snapshots))
+	for _, snapshot := range AppConfig.Snapshots {
+		if snapshot.ContainerID != containerID {
+			filtered = append(filtered, snapshot)
+		}
+	}
+	AppConfig.Snapshots = filtered
 }
 
 func removeSubUserContainerAccess(containerName string) {

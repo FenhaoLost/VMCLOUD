@@ -538,8 +538,15 @@ function toPlaceholder(cfg: CreateContainerRequest): DisplayContainer {
     ssh_password: '',
     port_mappings: [],
     port_mapping_limit: 2,
+    snapshot_limit: cfg.snapshot_limit || 3,
     created_at: '',
     expires_at: cfg.expires_at,
+    snapshot_schedule_enabled: false,
+    snapshot_schedule_interval_hours: 24,
+    snapshot_schedule_time: '03:00',
+    snapshot_schedule_last_run: '',
+    snapshot_schedule_next_run: '',
+    snapshot_schedule_created_by: '',
     isPlaceholder: true,
   }
 }

@@ -50,6 +50,7 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/images/enabled", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleEnabledImages))))
 	mux.HandleFunc("/api/dashboard", corsMiddleware(api.AdminMiddleware(api.HandleDashboard)))
 	mux.HandleFunc("/api/host-info", corsMiddleware(api.AdminMiddleware(api.HandleHostInfo)))
+	mux.HandleFunc("/api/snapshots", corsMiddleware(api.AdminMiddleware(api.HandleSnapshots)))
 	mux.HandleFunc("/api/ipv6/status", corsMiddleware(api.AdminMiddleware(api.HandleIPv6Status)))
 	mux.HandleFunc("/api/oversell", corsMiddleware(api.AdminMiddleware(api.HandleOversell)))
 	mux.HandleFunc("/api/oversell/status", corsMiddleware(api.AdminMiddleware(api.HandleOversellStatus)))

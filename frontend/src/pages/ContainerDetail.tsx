@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  Camera,
+  Clock,
   Copy,
   Cpu,
   HardDrive,
@@ -29,9 +31,12 @@ import {
   Container,
   ContainerUsage,
   createSubUser,
+  createContainerSnapshot,
   deleteContainer,
+  deleteContainerSnapshot,
   deletePortMapping,
   getContainer,
+  getContainerSnapshots,
   getContainerUsage,
   getHostInfo,
   getTrafficInfo,
@@ -44,8 +49,13 @@ import {
   restartContainer,
   startContainer,
   stopContainer,
+  Snapshot,
+  SnapshotSchedule,
   Template,
   updateContainerExpiry,
+  updateSnapshotQuota,
+  updateSnapshotSchedule,
+  restoreContainerSnapshot,
   resetTraffic,
   updateTrafficLimit,
   updateResourceLimit,
@@ -125,6 +135,15 @@ export default function ContainerDetail() {
   const [resourceEdit, setResourceEdit] = useState({ vcpu: 1, ramMb: 512, ioMbps: 500, bwMbps: 100 })
   const [savingResource, setSavingResource] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [showSnapshots, setShowSnapshots] = useState(false)
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([])
+  const [snapshotQuota, setSnapshotQuota] = useState(3)
+  const [snapshotQuotaDraft, setSnapshotQuotaDraft] = useState(3)
+  const [editingSnapshotQuota, setEditingSnapshotQuota] = useState(false)
+  const [snapshotSchedule, setSnapshotSchedule] = useState<SnapshotSchedule | null>(null)
+  const [snapshotBusy, setSnapshotBusy] = useState('')
+  const [showSnapshotSchedule, setShowSnapshotSchedule] = useState(false)
+  const [snapshotScheduleDraft, setSnapshotScheduleDraft] = useState({ intervalHours: 24, time: '03:00' })
 
   const fetchContainer = useCallback(async () => {
     if (!containerIdentifier) return
@@ -141,6 +160,21 @@ export default function ContainerDetail() {
       setLoading(false)
     }
   }, [containerIdentifier, isSubUser])
+
+  const fetchSnapshots = useCallback(async () => {
+    if (!containerIdentifier) return
+    try {
+      const res = await getContainerSnapshots(containerIdentifier)
+      const data = res.data.data
+      const quota = data?.quota || container?.snapshot_limit || 3
+      setSnapshots(data?.snapshots || [])
+      setSnapshotQuota(quota)
+      setSnapshotQuotaDraft(quota)
+      setSnapshotSchedule(data?.schedule || null)
+    } catch (err) {
+      console.error('Failed to fetch snapshots:', err)
+    }
+  }, [containerIdentifier, container?.snapshot_limit])
 
   const appendUsagePoint = useCallback((nextUsage: ContainerUsage, currentContainer: Container | null) => {
     if (!containerIdentifier || !currentContainer) return
@@ -197,6 +231,10 @@ export default function ContainerDetail() {
     const timer = window.setInterval(fetchUsage, 5000)
     return () => window.clearInterval(timer)
   }, [fetchUsage])
+
+  useEffect(() => {
+    if (showSnapshots) fetchSnapshots()
+  }, [showSnapshots, fetchSnapshots])
 
   // Poll task status for this container
   useEffect(() => {
@@ -478,6 +516,108 @@ export default function ContainerDetail() {
     }
   }
 
+  const handleCreateSnapshot = async () => {
+    if (!containerIdentifier) return
+    if (isSubUser && snapshots.length >= snapshotQuota) {
+      await dialog.alert('快照配额已满', '已达到管理员设置的快照配额，请先删除旧快照。')
+      return
+    }
+    if (container?.status === 'running') {
+      const confirmed = await dialog.confirm(
+        '拍摄快照',
+        `拍摄快照需要先关机，完成后会自动重启容器 ${container.name}。是否继续？`
+      )
+      if (!confirmed) return
+    }
+    setSnapshotBusy('create')
+    try {
+      await createContainerSnapshot(containerIdentifier)
+      await Promise.all([fetchSnapshots(), fetchContainer()])
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('创建快照失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setSnapshotBusy('')
+    }
+  }
+
+  const openSnapshotSchedule = () => {
+    setSnapshotScheduleDraft({
+      intervalHours: Math.max(snapshotSchedule?.interval_hours || 24, 24),
+      time: snapshotSchedule?.time || '03:00',
+    })
+    setShowSnapshotSchedule(true)
+  }
+
+  const saveSnapshotSchedule = async (enabled: boolean) => {
+    if (!containerIdentifier) return
+    const intervalHours = snapshotScheduleDraft.intervalHours
+    const scheduleTime = snapshotScheduleDraft.time || '03:00'
+    if (enabled && intervalHours < 24) {
+      await dialog.alert('参数错误', '自动快照周期最低是 1 天一次。')
+      return
+    }
+    setSnapshotBusy('schedule')
+    try {
+      await updateSnapshotSchedule(containerIdentifier, enabled, intervalHours, scheduleTime)
+      await Promise.all([fetchSnapshots(), fetchContainer()])
+      setShowSnapshotSchedule(false)
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('定时快照失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setSnapshotBusy('')
+    }
+  }
+
+  const saveSnapshotQuota = async () => {
+    if (!containerIdentifier || isSubUser) return
+    const nextQuota = Math.max(1, Math.round(snapshotQuotaDraft || 1))
+    setSnapshotBusy('quota')
+    try {
+      await updateSnapshotQuota(containerIdentifier, nextQuota)
+      setSnapshotQuota(nextQuota)
+      setSnapshotQuotaDraft(nextQuota)
+      setEditingSnapshotQuota(false)
+      await Promise.all([fetchSnapshots(), fetchContainer()])
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('保存快照配额失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setSnapshotBusy('')
+    }
+  }
+
+  const handleDeleteSnapshot = async (snapshot: Snapshot) => {
+    if (!containerIdentifier) return
+    if (!(await dialog.confirm('删除快照', `确定删除 ${snapshot.created_at} 的快照吗？`))) return
+    setSnapshotBusy(snapshot.id)
+    try {
+      await deleteContainerSnapshot(containerIdentifier, snapshot.id)
+      await fetchSnapshots()
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('删除快照失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setSnapshotBusy('')
+    }
+  }
+
+  const handleRestoreSnapshot = async (snapshot: Snapshot) => {
+    if (!containerIdentifier) return
+    if (!(await dialog.confirm('恢复快照', `确定恢复到 ${snapshot.created_at} 的快照吗？当前容器数据会被覆盖。`))) return
+    setSnapshotBusy(snapshot.id)
+    try {
+      await restoreContainerSnapshot(containerIdentifier, snapshot.id)
+      await Promise.all([fetchSnapshots(), fetchContainer()])
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('恢复快照失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setSnapshotBusy('')
+    }
+  }
+
   const copyText = async (text: string) => {
     try {
       await copyText(text)
@@ -641,6 +781,10 @@ export default function ContainerDetail() {
                 NAT 管理
               </ActionButton>
             </>
+            <ActionButton onClick={() => setShowSnapshots(true)} disabled={!!taskStatus || !!snapshotBusy}>
+              <Camera className="w-3.5 h-3.5" />
+              快照
+            </ActionButton>
             {!isSubUser && (
               <ActionButton onClick={openReinstall} disabled={!!taskStatus || isExpired}>
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -842,6 +986,171 @@ export default function ContainerDetail() {
             ) : (
               <div className="h-full flex items-center justify-center bg-gray-950 text-gray-400 rounded-md">容器未运行，请先开机</div>
             )}
+          </div>
+        </Modal>
+      )}
+
+      {showSnapshots && (
+        <Modal
+          title="快照"
+          onClose={() => {
+            setShowSnapshots(false)
+            setEditingSnapshotQuota(false)
+          }}
+          wide
+          extra={
+            <div className="flex items-center gap-2">
+              <button
+                onClick={openSnapshotSchedule}
+                disabled={!!snapshotBusy}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs ${
+                  snapshotSchedule?.enabled
+                    ? 'border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                    : 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                } disabled:opacity-50`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                {snapshotBusy === 'schedule' ? '处理中...' : snapshotSchedule?.enabled ? '定时设置' : '定时快照'}
+              </button>
+              <button
+                onClick={handleCreateSnapshot}
+                disabled={!!snapshotBusy || (isSubUser && snapshots.length >= snapshotQuota)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-black px-3 py-1.5 text-xs text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                {snapshotBusy === 'create' ? '创建中...' : '新建快照'}
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+              <div>
+                快照数量：
+                <span className="font-mono text-gray-900">
+                  {snapshots.length}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>子用户配额：</span>
+                <span className="font-mono text-gray-900">{snapshotQuota}</span>
+                {!isSubUser && (
+                  <button
+                    onClick={() => {
+                      setSnapshotQuotaDraft(snapshotQuota)
+                      setEditingSnapshotQuota((value) => !value)
+                    }}
+                    className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-50"
+                    disabled={snapshotBusy === 'quota'}
+                  >
+                    <Pencil className="w-3 h-3" />
+                    修改
+                  </button>
+                )}
+              </div>
+              <div>
+                定时状态：
+                <span className="text-gray-900">
+                  {snapshotSchedule?.enabled ? `已开启，每 ${formatScheduleInterval(snapshotSchedule.interval_hours || 24)}，${snapshotSchedule.time || '03:00'} 执行` : '未开启'}
+                </span>
+              </div>
+              {snapshotSchedule?.next_run && (
+                <div>下次执行：<span className="font-mono text-gray-900">{formatDateTime(snapshotSchedule.next_run)}</span></div>
+              )}
+            </div>
+
+            {editingSnapshotQuota && !isSubUser && (
+              <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3">
+                <Field label="子用户每台容器快照上限">
+                  <input
+                    type="number"
+                    min={1}
+                    max={999}
+                    value={snapshotQuotaDraft}
+                    onChange={(event) => setSnapshotQuotaDraft(Math.max(1, Math.round(Number(event.target.value) || 1)))}
+                    className="w-44 px-3 py-2 border border-gray-300 rounded-md text-sm text-black bg-white focus:outline-none focus:ring-2 focus:ring-black focus:border-black"
+                  />
+                </Field>
+                <div className="flex gap-2 pb-0.5">
+                  <button
+                    onClick={() => {
+                      setEditingSnapshotQuota(false)
+                      setSnapshotQuotaDraft(snapshotQuota)
+                    }}
+                    className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md"
+                    disabled={snapshotBusy === 'quota'}
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={saveSnapshotQuota}
+                    disabled={snapshotBusy === 'quota'}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-black text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    {snapshotBusy === 'quota' ? '保存中...' : '保存'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <SnapshotTable
+              snapshots={snapshots}
+              busy={snapshotBusy}
+              onRestore={handleRestoreSnapshot}
+              onDelete={handleDeleteSnapshot}
+            />
+          </div>
+        </Modal>
+      )}
+
+      {showSnapshotSchedule && (
+        <Modal title="定时快照" onClose={() => setShowSnapshotSchedule(false)}>
+          <div className="space-y-4">
+            <Field label="自动快照周期">
+              <select
+                value={snapshotScheduleDraft.intervalHours}
+                onChange={(e) => setSnapshotScheduleDraft({ ...snapshotScheduleDraft, intervalHours: Number(e.target.value) })}
+                className={inputClass}
+              >
+                <option value={24}>1 天</option>
+                <option value={72}>3 天</option>
+                <option value={168}>7 天</option>
+                <option value={336}>14 天</option>
+              </select>
+            </Field>
+            <Field label="执行时间">
+              <input
+                type="time"
+                value={snapshotScheduleDraft.time}
+                onChange={(e) => setSnapshotScheduleDraft({ ...snapshotScheduleDraft, time: e.target.value || '03:00' })}
+                className={inputClass}
+              />
+            </Field>
+            <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500">
+              {`每 ${formatScheduleInterval(snapshotScheduleDraft.intervalHours)} 在 ${snapshotScheduleDraft.time || '03:00'} 执行。`}
+            </div>
+            <div className="flex justify-between gap-3 pt-2">
+              {snapshotSchedule?.enabled ? (
+                <button
+                  onClick={() => saveSnapshotSchedule(false)}
+                  disabled={snapshotBusy === 'schedule'}
+                  className="px-4 py-2 text-sm text-red-600 border border-red-200 rounded-md hover:bg-red-50 disabled:opacity-50"
+                >
+                  关闭定时
+                </button>
+              ) : <div />}
+              <div className="flex gap-2">
+                <button onClick={() => setShowSnapshotSchedule(false)} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md">取消</button>
+                <button
+                  onClick={() => saveSnapshotSchedule(true)}
+                  disabled={snapshotBusy === 'schedule'}
+                  className="px-4 py-2 text-sm bg-black text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
+                >
+                  {snapshotBusy === 'schedule' ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
           </div>
         </Modal>
       )}
@@ -1229,6 +1538,65 @@ function PlainRow({ label, value, mono = false, copyValue, onCopy, children }: {
   )
 }
 
+function SnapshotTable({ snapshots, busy, onRestore, onDelete }: {
+  snapshots: Snapshot[]
+  busy: string
+  onRestore: (snapshot: Snapshot) => void
+  onDelete: (snapshot: Snapshot) => void
+}) {
+  if (snapshots.length === 0) {
+    return <p className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-400">暂无快照</p>
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-200">
+      <table className="w-full min-w-[760px] text-sm">
+        <thead className="border-b border-gray-200 bg-gray-50 text-xs text-gray-500">
+          <tr>
+            <TableHead>快照时间</TableHead>
+            <TableHead>类型</TableHead>
+            <TableHead>创建者</TableHead>
+            <TableHead>大小</TableHead>
+            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">操作</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {snapshots.map((snapshot) => (
+            <tr key={snapshot.id}>
+              <td className="px-3 py-2 font-mono text-xs text-gray-800">{snapshot.created_at}</td>
+              <td className="px-3 py-2">
+                <span className={`rounded px-2 py-1 text-xs ${snapshot.scheduled ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
+                  {snapshot.scheduled ? '定时' : '手动'}
+                </span>
+              </td>
+              <td className="px-3 py-2 text-xs text-gray-600">{snapshot.created_by || '-'}</td>
+              <td className="px-3 py-2 font-mono text-xs text-gray-600">{formatBytes(snapshot.size_bytes || 0)}</td>
+              <td className="px-3 py-2">
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    onClick={() => onRestore(snapshot)}
+                    disabled={!!busy}
+                    className="rounded border border-gray-300 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    {busy === snapshot.id ? '处理中...' : '恢复'}
+                  </button>
+                  <button
+                    onClick={() => onDelete(snapshot)}
+                    disabled={!!busy}
+                    className="rounded border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function MappingTable({ mappings, publicHost, onEdit, onDelete, compact = false, isSubUser = false }: { mappings: PortMapping[]; publicHost: string; onEdit: (pm: PortMapping, index: number) => void; onDelete: (index: number) => void; compact?: boolean; isSubUser?: boolean }) {
   if (mappings.length === 0) {
     return <p className="text-sm text-gray-400">暂无端口映射</p>
@@ -1387,6 +1755,19 @@ function formatCPU(usec: number): string {
 function formatExpiration(value?: string): string {
   if (!value) return '长期有效'
   return value.length >= 10 ? value.slice(0, 10) : value
+}
+
+function formatDateTime(value?: string): string {
+  if (!value) return '-'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleString()
+}
+
+function formatScheduleInterval(hours: number): string {
+  if (hours === 24) return '1 天'
+  if (hours % 24 === 0) return `${hours / 24} 天`
+  return `${hours} 小时`
 }
 
 function formatRate(bytesPerSecond: number): string {

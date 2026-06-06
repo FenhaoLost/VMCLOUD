@@ -60,6 +60,9 @@ func main() {
 		// Start usage monitor (computes CPU/network/disk rates every 5s)
 		manager.StartUsageMonitor()
 
+		// Start scheduled snapshot scanner.
+		manager.StartSnapshotScheduler()
+
 		// Clean up stale container configs (LXC dir was deleted but config remains)
 		config.CleanStaleContainers()
 

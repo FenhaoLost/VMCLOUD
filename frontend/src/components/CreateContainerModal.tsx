@@ -24,6 +24,7 @@ const defaultForm: CreateContainerRequest = {
   io_speed_mbps: 0,
   extra_ports: [],
   port_mapping_count: 2,
+  snapshot_limit: 3,
   assign_ipv6: false,
   expires_at: '',
 }
@@ -94,7 +95,13 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
     const containers: CreateContainerRequest[] = []
     for (let i = 0; i < batchCount; i++) {
       const name = batchCount > 1 ? `${boundedForm.name}-${i + 1}` : boundedForm.name
-      containers.push({ ...boundedForm, name, port_mapping_count: Math.max(2, boundedForm.port_mapping_count || 2), extra_ports: [] })
+      containers.push({
+        ...boundedForm,
+        name,
+        port_mapping_count: Math.max(2, boundedForm.port_mapping_count || 2),
+        snapshot_limit: Math.max(1, boundedForm.snapshot_limit || 3),
+        extra_ports: [],
+      })
     }
 
     setLoading(true)
@@ -248,6 +255,15 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
             </div>
           </Field>
 
+          <Field label="子用户快照上限">
+            <NumberInput
+              value={form.snapshot_limit}
+              min={1}
+              max={999}
+              onChange={(value) => setForm({ ...form, snapshot_limit: Math.max(1, Math.round(value || 1)) })}
+            />
+          </Field>
+
           <Field label="到期时间">
             <div className="relative">
               <CalendarClock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -325,6 +341,7 @@ function clampCreateForm(form: CreateContainerRequest, maxVCPU: number, maxRAMMB
     vcpu: clampVCPU(form.vcpu, maxVCPU),
     ram_mb: clampInt(form.ram_mb, 128, maxRAMMB, 512),
     disk_gb: clampInt(form.disk_gb, 1, maxDiskGB, 10),
+    snapshot_limit: clampInt(form.snapshot_limit, 1, undefined, 3),
   }
 }
 

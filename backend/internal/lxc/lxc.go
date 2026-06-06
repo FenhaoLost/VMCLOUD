@@ -216,6 +216,7 @@ type ContainerConfig struct {
 	IOSpeedMBps      int     `json:"io_speed_mbps"`
 	ExtraPorts       []int   `json:"extra_ports"`
 	PortMappingCount int     `json:"port_mapping_count"`
+	SnapshotLimit    int     `json:"snapshot_limit"`
 	AssignIPv6       bool    `json:"assign_ipv6"`
 	ExpiresAt        string  `json:"expires_at"`
 }
@@ -225,6 +226,12 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 	tmpl := FindTemplate(cfg.TemplateID)
 	if tmpl == nil {
 		return fmt.Errorf("template not found: %s", cfg.TemplateID)
+	}
+	if cfg.PortMappingCount < 2 {
+		cfg.PortMappingCount = 2
+	}
+	if cfg.SnapshotLimit <= 0 {
+		cfg.SnapshotLimit = config.DefaultSnapshotLimit
 	}
 
 	if !config.IsValidContainerName(cfg.Name) {
@@ -351,6 +358,7 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		SSHPassword:      sshPassword,
 		PortMappings:     portMappings,
 		PortMappingLimit: cfg.PortMappingCount,
+		SnapshotLimit:    config.NormalizeSnapshotLimit(cfg.SnapshotLimit),
 		CreatedAt:        now,
 		ExpiresAt:        cfg.ExpiresAt,
 	}
@@ -1458,6 +1466,10 @@ func (m *Manager) DestroyContainer(id int) error {
 		}
 		return fmt.Errorf("container still exists after cleanup with status %s", status)
 	}
+	snapshotDir := filepath.Join(snapshotBaseDir(), lxcName)
+	if err := safePathUnder(snapshotDir, snapshotBaseDir()); err == nil {
+		os.RemoveAll(snapshotDir)
+	}
 
 	if !config.RemoveContainer(id) {
 		return fmt.Errorf("container destroyed but config entry was not removed: %d", id)
@@ -1986,6 +1998,7 @@ func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
 			Status:           status,
 			CreatedAt:        time.Now().Format(time.RFC3339),
 			PortMappingLimit: 2,
+			SnapshotLimit:    config.DefaultSnapshotLimit,
 		}
 
 		if status == "running" {

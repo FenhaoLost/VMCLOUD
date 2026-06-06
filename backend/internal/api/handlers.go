@@ -69,6 +69,8 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 		updateExpiry(w, r, id)
 	case action == "ipv6" && r.Method == http.MethodPost:
 		assignIPv6(w, r, id)
+	case action == "snapshots" || strings.HasPrefix(action, "snapshots/"):
+		handleContainerSnapshots(w, r, id, action)
 	case action == "port-mappings" && r.Method == http.MethodPost:
 		addPortMapping(w, r, id)
 	case strings.HasPrefix(action, "port-mappings/") && r.Method == http.MethodPut:
@@ -120,6 +122,9 @@ func createContainer(w http.ResponseWriter, r *http.Request) {
 	if cfg.PortMappingCount > 64 {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Port mapping count cannot exceed 64"})
 		return
+	}
+	if cfg.SnapshotLimit <= 0 {
+		cfg.SnapshotLimit = config.DefaultSnapshotLimit
 	}
 	if err := validateContainerResourceRequest(cfg.VCPU, cfg.RAMMB, cfg.DiskGB); err != nil {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})

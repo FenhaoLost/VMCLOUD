@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Code2,
+  Camera,
   LayoutDashboard,
   LogOut,
   Package,
@@ -31,6 +32,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const isImagesPage = location.pathname.startsWith('/images')
   const isOversellPage = location.pathname.startsWith('/oversell')
+  const isSnapshotsPage = location.pathname.startsWith('/snapshots')
   const isAuditLogsPage = location.pathname.startsWith('/audit-logs')
   const isApiIntegrationPage = location.pathname.startsWith('/api-integration')
   const isSecurityPage = location.pathname.startsWith('/security')
@@ -134,6 +136,18 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             >
               <ShieldAlert className="w-4 h-4" />
               {!collapsed && <span>安全告警</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/snapshots')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                isSnapshotsPage
+                  ? 'bg-black text-white'
+                  : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              <Camera className="w-4 h-4" />
+              {!collapsed && <span>快照管理</span>}
             </button>
 
             <button

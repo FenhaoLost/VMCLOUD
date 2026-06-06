@@ -504,6 +504,12 @@ func HandleBatchCreate(w http.ResponseWriter, r *http.Request) {
 		if req.Containers[i].DiskGB < 1 {
 			req.Containers[i].DiskGB = 5
 		}
+		if req.Containers[i].PortMappingCount < 2 {
+			req.Containers[i].PortMappingCount = 2
+		}
+		if req.Containers[i].SnapshotLimit <= 0 {
+			req.Containers[i].SnapshotLimit = config.DefaultSnapshotLimit
+		}
 		if err := validateContainerResourceRequest(req.Containers[i].VCPU, req.Containers[i].RAMMB, req.Containers[i].DiskGB); err != nil {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: name + ": " + err.Error()})
 			return

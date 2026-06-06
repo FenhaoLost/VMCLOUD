@@ -71,8 +71,15 @@ export interface Container {
   ssh_password: string
   port_mappings: PortMapping[]
   port_mapping_limit: number
+  snapshot_limit: number
   created_at: string
   expires_at: string
+  snapshot_schedule_enabled: boolean
+  snapshot_schedule_interval_hours: number
+  snapshot_schedule_time: string
+  snapshot_schedule_last_run: string
+  snapshot_schedule_next_run: string
+  snapshot_schedule_created_by: string
 }
 
 export interface Template {
@@ -100,6 +107,7 @@ export interface CreateContainerRequest {
   io_speed_mbps: number
   extra_ports: number[]
   port_mapping_count: number
+  snapshot_limit: number
   assign_ipv6: boolean
   expires_at: string
 }
@@ -353,6 +361,62 @@ export const getOversellStatus = () =>
 
 export const reclaimMemory = () =>
   api.post<APIResponse<ReclaimResult>>('/oversell/reclaim')
+
+// Snapshots
+export interface Snapshot {
+  id: string
+  container_id: number
+  container_name: string
+  lxc_name: string
+  created_at: string
+  created_by: string
+  scheduled: boolean
+  path: string
+  size_bytes: number
+}
+
+export interface SnapshotSchedule {
+  enabled: boolean
+  interval_hours: number
+  time: string
+  last_run: string
+  next_run: string
+  created_by: string
+}
+
+export interface ContainerSnapshotsResponse {
+  snapshots: Snapshot[]
+  quota: number
+  schedule: SnapshotSchedule
+}
+
+export const getSnapshots = () =>
+  api.get<APIResponse<Snapshot[]>>('/snapshots')
+
+export const getContainerSnapshots = (id: ContainerIdentifier) =>
+  api.get<APIResponse<ContainerSnapshotsResponse>>(`/containers/${id}/snapshots`)
+
+export const createContainerSnapshot = (id: ContainerIdentifier) =>
+  api.post<APIResponse<Snapshot>>(`/containers/${id}/snapshots`, {}, { timeout: 600000 })
+
+export const deleteContainerSnapshot = (id: ContainerIdentifier, snapshotId: string) =>
+  api.delete<APIResponse>(`/containers/${id}/snapshots/${snapshotId}`, { timeout: 600000 })
+
+export const restoreContainerSnapshot = (id: ContainerIdentifier, snapshotId: string) =>
+  api.post<APIResponse>(`/containers/${id}/snapshots/${snapshotId}/restore`, {}, { timeout: 600000 })
+
+export const updateSnapshotSchedule = (id: ContainerIdentifier, enabled: boolean, intervalHours: number, time: string) =>
+  api.post<APIResponse<{ container: Container; snapshot?: Snapshot }>>(
+    `/containers/${id}/snapshots/schedule`,
+    { enabled, interval_hours: intervalHours, time },
+    { timeout: 600000 }
+  )
+
+export const updateSnapshotQuota = (id: ContainerIdentifier, snapshotLimit: number) =>
+  api.put<APIResponse<{ container: Container; quota: number }>>(
+    `/containers/${id}/snapshots/quota`,
+    { snapshot_limit: snapshotLimit }
+  )
 
 // WebSSH URL generator
 export const getWebSSHUrl = (containerName: string) => {

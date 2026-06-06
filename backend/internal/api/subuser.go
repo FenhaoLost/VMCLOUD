@@ -377,6 +377,12 @@ func isSubUserContainerActionAllowed(action string, method string) bool {
 	switch {
 	case action == "usage" || action == "traffic" || action == "random-port":
 		return method == http.MethodGet
+	case action == "snapshots":
+		return method == http.MethodGet || method == http.MethodPost
+	case action == "snapshots/schedule":
+		return method == http.MethodPost
+	case strings.HasPrefix(action, "snapshots/"):
+		return method == http.MethodDelete || method == http.MethodPost
 	case action == "start" || action == "stop" || action == "restart" || action == "reinstall":
 		return method == http.MethodPost
 	case strings.HasPrefix(action, "port-mappings/"):
