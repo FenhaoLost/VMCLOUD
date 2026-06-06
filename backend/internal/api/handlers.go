@@ -9,6 +9,7 @@ import (
 
 	"clicd/internal/config"
 	"clicd/internal/lxc"
+	"clicd/internal/version"
 )
 
 var lxcManager = lxc.NewManager()
@@ -450,4 +451,15 @@ func deletePortMapping(w http.ResponseWriter, r *http.Request, id int, indexStr 
 		return
 	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: mappings})
+}
+
+// HandleVersion returns the current CLICD version.
+func HandleVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
+		"version": version.Current(),
+	}})
 }

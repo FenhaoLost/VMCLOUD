@@ -1,5 +1,6 @@
 import { ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
+import { useTheme } from '../contexts/ThemeContext'
 
 export type StatsRangeKey = '30m' | '1h' | '1d' | '1w'
 
@@ -45,17 +46,19 @@ export default function ResourceStatsPanel({
   charts: ResourceChartConfig[]
 }) {
   return (
-    <section className="border border-gray-200 rounded-lg bg-white overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-gray-200 bg-white">
-        <h2 className="text-sm font-semibold text-gray-950">统计信息</h2>
+    <section className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+        <h2 className="text-sm font-semibold text-gray-950 dark:text-white">统计信息</h2>
         <div className="flex items-center gap-1.5">
-          <div className="inline-flex rounded border border-gray-200 bg-gray-50 p-0.5">
+          <div className="inline-flex rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-0.5">
             {(Object.keys(rangeLabels) as StatsRangeKey[]).map((item) => (
               <button
                 key={item}
                 onClick={() => onRangeChange(item)}
                 className={`h-7 px-3 rounded text-xs font-medium transition-colors ${
-                  range === item ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-500 hover:text-gray-900'
+                  range === item
+                    ? 'bg-gray-800 text-white shadow-sm dark:bg-white dark:text-black'
+                    : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
                 }`}
               >
                 {rangeLabels[item]}
@@ -64,7 +67,7 @@ export default function ResourceStatsPanel({
           </div>
           <button
             onClick={onRefresh}
-            className="h-8 w-8 inline-flex items-center justify-center rounded border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+            className="h-8 w-8 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white"
             title="刷新"
           >
             <RefreshCw className="w-4 h-4" />
@@ -90,11 +93,11 @@ function DetailedChart({ chart, className }: { chart: ResourceChartConfig; class
     <div className={`p-4 ${className}`}>
       <div className="flex items-start justify-between gap-3 mb-2">
         <div>
-          <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-950">
-            <span className="text-gray-500">{chart.icon}</span>
+          <div className="flex items-center gap-1.5 text-sm font-semibold text-gray-950 dark:text-white">
+            <span className="text-gray-500 dark:text-gray-400">{chart.icon}</span>
             <span>{chart.title}</span>
           </div>
-          {chart.detail && <p className="mt-0.5 text-[11px] text-gray-400">{chart.detail}</p>}
+          {chart.detail && <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">{chart.detail}</p>}
         </div>
         <div className="grid grid-cols-3 gap-3 text-right">
           <Stat label="当前" value={chart.formatValue(chart.current)} />
@@ -115,8 +118,8 @@ function DetailedChart({ chart, className }: { chart: ResourceChartConfig; class
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] text-gray-400">{label}</div>
-      <div className="text-xs font-semibold text-gray-900 tabular-nums whitespace-nowrap">{value}</div>
+      <div className="text-[10px] text-gray-400 dark:text-gray-500">{label}</div>
+      <div className="text-xs font-semibold text-gray-900 dark:text-gray-100 tabular-nums whitespace-nowrap">{value}</div>
     </div>
   )
 }
@@ -132,6 +135,9 @@ function LineAreaChart({
   formatValue: (value: number) => string
   unitLabel?: string
 }) {
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
+
   const width = 520
   const height = 150
   const left = 50
@@ -158,12 +164,20 @@ function LineAreaChart({
   const yTicks = [1, 0.5, 0]
   const xTicks = [0, 0.5, 1]
 
+  // Dark mode colors
+  const gridStroke = isDark ? '#374151' : '#e5e7eb'
+  const gridStrokeV = isDark ? '#1f2937' : '#edf0f2'
+  const axisStroke = isDark ? '#9ca3af' : '#888'
+  const lineStroke = isDark ? '#f9fafb' : '#444'
+  const gradientTop = isDark ? '#f9fafb' : '#555'
+  const gradientBottom = isDark ? '#374151' : '#555'
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[140px]" preserveAspectRatio="none">
       <defs>
         <linearGradient id="resource-chart-fill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#555" stopOpacity="0.25" />
-          <stop offset="100%" stopColor="#555" stopOpacity="0.02" />
+          <stop offset="0%" stopColor={gradientTop} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={gradientBottom} stopOpacity="0.02" />
         </linearGradient>
       </defs>
 
@@ -171,8 +185,8 @@ function LineAreaChart({
         const y = top + (1 - tick) * innerHeight
         return (
           <g key={tick}>
-            <line x1={left} y1={y} x2={left + innerWidth} y2={y} stroke="#e5e7eb" strokeDasharray="3 3" />
-            <text x={left - 8} y={y + 3} textAnchor="end" fontSize="10" fill="#888">
+            <line x1={left} y1={y} x2={left + innerWidth} y2={y} stroke={gridStroke} strokeDasharray="3 3" />
+            <text x={left - 8} y={y + 3} textAnchor="end" fontSize="10" fill={axisStroke}>
               {formatValue(maxValue * tick)}
             </text>
           </g>
@@ -184,8 +198,8 @@ function LineAreaChart({
         const ts = minTs + tick * span
         return (
           <g key={tick}>
-            <line x1={x} y1={top} x2={x} y2={top + innerHeight} stroke="#edf0f2" strokeDasharray="3 3" />
-            <text x={x} y={height - 5} textAnchor={tick === 0 ? 'start' : tick === 1 ? 'end' : 'middle'} fontSize="10" fill="#888">
+            <line x1={x} y1={top} x2={x} y2={top + innerHeight} stroke={gridStrokeV} strokeDasharray="3 3" />
+            <text x={x} y={height - 5} textAnchor={tick === 0 ? 'start' : tick === 1 ? 'end' : 'middle'} fontSize="10" fill={axisStroke}>
               {formatTime(ts)}
             </text>
           </g>
@@ -193,15 +207,15 @@ function LineAreaChart({
       })}
 
       {unitLabel && (
-        <text x={left - 45} y={top + 10} fontSize="10" fill="#888">
+        <text x={left - 45} y={top + 10} fontSize="10" fill={axisStroke}>
           {unitLabel}
         </text>
       )}
 
-      <line x1={left} y1={top} x2={left} y2={top + innerHeight} stroke="#888" />
-      <line x1={left} y1={top + innerHeight} x2={left + innerWidth} y2={top + innerHeight} stroke="#888" />
+      <line x1={left} y1={top} x2={left} y2={top + innerHeight} stroke={axisStroke} />
+      <line x1={left} y1={top + innerHeight} x2={left + innerWidth} y2={top + innerHeight} stroke={axisStroke} />
       <polygon points={area} fill="url(#resource-chart-fill)" />
-      <polyline points={line} fill="none" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points={line} fill="none" stroke={lineStroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

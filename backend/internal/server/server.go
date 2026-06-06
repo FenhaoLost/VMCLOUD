@@ -112,6 +112,9 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/api-keys", corsMiddleware(api.AdminMiddleware(api.HandleApiKeys)))
 	mux.HandleFunc("/api/api-keys/", corsMiddleware(api.AdminMiddleware(api.HandleApiKeyDelete)))
 
+	// Version (public)
+	mux.HandleFunc("/api/version", corsMiddleware(api.HandleVersion))
+
 	// Static files
 	if webFS != nil {
 		fs := http.FileServer(webFS)

@@ -553,4 +553,8 @@ export const getSecuritySummary = () =>
 export const createWebSSHTicket = (containerName: string) =>
   api.post<APIResponse<{ ticket: string }>>('/ssh-ticket', { container_name: containerName })
 
+// Version
+export const getVersion = () =>
+  api.get<APIResponse<{ version: string }>>('/version')
+
 export default api
