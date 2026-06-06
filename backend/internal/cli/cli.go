@@ -2,14 +2,20 @@ package cli
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"clicd/internal/config"
 	"clicd/internal/lxc"
+	"clicd/internal/version"
 )
 
 var manager = lxc.NewManager()
@@ -20,12 +26,12 @@ func Run() {
 
 	for {
 		if _, err := config.InitConfig(); err != nil {
-			fmt.Printf("Failed to reload config: %v\n", err)
+			fmt.Printf("重新加载配置失败: %v\n", err)
 			waitEnter(reader)
 		}
 		clearScreen()
 		printMenu()
-		fmt.Print("\nSelect action [1-11,0/q]: ")
+		fmt.Print("\n请选择操作 [1-12,0/q]: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
@@ -72,6 +78,10 @@ func Run() {
 			waitEnter(reader)
 		case "11":
 			clearScreen()
+			cliUpgradeSystem(reader)
+			waitEnter(reader)
+		case "12":
+			clearScreen()
 			cliUninstall(reader)
 			return
 		case "0":
@@ -79,60 +89,62 @@ func Run() {
 			cliShowInfo()
 			waitEnter(reader)
 		case "q", "exit", "quit":
-			fmt.Println("Bye")
+			fmt.Println("再见")
 			return
 		default:
-			fmt.Println("Invalid selection")
+			fmt.Println("无效选择")
 		}
 	}
 }
 
 func printMenu() {
-	webStatus := "start"
+	webStatus := "启动"
 	if isWebPanelRunning() {
-		webStatus = "stop"
+		webStatus = "停止"
 	}
 	fmt.Println()
 	fmt.Println("  ==========================================")
-	fmt.Println("       CLICD - LXC Container Manager")
+	fmt.Println("       CLICD - LXC 容器管理器")
 	fmt.Println("  ==========================================")
 	fmt.Println()
-	fmt.Printf("  Web panel: %s (port %d)\n", func() string {
+	fmt.Printf("  Web 面板: %s (端口 %d)\n", func() string {
 		if isWebPanelRunning() {
-			return "running"
+			return "运行中"
 		}
-		return "stopped"
+		return "已停止"
 	}(), config.AppConfig.Port)
+	fmt.Printf("  当前版本: %s\n", version.Current())
 	fmt.Println()
-	fmt.Println("  1. List containers")
-	fmt.Println("  2. Create container")
-	fmt.Println("  3. Start container")
-	fmt.Println("  4. Stop container")
-	fmt.Println("  5. Restart container")
-	fmt.Println("  6. Delete container")
-	fmt.Println("  7. Reinstall container")
-	fmt.Println("  8. Reset web admin password")
-	fmt.Printf("  9. %s web panel\n", webStatus)
-	fmt.Println("  10. Import existing LXC containers")
-	fmt.Println("  11. Uninstall CLICD")
-	fmt.Println("  0. System info")
-	fmt.Println("  q. Quit")
+	fmt.Println("  1. 查看容器列表")
+	fmt.Println("  2. 创建容器")
+	fmt.Println("  3. 开机容器")
+	fmt.Println("  4. 关机容器")
+	fmt.Println("  5. 重启容器")
+	fmt.Println("  6. 删除容器")
+	fmt.Println("  7. 重装容器系统")
+	fmt.Println("  8. 重置 Web 管理员密码")
+	fmt.Printf("  9. %s Web 面板\n", webStatus)
+	fmt.Println("  10. 导入现有 LXC 容器")
+	fmt.Println("  11. 检查并升级 CLICD")
+	fmt.Println("  12. 卸载 CLICD")
+	fmt.Println("  0. 系统信息")
+	fmt.Println("  q. 退出")
 }
 
 func cliListContainers() {
 	containers, err := manager.ListContainers()
 	if err != nil {
-		fmt.Printf("Failed to list containers: %v\n", err)
+		fmt.Printf("获取容器列表失败: %v\n", err)
 		return
 	}
 
 	if len(containers) == 0 {
-		fmt.Println("\nNo containers")
+		fmt.Println("\n暂无容器")
 		return
 	}
 
 	fmt.Println()
-	fmt.Printf("%-18s %-10s %-18s %-6s %-10s %-10s %-16s\n", "Name", "Status", "Template", "vCPU", "RAM(MB)", "Disk(GB)", "SSH")
+	fmt.Printf("%-18s %-10s %-18s %-6s %-10s %-10s %-16s\n", "名称", "状态", "镜像", "vCPU", "内存(MB)", "磁盘(GB)", "SSH")
 	fmt.Println(strings.Repeat("-", 94))
 	for _, c := range containers {
 		ssh := "-"
@@ -145,23 +157,23 @@ func cliListContainers() {
 }
 
 func cliCreateContainer(reader *bufio.Reader) {
-	fmt.Println("\n--- Create container ---")
+	fmt.Println("\n--- 创建容器 ---")
 
-	name := promptString(reader, "Container name", "")
+	name := promptString(reader, "容器名称", "")
 	if name == "" {
-		fmt.Println("Container name is required")
+		fmt.Println("容器名称不能为空")
 		return
 	}
 
 	templates := lxc.GetTemplates()
-	fmt.Println("\nAvailable templates:")
+	fmt.Println("\n可用镜像:")
 	for i, template := range templates {
 		fmt.Printf("  %d. %s\n", i+1, template.Name)
 	}
 
-	tmplIdx := promptInt(reader, fmt.Sprintf("Template [1-%d]", len(templates)), 1)
+	tmplIdx := promptInt(reader, fmt.Sprintf("镜像 [1-%d]", len(templates)), 1)
 	if tmplIdx < 1 || tmplIdx > len(templates) {
-		fmt.Println("Invalid template selection")
+		fmt.Println("镜像选择无效")
 		return
 	}
 
@@ -169,22 +181,22 @@ func cliCreateContainer(reader *bufio.Reader) {
 		Name:             name,
 		TemplateID:       templates[tmplIdx-1].ID,
 		VCPU:             promptFloat(reader, "vCPU", 1),
-		RAMMB:            promptInt(reader, "Memory (MB)", 512),
-		DiskGB:           promptInt(reader, "Disk (GB)", 10),
-		NetworkBWMbps:    promptInt(reader, "Network bandwidth (Mbps)", 100),
-		MonthlyTrafficGB: promptInt(reader, "Monthly traffic (GB)", 1000),
-		IOSpeedMBps:      promptInt(reader, "IO speed (MB/s)", 500),
-		ExtraPorts:       promptPortList(reader, "Extra NAT ports, comma separated"),
+		RAMMB:            promptInt(reader, "内存 (MB)", 512),
+		DiskGB:           promptInt(reader, "磁盘 (GB)", 10),
+		NetworkBWMbps:    promptInt(reader, "网络带宽 (Mbps)", 100),
+		MonthlyTrafficGB: promptInt(reader, "月流量 (GB)", 1000),
+		IOSpeedMBps:      promptInt(reader, "IO 速度 (MB/s)", 500),
+		ExtraPorts:       promptPortList(reader, "额外 NAT 端口，多个用逗号分隔"),
 	}
 
-	fmt.Printf("\nCreating container %s ...\n", name)
+	fmt.Printf("\n正在创建容器 %s ...\n", name)
 	if err := manager.CreateContainer(cfg); err != nil {
-		fmt.Printf("Create failed: %v\n", err)
+		fmt.Printf("创建失败: %v\n", err)
 		return
 	}
 
 	container := config.FindContainerByName(name)
-	fmt.Printf("Container %s created successfully\n", name)
+	fmt.Printf("容器 %s 创建成功\n", name)
 	if container != nil {
 		fmt.Printf("SSH: root / %s, port %d -> 22\n", container.SSHPassword, container.SSHPort)
 	}
@@ -192,126 +204,366 @@ func cliCreateContainer(reader *bufio.Reader) {
 }
 
 func cliStartContainer(reader *bufio.Reader) {
-	id, name := selectContainer(reader, "start")
+	id, name := selectContainer(reader, "开机")
 	if id == 0 {
 		return
 	}
 	if err := manager.StartContainer(id); err != nil {
-		fmt.Printf("Start failed: %v\n", err)
+		fmt.Printf("开机失败: %v\n", err)
 		return
 	}
-	fmt.Printf("Container %s started\n", name)
+	fmt.Printf("容器 %s 已开机\n", name)
 }
 
 func cliStopContainer(reader *bufio.Reader) {
-	id, name := selectContainer(reader, "stop")
+	id, name := selectContainer(reader, "关机")
 	if id == 0 {
 		return
 	}
 	if err := manager.StopContainer(id); err != nil {
-		fmt.Printf("Stop failed: %v\n", err)
+		fmt.Printf("关机失败: %v\n", err)
 		return
 	}
-	fmt.Printf("Container %s stopped\n", name)
+	fmt.Printf("容器 %s 已关机\n", name)
 }
 
 func cliRestartContainer(reader *bufio.Reader) {
-	id, name := selectContainer(reader, "restart")
+	id, name := selectContainer(reader, "重启")
 	if id == 0 {
 		return
 	}
 	if err := manager.RestartContainer(id); err != nil {
-		fmt.Printf("Restart failed: %v\n", err)
+		fmt.Printf("重启失败: %v\n", err)
 		return
 	}
-	fmt.Printf("Container %s restarted\n", name)
+	fmt.Printf("容器 %s 已重启\n", name)
 }
 
 func cliDeleteContainer(reader *bufio.Reader) {
-	id, name := selectContainer(reader, "delete")
+	id, name := selectContainer(reader, "删除")
 	if id == 0 {
 		return
 	}
-	confirm := promptString(reader, fmt.Sprintf("Delete container %s? Type yes", name), "no")
+	confirm := promptString(reader, fmt.Sprintf("确认删除容器 %s？输入 yes 继续", name), "no")
 	if strings.ToLower(confirm) != "yes" {
-		fmt.Println("Canceled")
+		fmt.Println("已取消")
 		return
 	}
 	if err := manager.DestroyContainer(id); err != nil {
-		fmt.Printf("Delete failed: %v\n", err)
+		fmt.Printf("删除失败: %v\n", err)
 		return
 	}
-	fmt.Printf("Container %s deleted\n", name)
+	fmt.Printf("容器 %s 已删除\n", name)
 	restartWebPanelForConfigChange()
 }
 
 func cliReinstallContainer(reader *bufio.Reader) {
-	id, name := selectContainer(reader, "reinstall")
+	id, name := selectContainer(reader, "重装")
 	if id == 0 {
 		return
 	}
 
 	templates := lxc.GetTemplates()
-	fmt.Println("\nAvailable templates:")
+	fmt.Println("\n可用镜像:")
 	for i, template := range templates {
 		fmt.Printf("  %d. %s\n", i+1, template.Name)
 	}
 
-	tmplIdx := promptInt(reader, fmt.Sprintf("Template [1-%d]", len(templates)), 1)
+	tmplIdx := promptInt(reader, fmt.Sprintf("镜像 [1-%d]", len(templates)), 1)
 	if tmplIdx < 1 || tmplIdx > len(templates) {
-		fmt.Println("Invalid template selection")
+		fmt.Println("镜像选择无效")
 		return
 	}
 
-	confirm := promptString(reader, fmt.Sprintf("Reinstall container %s? Type yes", name), "no")
+	confirm := promptString(reader, fmt.Sprintf("确认重装容器 %s？输入 yes 继续", name), "no")
 	if strings.ToLower(confirm) != "yes" {
-		fmt.Println("Canceled")
+		fmt.Println("已取消")
 		return
 	}
 
 	if err := manager.ReinstallContainer(id, templates[tmplIdx-1].ID); err != nil {
-		fmt.Printf("Reinstall failed: %v\n", err)
+		fmt.Printf("重装失败: %v\n", err)
 		return
 	}
-	fmt.Printf("Container %s reinstalled\n", name)
+	fmt.Printf("容器 %s 已重装\n", name)
 	restartWebPanelForConfigChange()
 }
 
 func cliResetPassword(reader *bufio.Reader) {
-	newPass := promptString(reader, "New admin password (at least 6 chars)", "")
+	newPass := promptString(reader, "新的管理员密码（至少 6 位）", "")
 	if len(newPass) < 6 {
-		fmt.Println("Password must be at least 6 chars")
+		fmt.Println("密码至少需要 6 位")
 		return
 	}
-	confirm := promptString(reader, "Confirm password", "")
+	confirm := promptString(reader, "确认密码", "")
 	if newPass != confirm {
-		fmt.Println("Passwords do not match")
+		fmt.Println("两次输入的密码不一致")
 		return
 	}
 
 	if err := config.ResetAdminPassword(newPass); err != nil {
-		fmt.Printf("Reset failed: %v\n", err)
+		fmt.Printf("重置失败: %v\n", err)
 		return
 	}
-	fmt.Println("Admin password reset.")
+	fmt.Println("管理员密码已重置。")
 	restartWebPanelForConfigChange()
 }
 
 func cliToggleWebPanel() {
 	if isWebPanelRunning() {
 		if err := stopService("clicd"); err != nil {
-			fmt.Printf("Failed to stop web panel: %v\n", err)
+			fmt.Printf("停止 Web 面板失败: %v\n", err)
 			return
 		}
-		fmt.Println("Web panel stopped. LXC containers are not affected.")
+		fmt.Println("Web 面板已停止，LXC 容器不会受影响。")
 		return
 	}
 
 	if err := startService("clicd"); err != nil {
-		fmt.Printf("Failed to start web panel: %v\n", err)
+		fmt.Printf("启动 Web 面板失败: %v\n", err)
 		return
 	}
-	fmt.Println("Web panel started")
+	fmt.Println("Web 面板已启动")
+}
+
+type githubRelease struct {
+	TagName string `json:"tag_name"`
+	Name    string `json:"name"`
+	HTMLURL string `json:"html_url"`
+	Assets  []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+func cliUpgradeSystem(reader *bufio.Reader) {
+	fmt.Println("\n--- 检查并升级 CLICD ---")
+	fmt.Println("升级只会替换 /usr/local/bin/clicd，并保留 /root/.clicd 里的配置、容器数据和任务记录。")
+
+	if os.Geteuid() != 0 {
+		fmt.Println("升级需要 root 权限。请使用: sudo clicd cli")
+		return
+	}
+
+	repo := strings.TrimSpace(os.Getenv("CLICD_REPO"))
+	if repo == "" {
+		repo = version.Repo
+	}
+	current := version.Current()
+	fmt.Printf("当前版本: %s\n", current)
+	fmt.Printf("检查仓库: https://github.com/%s\n", repo)
+
+	release, err := fetchLatestRelease(repo)
+	if err != nil {
+		fmt.Printf("检查 GitHub 最新版本失败: %v\n", err)
+		return
+	}
+	latest := strings.TrimSpace(release.TagName)
+	if latest == "" {
+		fmt.Println("GitHub Release 没有 tag_name，无法判断最新版本。")
+		return
+	}
+	fmt.Printf("最新版本: %s\n", latest)
+	if release.HTMLURL != "" {
+		fmt.Printf("发布页面: %s\n", release.HTMLURL)
+	}
+
+	assetURL := findReleaseAsset(release, "clicd-linux-amd64.tar.gz")
+	if assetURL == "" {
+		fmt.Println("最新 Release 没有找到 clicd-linux-amd64.tar.gz，无法自动升级。")
+		return
+	}
+
+	if sameVersion(current, latest) {
+		fmt.Println("当前已经是最新版本。")
+		confirm := promptString(reader, "是否仍然重新安装最新版本？输入 reinstall 继续", "no")
+		if strings.ToLower(confirm) != "reinstall" {
+			fmt.Println("已取消。")
+			return
+		}
+	} else {
+		confirm := promptString(reader, "输入 upgrade 开始升级", "no")
+		if strings.ToLower(confirm) != "upgrade" {
+			fmt.Println("已取消。")
+			return
+		}
+	}
+
+	if err := upgradeFromReleaseAsset(assetURL, latest); err != nil {
+		fmt.Printf("升级失败: %v\n", err)
+		return
+	}
+	fmt.Printf("升级完成: %s -> %s\n", current, latest)
+	fmt.Println("原有数据已保留，Web 服务已重启。")
+}
+
+func fetchLatestRelease(repo string) (*githubRelease, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("GitHub API 返回 %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
+	return &release, nil
+}
+
+func findReleaseAsset(release *githubRelease, name string) string {
+	for _, asset := range release.Assets {
+		if asset.Name == name && asset.BrowserDownloadURL != "" {
+			return asset.BrowserDownloadURL
+		}
+	}
+	return ""
+}
+
+func upgradeFromReleaseAsset(assetURL, latest string) error {
+	tmpDir, err := os.MkdirTemp("", "clicd-upgrade-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, "clicd-linux-amd64.tar.gz")
+	fmt.Println("正在下载升级包...")
+	if err := downloadFile(assetURL, archivePath); err != nil {
+		return err
+	}
+
+	fmt.Println("正在解压升级包...")
+	if out, err := exec.Command("tar", "-xzf", archivePath, "-C", tmpDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("解压失败: %v, output: %s", err, string(out))
+	}
+
+	newBinary, err := findFile(tmpDir, "clicd")
+	if err != nil {
+		return err
+	}
+
+	backupDir := "/root/clicd-backups"
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return err
+	}
+	backupPath := filepath.Join(backupDir, fmt.Sprintf("clicd.%s.%s", strings.TrimPrefix(latest, "v"), time.Now().Format("20060102-150405")))
+	if _, err := os.Stat("/usr/local/bin/clicd"); err == nil {
+		if err := copyFile("/usr/local/bin/clicd", backupPath, 0755); err != nil {
+			return fmt.Errorf("备份旧二进制失败: %w", err)
+		}
+		fmt.Printf("旧版本已备份: %s\n", backupPath)
+	}
+
+	fmt.Println("正在替换二进制...")
+	if err := stopService("clicd"); err != nil {
+		fmt.Printf("停止 Web 服务失败，继续尝试替换: %v\n", err)
+	}
+	tmpBin := "/usr/local/bin/clicd.new"
+	if err := copyFile(newBinary, tmpBin, 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpBin, "/usr/local/bin/clicd"); err != nil {
+		return err
+	}
+	if err := os.Chmod("/usr/local/bin/clicd", 0755); err != nil {
+		return err
+	}
+
+	if err := restartService("clicd"); err != nil {
+		return fmt.Errorf("二进制已替换，但重启 Web 服务失败: %w", err)
+	}
+	return nil
+}
+
+func downloadFile(url, dest string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载失败，HTTP %s", resp.Status)
+	}
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func findFile(root, name string) (string, error) {
+	var found string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() == name {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("升级包内未找到 clicd 二进制")
+	}
+	return found, nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode)
+}
+
+func sameVersion(current, latest string) bool {
+	c := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(current)), "v")
+	l := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(latest)), "v")
+	return c != "" && c == l
 }
 
 func isWebPanelRunning() bool {
@@ -330,21 +582,21 @@ func isWebPanelRunning() bool {
 }
 
 func cliImportExistingContainers() {
-	fmt.Println("\n--- Import existing LXC containers ---")
-	fmt.Println("This imports containers from /var/lib/lxc into CLICD config.")
-	fmt.Println("Imported containers keep their real LXC name so Web and CLI manage the same container.")
+	fmt.Println("\n--- 导入现有 LXC 容器 ---")
+	fmt.Println("将 /var/lib/lxc 里的容器导入 CLICD 配置。")
+	fmt.Println("导入后会保留真实 LXC 名称，Web 和 CLI 都能管理同一个容器。")
 
 	imported, err := manager.ImportExistingClicdContainers()
 	if err != nil {
-		fmt.Printf("Import failed: %v\n", err)
+		fmt.Printf("导入失败: %v\n", err)
 		return
 	}
 	if len(imported) == 0 {
-		fmt.Println("No new ct-* containers found to import.")
+		fmt.Println("没有发现新的 ct-* 容器。")
 		return
 	}
 
-	fmt.Printf("Imported %d container(s):\n", len(imported))
+	fmt.Printf("已导入 %d 个容器:\n", len(imported))
 	for _, c := range imported {
 		fmt.Printf("  [%d] %s [%s]\n", c.ID, c.Name, c.Status)
 	}
@@ -352,19 +604,19 @@ func cliImportExistingContainers() {
 }
 
 func cliUninstall(reader *bufio.Reader) {
-	fmt.Println("\n--- Uninstall CLICD ---")
-	fmt.Println("This removes the CLICD service and /usr/local/bin/clicd.")
-	fmt.Println("This also deletes /root/.clicd, all LXC containers under /var/lib/lxc, and LXC image cache under /var/cache/lxc.")
+	fmt.Println("\n--- 卸载 CLICD ---")
+	fmt.Println("将删除 CLICD 服务和 /usr/local/bin/clicd。")
+	fmt.Println("同时会删除 /root/.clicd、/var/lib/lxc 下全部 LXC 容器，以及 /var/cache/lxc 镜像缓存。")
 
 	if os.Geteuid() != 0 {
-		fmt.Println("Uninstall must be run as root.")
-		fmt.Println("Run: sudo clicd cli --no-web")
+		fmt.Println("卸载需要 root 权限。")
+		fmt.Println("请运行: sudo clicd cli --no-web")
 		return
 	}
 
-	confirm := promptString(reader, "Type uninstall to continue", "no")
+	confirm := promptString(reader, "输入 uninstall 继续卸载", "no")
 	if strings.ToLower(confirm) != "uninstall" {
-		fmt.Println("Canceled")
+		fmt.Println("已取消")
 		return
 	}
 
@@ -381,8 +633,8 @@ func cliUninstall(reader *bufio.Reader) {
 	reloadSysctl()
 
 	fmt.Println()
-	fmt.Println("CLICD has been uninstalled.")
-	fmt.Println("Removed service, binary, config, containers, and LXC image cache.")
+	fmt.Println("CLICD 已卸载。")
+	fmt.Println("服务、二进制、配置、容器和 LXC 镜像缓存均已删除。")
 }
 
 func destroyAllLXCContainers() {
@@ -509,10 +761,10 @@ func runQuiet(name string, args ...string) {
 
 func restartWebPanelForConfigChange() {
 	if err := restartService("clicd"); err != nil {
-		fmt.Printf("Web panel reload skipped: %v\n", err)
+		fmt.Printf("Web 面板重载跳过: %v\n", err)
 		return
 	}
-	fmt.Println("Web panel reloaded to pick up config changes.")
+	fmt.Println("Web 面板已重载并应用配置变更。")
 }
 
 func stopService(name string) error {
@@ -548,7 +800,7 @@ func restartService(name string) error {
 func cliShowInfo() {
 	containers, err := manager.ListContainers()
 	if err != nil {
-		fmt.Printf("Failed to read container status: %v\n", err)
+		fmt.Printf("读取容器状态失败: %v\n", err)
 	}
 
 	total := len(containers)
@@ -559,43 +811,44 @@ func cliShowInfo() {
 		}
 	}
 
-	fmt.Println("\n--- System info ---")
-	fmt.Printf("Web port: %d\n", config.AppConfig.Port)
-	fmt.Printf("Admin user: %s\n", config.AppConfig.AdminUser)
-	fmt.Printf("Containers: %d\n", total)
-	fmt.Printf("Running: %d\n", running)
-	fmt.Printf("Stopped: %d\n", total-running)
+	fmt.Println("\n--- 系统信息 ---")
+	fmt.Printf("CLICD 版本: %s\n", version.Current())
+	fmt.Printf("Web 端口: %d\n", config.AppConfig.Port)
+	fmt.Printf("管理员用户: %s\n", config.AppConfig.AdminUser)
+	fmt.Printf("容器总数: %d\n", total)
+	fmt.Printf("运行中: %d\n", running)
+	fmt.Printf("已停止: %d\n", total-running)
 
 	if hostname, err := os.Hostname(); err == nil {
-		fmt.Printf("Hostname: %s\n", hostname)
+		fmt.Printf("主机名: %s\n", hostname)
 	}
 
 	cmd := exec.Command("lxc-info", "--version")
 	output, err := cmd.Output()
 	if err == nil {
-		fmt.Printf("LXC version: %s", string(output))
+		fmt.Printf("LXC 版本: %s", string(output))
 	}
 }
 
 func selectContainer(reader *bufio.Reader, action string) (int, string) {
 	containers, err := manager.ListContainers()
 	if err != nil {
-		fmt.Printf("Failed to list containers: %v\n", err)
+		fmt.Printf("获取容器列表失败: %v\n", err)
 		return 0, ""
 	}
 	if len(containers) == 0 {
-		fmt.Println("No containers available")
+		fmt.Println("暂无可用容器")
 		return 0, ""
 	}
 
-	fmt.Printf("\n--- Select container to %s ---\n", action)
+	fmt.Printf("\n--- 选择要%s的容器 ---\n", action)
 	for i, container := range containers {
 		fmt.Printf("  %d. [%d] %s [%s]\n", i+1, container.ID, container.Name, container.Status)
 	}
 
-	idx := promptInt(reader, "Container", 0)
+	idx := promptInt(reader, "容器", 0)
 	if idx < 1 || idx > len(containers) {
-		fmt.Println("Invalid selection")
+		fmt.Println("选择无效")
 		return 0, ""
 	}
 
@@ -641,7 +894,7 @@ func clearScreen() {
 }
 
 func waitEnter(reader *bufio.Reader) {
-	fmt.Print("\nPress Enter to return to menu...")
+	fmt.Print("\n按 Enter 返回菜单...")
 	reader.ReadString('\n')
 }
 
@@ -655,7 +908,7 @@ func promptPortList(reader *bufio.Reader, label string) []int {
 	for _, part := range strings.Split(input, ",") {
 		value, err := strconv.Atoi(strings.TrimSpace(part))
 		if err != nil || value <= 0 || value > 65535 {
-			fmt.Printf("Ignoring invalid port: %s\n", strings.TrimSpace(part))
+			fmt.Printf("忽略无效端口: %s\n", strings.TrimSpace(part))
 			continue
 		}
 		ports = append(ports, value)

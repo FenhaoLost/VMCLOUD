@@ -52,7 +52,8 @@ go mod tidy
 go mod download
 
 # Build for Linux amd64
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BUILD_DIR/clicd" .
+BUILD_VERSION="${CLICD_VERSION:-dev}"
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X clicd/internal/version.Version=${BUILD_VERSION}" -o "$BUILD_DIR/clicd" .
 
 echo "Go backend built successfully"
 
