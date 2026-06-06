@@ -47,11 +47,15 @@ type SavedLoginLog struct {
 
 // AuditLog represents an operation log entry
 type AuditLog struct {
-	Time   string `json:"time"`
-	Action string `json:"action"`
-	Target string `json:"target"`
-	Detail string `json:"detail"`
-	User   string `json:"user"`
+	Time      string `json:"time"`
+	Action    string `json:"action"`
+	Target    string `json:"target"`
+	Detail    string `json:"detail"`
+	User      string `json:"user"`
+	IP        string `json:"ip,omitempty"`
+	UserAgent string `json:"user_agent,omitempty"`
+	Success   *bool  `json:"success,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // OversellConfig controls host-level overselling behavior
@@ -139,13 +143,14 @@ func DeleteApiKey(id string) {
 type SubUser struct {
 	ID             string   `json:"id"`
 	Username       string   `json:"username"`
-	Password       string   `json:"-"`
+	Password       string   `json:"password,omitempty"`
 	PassHash       string   `json:"pass_hash"`
 	ContainerNames []string `json:"container_names"`
 	ContainerUUIDs []string `json:"container_uuids,omitempty"`
 	Token          string   `json:"-"`
 	AccessCode     string   `json:"access_code"`
 	CreatedAt      string   `json:"created_at"`
+	TokenVersion   int      `json:"token_version"`
 }
 
 type Snapshot struct {
@@ -437,10 +442,6 @@ func migrateSubUsers() bool {
 				changed = true
 			}
 		}
-		if su.Password != "" {
-			su.Password = ""
-			changed = true
-		}
 		if su.Token != "" {
 			su.Token = ""
 			changed = true
@@ -536,12 +537,23 @@ func RemoveContainer(id int) bool {
 		if c.ID == id {
 			removeSubUserContainerAccess(c.Name, c.UUID)
 			removeContainerSnapshotMetadata(id)
+			// Clear snapshot schedule for this container
+			clearContainerSnapshotSchedule(&AppConfig.Containers[i])
 			AppConfig.Containers = append(AppConfig.Containers[:i], AppConfig.Containers[i+1:]...)
 			SaveConfig()
 			return true
 		}
 	}
 	return false
+}
+
+func clearContainerSnapshotSchedule(c *Container) {
+	c.SnapshotScheduleEnabled = false
+	c.SnapshotScheduleIntervalHours = 0
+	c.SnapshotScheduleTime = ""
+	c.SnapshotScheduleLastRun = ""
+	c.SnapshotScheduleNextRun = ""
+	c.SnapshotScheduleCreatedBy = ""
 }
 
 func AddSnapshot(snapshot Snapshot) {
@@ -715,6 +727,26 @@ func AddAuditLog(action, target, detail, user string) {
 		Target: target,
 		Detail: detail,
 		User:   user,
+	}
+	AppConfig.AuditLogs = append(AppConfig.AuditLogs, log)
+	if len(AppConfig.AuditLogs) > 500 {
+		AppConfig.AuditLogs = AppConfig.AuditLogs[len(AppConfig.AuditLogs)-500:]
+	}
+	SaveConfig()
+}
+
+func AddAuditLogFull(action, target, detail, user, ip, userAgent string, success bool, errMsg string) {
+	s := success
+	log := AuditLog{
+		Time:      time.Now().Format("2006-01-02 15:04:05"),
+		Action:    action,
+		Target:    target,
+		Detail:    detail,
+		User:      user,
+		IP:        ip,
+		UserAgent: userAgent,
+		Success:   &s,
+		Error:     errMsg,
 	}
 	AppConfig.AuditLogs = append(AppConfig.AuditLogs, log)
 	if len(AppConfig.AuditLogs) > 500 {

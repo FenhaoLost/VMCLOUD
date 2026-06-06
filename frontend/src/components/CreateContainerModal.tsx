@@ -7,6 +7,7 @@ interface CreateContainerModalProps {
   isOpen: boolean
   onClose: () => void
   onSuccess: (containers: CreateContainerRequest[]) => void | Promise<void>
+  existingNames?: string[]
 }
 
 const defaultForm: CreateContainerRequest = {
@@ -29,7 +30,7 @@ const defaultForm: CreateContainerRequest = {
   expires_at: '',
 }
 
-export default function CreateContainerModal({ isOpen, onClose, onSuccess }: CreateContainerModalProps) {
+export default function CreateContainerModal({ isOpen, onClose, onSuccess, existingNames = [] }: CreateContainerModalProps) {
   const dialog = useDialog()
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(false)
@@ -37,6 +38,7 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
   const [form, setForm] = useState<CreateContainerRequest>(defaultForm)
   const [hostInfo, setHostInfo] = useState<HostInfo | null>(null)
   const [ipv6Status, setIPv6Status] = useState<IPv6Status | null>(null)
+  const [nameError, setNameError] = useState('')
 
   useEffect(() => {
     if (!isOpen) return
@@ -83,6 +85,34 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
   // SSH port preview (will be allocated sequentially, starting around 22000+)
   const sshPortPreview = 22000
 
+  // Find next available batch index to avoid name conflicts
+  const batchStartIndex = useMemo(() => {
+    if (batchCount <= 1 || !form.name) return 1
+    const prefix = `${form.name}-`
+    let maxIdx = 0
+    for (const existing of existingNames) {
+      if (existing.startsWith(prefix)) {
+        const suffix = existing.slice(prefix.length)
+        const idx = parseInt(suffix, 10)
+        if (!isNaN(idx) && idx > maxIdx) {
+          maxIdx = idx
+        }
+      }
+    }
+    return maxIdx + 1
+  }, [form.name, batchCount, existingNames])
+
+  const handleNameChange = (value: string) => {
+    setForm({ ...form, name: value })
+    if (/\s/.test(value)) {
+      setNameError('容器名称不能包含空格')
+    } else if (value && existingNames.includes(value) && batchCount === 1) {
+      setNameError('该容器名称已存在')
+    } else {
+      setNameError('')
+    }
+  }
+
   const handleSubmit = async () => {
     if (!form.name || !form.template_id) {
       dialog.alert('提示', '请填写容器名称并选择系统模板')
@@ -93,8 +123,9 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
 
     // Build batch of containers
     const containers: CreateContainerRequest[] = []
+    const startIndex = batchStartIndex
     for (let i = 0; i < batchCount; i++) {
-      const name = batchCount > 1 ? `${boundedForm.name}-${i + 1}` : boundedForm.name
+      const name = batchCount > 1 ? `${boundedForm.name}-${startIndex + i}` : boundedForm.name
       containers.push({
         ...boundedForm,
         name,
@@ -137,17 +168,18 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess }: Cre
               <input
                 type="text"
                 value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                className={inputClass}
+                onChange={(event) => handleNameChange(event.target.value)}
+                className={`${inputClass} ${nameError ? 'border-red-400 focus:ring-red-400 focus:border-red-400' : ''}`}
                 placeholder="my-container"
                 required
               />
+              {nameError && <p className="text-xs text-red-500 mt-1">{nameError}</p>}
             </Field>
             <Field label="批量创建数量">
               <NumberInput value={batchCount} min={1} max={50} onChange={(value) => setBatchCount(Math.max(1, value || 1))} />
             </Field>
           </div>
-          {batchCount > 1 && <p className="text-xs text-gray-400">将创建 {batchCount} 个容器：{form.name}-1 至 {form.name}-{batchCount}</p>}
+          {batchCount > 1 && <p className="text-xs text-gray-400">将创建 {batchCount} 个容器：{form.name}-{batchStartIndex} 至 {form.name}-{batchStartIndex + batchCount - 1}</p>}
 
           <Field label="系统模板">
             {templates.length === 0 ? (

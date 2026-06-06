@@ -66,6 +66,7 @@ import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
 import WebSSHViewer from '../components/WebSSHViewer'
 import { RingStat } from '../components/RingStats'
+import { copyToClipboard } from '../utils/clipboard'
 import ResourceStatsPanel, {
   ChartPoint,
   ResourceChartConfig,
@@ -619,19 +620,7 @@ export default function ContainerDetail() {
   }
 
   const copyText = async (text: string) => {
-    try {
-      await copyText(text)
-    } catch {
-      // Fallback for HTTP (non-secure context)
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    }
+    await copyToClipboard(text)
   }
 
   if (loading) {
@@ -676,7 +665,6 @@ export default function ContainerDetail() {
   const managementUrl = subUser?.access_code
     ? `${window.location.origin}/login?code=${encodeURIComponent(subUser.access_code)}`
     : ''
-  const managementPassword = subUser?.password || ''
   const charts: ResourceChartConfig[] = [
     {
       title: 'CPU 使用率',
@@ -1263,55 +1251,21 @@ export default function ContainerDetail() {
         </Modal>
       )}
 
-      {showSubUser && subUser && false && (
-        <Modal title="管理链接" onClose={() => setShowSubUser(false)}>
-          <div className="space-y-4">
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
-              安全提示：请通过私密渠道（如加密通讯工具）分享以下信息，不要在不安全的网络环境下明文传输。
-            </div>
-            <div className="bg-gray-50 rounded-lg p-4 text-sm space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <span className="shrink-0 text-gray-500">管理地址</span>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="font-mono text-xs text-black break-all">{managementUrl}</span>
-                  <button onClick={() => copyText(managementUrl)} className="shrink-0 p-0.5 text-gray-400 hover:text-black rounded"><Copy className="w-3 h-3" /></button>
-                </div>
-              </div>
-              <div className="flex items-start justify-between gap-3">
-                <span className="shrink-0 text-gray-500">用户名</span>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="font-mono text-xs text-black">{subUser?.username}</span>
-                  <button onClick={() => copyText(subUser?.username || '')} className="shrink-0 p-0.5 text-gray-400 hover:text-black rounded"><Copy className="w-3 h-3" /></button>
-                </div>
-              </div>
-              <div className="flex items-start justify-between gap-3">
-                <span className="shrink-0 text-gray-500">密码</span>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="font-mono text-xs text-black">{managementPassword}</span>
-                  <button onClick={() => copyText(managementPassword)} className="shrink-0 p-0.5 text-gray-400 hover:text-black rounded"><Copy className="w-3 h-3" /></button>
-                </div>
-              </div>
-            </div>
-            <p className="text-xs text-gray-400">打开管理地址，输入用户名和密码即可管理该容器。链接不含 token，无法被截获后直接使用。</p>
-          </div>
-        </Modal>
-      )}
-
       {showSubUser && subUser && (
         <Modal title="管理链接" onClose={() => setShowSubUser(false)}>
-          <div className="bg-gray-50 rounded-lg p-4 text-sm space-y-3">
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 text-sm space-y-3">
             <div className="flex items-start justify-between gap-3">
-              <span className="shrink-0 text-gray-500">地址</span>
+              <span className="shrink-0 text-gray-500 dark:text-gray-400">地址</span>
               <div className="flex min-w-0 items-center gap-1">
-                <span className="font-mono text-xs text-black break-all">{managementUrl}</span>
-                <button onClick={() => copyText(managementUrl)} className="shrink-0 p-0.5 text-gray-400 hover:text-black rounded"><Copy className="w-3 h-3" /></button>
+                <span className="font-mono text-xs text-black dark:text-white break-all">{managementUrl}</span>
+                <button onClick={() => copyText(managementUrl)} className="shrink-0 p-0.5 text-gray-400 hover:text-black dark:hover:text-white rounded"><Copy className="w-3 h-3" /></button>
               </div>
             </div>
             <div className="flex items-start justify-between gap-3">
-              <span className="shrink-0 text-gray-500">密码</span>
+              <span className="shrink-0 text-gray-500 dark:text-gray-400">密码</span>
               <div className="flex min-w-0 items-center gap-1">
-                <span className="font-mono text-xs text-black">{managementPassword}</span>
-                <button onClick={() => copyText(managementPassword)} className="shrink-0 p-0.5 text-gray-400 hover:text-black rounded"><Copy className="w-3 h-3" /></button>
+                <span className="font-mono text-xs text-black dark:text-white">{subUser.password || ''}</span>
+                <button onClick={() => copyText(subUser.password || '')} className="shrink-0 p-0.5 text-gray-400 hover:text-black dark:hover:text-white rounded"><Copy className="w-3 h-3" /></button>
               </div>
             </div>
           </div>

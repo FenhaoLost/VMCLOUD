@@ -197,6 +197,14 @@ export interface LoginLog {
   success: boolean
 }
 
+export interface AuditLog {
+  time: string
+  action: string
+  target: string
+  detail: string
+  user: string
+}
+
 export const getLoginLogs = () =>
   api.get<APIResponse<LoginLog[]>>('/login-logs')
 

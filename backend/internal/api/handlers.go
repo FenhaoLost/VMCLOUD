@@ -31,14 +31,33 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	parts := strings.SplitN(path, "/", 2)
 	c := containerByIdentifier(parts[0])
-	if c == nil {
-		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
-		return
+	id := 0
+	if c != nil {
+		id = c.ID
 	}
-	id := c.ID
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
+	}
+
+	// Snapshot delete/restore operations: allow even if the container was deleted
+	isSnapshotDelete := strings.HasPrefix(action, "snapshots/") && r.Method == http.MethodDelete
+	isSnapshotRestore := strings.HasPrefix(action, "snapshots/") && strings.HasSuffix(action, "/restore") && r.Method == http.MethodPost
+	isSnapshotAction := isSnapshotDelete || isSnapshotRestore
+	if !isSnapshotAction && c == nil {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
+		return
+	}
+	if isSnapshotAction && id == 0 {
+		// For orphaned snapshots, resolve containerID from the snapshot itself
+		snapshotID := strings.TrimPrefix(action, "snapshots/")
+		snapshotID = strings.TrimSuffix(snapshotID, "/restore")
+		snapshot := config.FindSnapshot(snapshotID)
+		if snapshot == nil {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Snapshot not found"})
+			return
+		}
+		id = snapshot.ContainerID
 	}
 
 	switch {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Key, Plus, Trash2, Copy, RefreshCw, Code, X } from 'lucide-react'
 import api, { APIResponse } from '../services/api'
+import { copyToClipboard } from '../utils/clipboard'
 
 interface ApiKeyItem {
   id: string
@@ -62,21 +63,12 @@ export default function ApiIntegration() {
     } catch { /* ignore */ }
   }
 
-  const copyKey = () => {
-    try {
-      navigator.clipboard.writeText(newKey)
-    } catch {
-      const ta = document.createElement('textarea')
-      ta.value = newKey
-      ta.style.position = 'fixed'
-      ta.style.left = '-9999px'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
+  const copyKey = async () => {
+    const copied = await copyToClipboard(newKey)
+    if (copied) {
+      setCopiedKey(true)
+      setTimeout(() => setCopiedKey(false), 2000)
     }
-    setCopiedKey(true)
-    setTimeout(() => setCopiedKey(false), 2000)
   }
 
   return (

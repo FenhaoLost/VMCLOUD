@@ -194,6 +194,18 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </button>
 
             <button
+              onClick={() => navigate('/sub-users')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/sub-users')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <UserCog className="w-4 h-4" />
+              {!collapsed && <span>子用户管理</span>}
+            </button>
+
+            <button
               onClick={() => navigate('/api-integration')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
                 isApiIntegrationPage

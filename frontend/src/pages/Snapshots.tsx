@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Camera, RefreshCw, Server } from 'lucide-react'
+import { Camera, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { getSnapshots, Snapshot } from '../services/api'
+import { deleteContainerSnapshot, getSnapshots, Snapshot } from '../services/api'
+import { useDialog } from '../components/Dialog'
 
 export default function Snapshots() {
   const navigate = useNavigate()
+  const dialog = useDialog()
   const [snapshots, setSnapshots] = useState<Snapshot[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [deleting, setDeleting] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     try {
@@ -22,6 +25,25 @@ export default function Snapshots() {
   }, [])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  const handleDelete = async (snapshot: Snapshot) => {
+    const confirmed = await dialog.confirm(
+      '删除快照',
+      `确认删除容器 ${snapshot.container_name} 的快照吗？此操作不可恢复。`
+    )
+    if (!confirmed) return
+
+    setDeleting(snapshot.id)
+    try {
+      await deleteContainerSnapshot(snapshot.container_id, snapshot.id)
+      setSnapshots(prev => prev.filter(s => s.id !== snapshot.id))
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      dialog.alert('删除失败', error.response?.data?.message || '请稍后重试')
+    } finally {
+      setDeleting(null)
+    }
+  }
 
   if (loading) {
     return (
@@ -66,6 +88,7 @@ export default function Snapshots() {
                 <th className="px-4 py-3 text-left font-medium">类型</th>
                 <th className="px-4 py-3 text-left font-medium">创建者</th>
                 <th className="px-4 py-3 text-right font-medium">大小</th>
+                <th className="px-4 py-3 text-center font-medium">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -89,6 +112,16 @@ export default function Snapshots() {
                   </td>
                   <td className="px-4 py-3 text-gray-600">{snapshot.created_by || '-'}</td>
                   <td className="px-4 py-3 text-right font-mono text-xs text-gray-600">{formatBytes(snapshot.size_bytes || 0)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <button
+                      onClick={() => handleDelete(snapshot)}
+                      disabled={deleting === snapshot.id}
+                      className="inline-flex items-center justify-center p-1.5 rounded text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+                      title="删除快照"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

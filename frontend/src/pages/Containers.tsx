@@ -401,7 +401,7 @@ export default function Containers() {
         </div>
       )}
 
-      <CreateContainerModal isOpen={showCreate} onClose={() => setShowCreate(false)} onSuccess={handleCreateQueued} />
+      <CreateContainerModal isOpen={showCreate} onClose={() => setShowCreate(false)} onSuccess={handleCreateQueued} existingNames={containers.map(c => c.name)} />
       {showTasks && (
         <TaskQueueModal
           tasks={tasks}

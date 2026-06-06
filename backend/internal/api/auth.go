@@ -67,6 +67,27 @@ func claimsFromToken(tokenString string) (jwt.MapClaims, bool) {
 		return nil, false
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, false
+	}
+
+	// For sub-user tokens, check token_version against stored version (password rotation invalidation)
+	if subUser, _ := claims["sub_user"].(string); subUser != "" {
+		tokenVersionFloat, hasVersion := claims["token_version"].(float64)
+		tokenVersion := int(tokenVersionFloat)
+		for i := range config.AppConfig.SubUsers {
+			if config.AppConfig.SubUsers[i].Username == subUser {
+				stored := config.AppConfig.SubUsers[i].TokenVersion
+				// If stored version > 0, require token_version to match exactly.
+				// This also rejects legacy tokens that lack token_version entirely.
+				if stored > 0 && (!hasVersion || tokenVersion != stored) {
+					return nil, false
+				}
+				break
+			}
+		}
+	}
+
 	return claims, ok
 }
 

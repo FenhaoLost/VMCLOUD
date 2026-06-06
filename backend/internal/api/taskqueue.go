@@ -35,6 +35,8 @@ type Task struct {
 	Config        lxc.ContainerConfig `json:"config,omitempty"`
 	Name          string              `json:"name,omitempty"`
 	User          string              `json:"user,omitempty"` // who created this task
+	IP            string              `json:"ip,omitempty"`
+	UserAgent     string              `json:"user_agent,omitempty"`
 }
 
 type TaskQueue struct {
@@ -100,6 +102,10 @@ func (q *TaskQueue) EnqueueBatch(taskType TaskType, ids []int, templateID string
 }
 
 func (q *TaskQueue) EnqueueBatchWithUser(taskType TaskType, ids []int, templateID string, user string) []string {
+	return q.EnqueueBatchWithAudit(taskType, ids, templateID, user, "", "")
+}
+
+func (q *TaskQueue) EnqueueBatchWithAudit(taskType TaskType, ids []int, templateID string, user string, ip string, userAgent string) []string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var result []string
@@ -109,7 +115,7 @@ func (q *TaskQueue) EnqueueBatchWithUser(taskType TaskType, ids []int, templateI
 		if c != nil {
 			name = c.Name
 		}
-		result = append(result, q.enqueueSingleWithUser(id, name, taskType, templateID, user))
+		result = append(result, q.enqueueSingleWithAudit(id, name, taskType, templateID, user, ip, userAgent))
 	}
 	q.persistTasks()
 	return result
@@ -168,6 +174,10 @@ func (q *TaskQueue) enqueueSingle(containerID int, containerName string, taskTyp
 }
 
 func (q *TaskQueue) enqueueSingleWithUser(containerID int, containerName string, taskType TaskType, templateID string, user string) string {
+	return q.enqueueSingleWithAudit(containerID, containerName, taskType, templateID, user, "", "")
+}
+
+func (q *TaskQueue) enqueueSingleWithAudit(containerID int, containerName string, taskType TaskType, templateID string, user string, ip string, userAgent string) string {
 	id := q.nextID
 	q.nextID++
 	task := &Task{
@@ -179,6 +189,8 @@ func (q *TaskQueue) enqueueSingleWithUser(containerID int, containerName string,
 		CreatedAt:     time.Now().Format("2006-01-02 15:04:05"),
 		TemplateID:    templateID,
 		User:          user,
+		IP:            ip,
+		UserAgent:     userAgent,
 	}
 	q.enqueueTask(task)
 	return task.ID
@@ -318,10 +330,10 @@ func (q *TaskQueue) opWorker() {
 		if err != nil {
 			task.Status = "failed"
 			task.Error = err.Error()
-			config.AddAuditLog(string(task.Type), task.ContainerName, "失败: "+err.Error(), auditUser)
+			config.AddAuditLogFull(string(task.Type), task.ContainerName, "失败: "+err.Error(), auditUser, task.IP, task.UserAgent, false, err.Error())
 		} else {
 			task.Status = "done"
-			config.AddAuditLog(string(task.Type), task.ContainerName, "成功", auditUser)
+			config.AddAuditLogFull(string(task.Type), task.ContainerName, "成功", auditUser, task.IP, task.UserAgent, true, "")
 			switch task.Type {
 			case TaskStart:
 				config.UpdateContainerStatus(task.ContainerID, "running")
@@ -418,6 +430,8 @@ func HandleSingleTaskAction(w http.ResponseWriter, r *http.Request, id int, acti
 			user = "user:" + subUser
 		}
 	}
+	ip := clientIP(r)
+	userAgent := r.Header.Get("User-Agent")
 
 	var taskType TaskType
 	var templateID string
@@ -452,7 +466,7 @@ func HandleSingleTaskAction(w http.ResponseWriter, r *http.Request, id int, acti
 		return
 	}
 
-	ids := globalQueue.EnqueueBatchWithUser(taskType, []int{id}, templateID, user)
+	ids := globalQueue.EnqueueBatchWithAudit(taskType, []int{id}, templateID, user, ip, userAgent)
 	jsonResponse(w, http.StatusAccepted, APIResponse{
 		Success: true,
 		Message: "Task queued",

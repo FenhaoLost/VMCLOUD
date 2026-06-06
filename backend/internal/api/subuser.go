@@ -66,7 +66,7 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	containerName := c.Name
 
-	// Check if sub-user already exists for this container
+	// Check if sub-user already exists and return the same management password.
 	for i := range config.AppConfig.SubUsers {
 		su := &config.AppConfig.SubUsers[i]
 		for _, uuid := range su.ContainerUUIDs {
@@ -74,18 +74,27 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 				if su.AccessCode == "" {
 					su.AccessCode = generateRandomStr(8)
 				}
-				password := generateRandomStr(16)
-				if hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost); err == nil {
+				password := su.Password
+				message := "Sub-user link returned"
+				if password == "" {
+					password = generateRandomStr(16)
+					hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+					if err != nil {
+						jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate password"})
+						return
+					}
 					su.PassHash = string(hash)
+					su.Password = password
+					su.Token = ""
+					su.TokenVersion++
+					message = "Sub-user password generated"
 				}
-				su.Password = ""
-				su.Token = ""
 				su.ContainerNames = appendUniqueString(su.ContainerNames, containerName)
 				su.ContainerUUIDs = appendUniqueString(su.ContainerUUIDs, c.UUID)
 				config.SaveConfig()
 				jsonResponse(w, http.StatusOK, APIResponse{
 					Success: true,
-					Message: "Sub-user password rotated",
+					Message: message,
 					Data:    newSubUserResponse(*su, password),
 				})
 				return
@@ -104,6 +113,7 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 	subUser := config.SubUser{
 		ID:             "sub-" + generateRandomStr(8),
 		Username:       username,
+		Password:       password,
 		PassHash:       string(hash),
 		ContainerNames: []string{containerName},
 		ContainerUUIDs: []string{c.UUID},
@@ -134,17 +144,24 @@ func HandleSubUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	clientUA := r.Header.Get("User-Agent")
+
 	// Find sub-user
 	for _, su := range config.AppConfig.SubUsers {
 		if su.Username == req.Username {
 			if err := bcrypt.CompareHashAndPassword([]byte(su.PassHash), []byte(req.Password)); err == nil {
-				// Generate fresh token
 				containerUUIDs := activeSubUserContainerUUIDs(&su)
 				if len(containerUUIDs) == 0 {
+					config.AddLoginLog(su.Username, clientIP, clientUA, false)
 					jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "No active container is assigned to this user"})
 					return
 				}
-				tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour))
+				tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour), su.TokenVersion)
+				config.AddLoginLog(su.Username, clientIP, clientUA, true)
 
 				jsonResponse(w, http.StatusOK, APIResponse{
 					Success: true,
@@ -155,6 +172,8 @@ func HandleSubUserLogin(w http.ResponseWriter, r *http.Request) {
 					},
 				})
 				return
+			} else {
+				config.AddLoginLog(su.Username, clientIP, clientUA, false)
 			}
 		}
 	}
@@ -179,19 +198,28 @@ func HandleSubUserAccessCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find sub-user by access code
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" {
+		clientIP = r.RemoteAddr
+	}
+	clientUA := r.Header.Get("User-Agent")
+
 	for _, su := range config.AppConfig.SubUsers {
 		if su.AccessCode == req.Code {
 			if err := bcrypt.CompareHashAndPassword([]byte(su.PassHash), []byte(req.Password)); err != nil {
+				config.AddLoginLog(su.Username, clientIP, clientUA, false)
 				jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid password"})
 				return
 			}
 
 			containerUUIDs := activeSubUserContainerUUIDs(&su)
 			if len(containerUUIDs) == 0 {
+				config.AddLoginLog(su.Username, clientIP, clientUA, false)
 				jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "No active container is assigned to this link"})
 				return
 			}
-			tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour))
+			tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour), su.TokenVersion)
+			config.AddLoginLog(su.Username, clientIP, clientUA, true)
 
 			jsonResponse(w, http.StatusOK, APIResponse{
 				Success: true,
@@ -208,10 +236,11 @@ func HandleSubUserAccessCode(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid access code"})
 }
 
-func newSubUserToken(username string, containerUUIDs []string, expiresAt time.Time) string {
+func newSubUserToken(username string, containerUUIDs []string, expiresAt time.Time, tokenVersion int) string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub_user":        username,
 		"container_uuids": containerUUIDs,
+		"token_version":   tokenVersion,
 		"exp":             expiresAt.Unix(),
 		"iat":             time.Now().Unix(),
 	})
@@ -459,5 +488,158 @@ func splitBy(s, sep string) []string {
 		}
 	}
 	result = append(result, current)
+	return result
+}
+
+// SubUserListItem is the enriched sub-user info returned by the list API
+type SubUserListItem struct {
+	ID             string   `json:"id"`
+	Username       string   `json:"username"`
+	ContainerNames []string `json:"container_names"`
+	ContainerUUIDs []string `json:"container_uuids"`
+	ContainerName  string   `json:"container_name"`
+	ContainerUUID  string   `json:"container_uuid"`
+	AccessCode     string   `json:"access_code"`
+	Password       string   `json:"password,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	LastLogin      string   `json:"last_login"`
+	LastLoginIP    string   `json:"last_login_ip"`
+	LastLoginUA    string   `json:"last_login_ua"`
+}
+
+// HandleSubUserList returns the list of all sub-users with container info
+func HandleSubUserList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+
+	result := make([]SubUserListItem, 0, len(config.AppConfig.SubUsers))
+	for _, su := range config.AppConfig.SubUsers {
+		item := SubUserListItem{
+			ID:             su.ID,
+			Username:       su.Username,
+			ContainerNames: su.ContainerNames,
+			ContainerUUIDs: su.ContainerUUIDs,
+			AccessCode:     su.AccessCode,
+			Password:       su.Password,
+			CreatedAt:      su.CreatedAt,
+		}
+
+		// Resolve container name from first active UUID
+		for _, uuid := range su.ContainerUUIDs {
+			if c := config.FindContainerByUUID(uuid); c != nil {
+				item.ContainerName = c.Name
+				item.ContainerUUID = c.UUID
+				break
+			}
+		}
+		if item.ContainerName == "" && len(su.ContainerNames) > 0 {
+			item.ContainerName = su.ContainerNames[0]
+		}
+
+		// Find last login time
+		for i := len(config.AppConfig.LoginLogs) - 1; i >= 0; i-- {
+			log := config.AppConfig.LoginLogs[i]
+			if log.Username == su.Username {
+				item.LastLogin = log.Time
+				item.LastLoginIP = log.IP
+				item.LastLoginUA = log.UserAgent
+				break
+			}
+		}
+
+		// Skip orphaned sub-users with no active containers
+		if item.ContainerName == "" && item.ContainerUUID == "" {
+			continue
+		}
+
+		result = append(result, item)
+	}
+
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: result})
+}
+
+// HandleSubUserAction handles actions on a specific sub-user
+func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/sub-users/")
+	parts := strings.SplitN(path, "/", 2)
+	subUserID := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	// Find sub-user
+	var target *config.SubUser
+	for i := range config.AppConfig.SubUsers {
+		if config.AppConfig.SubUsers[i].ID == subUserID {
+			target = &config.AppConfig.SubUsers[i]
+			break
+		}
+	}
+	if target == nil {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
+		return
+	}
+
+	switch {
+	case action == "rotate-password" && r.Method == http.MethodPost:
+		password := generateRandomStr(16)
+		if hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost); err == nil {
+			target.PassHash = string(hash)
+			target.Password = password
+			target.Token = ""
+			target.TokenVersion++ // invalidate all existing tokens
+			config.SaveConfig()
+			jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
+				"password":    password,
+				"access_code": target.AccessCode,
+				"username":    target.Username,
+			}})
+			return
+		}
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate password"})
+
+	case action == "audit-logs" && r.Method == http.MethodGet:
+		// Filter audit logs for this sub-user
+		logs := filterSubUserAuditLogs(target.Username)
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: logs})
+
+	case action == "login-logs" && r.Method == http.MethodGet:
+		// Filter login logs for this sub-user
+		logs := filterSubUserLoginLogs(target.Username)
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: logs})
+
+	default:
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Action not found"})
+	}
+}
+
+func filterSubUserAuditLogs(username string) []config.AuditLog {
+	result := make([]config.AuditLog, 0)
+	for i := len(config.AppConfig.AuditLogs) - 1; i >= 0; i-- {
+		log := config.AppConfig.AuditLogs[i]
+		if log.User == username || strings.HasPrefix(log.User, "user:") && strings.Contains(log.User, username) {
+			result = append(result, log)
+		}
+	}
+	if result == nil {
+		result = []config.AuditLog{}
+	}
+	return result
+}
+
+func filterSubUserLoginLogs(username string) []config.SavedLoginLog {
+	result := make([]config.SavedLoginLog, 0)
+	for i := len(config.AppConfig.LoginLogs) - 1; i >= 0; i-- {
+		log := config.AppConfig.LoginLogs[i]
+		if log.Username == username {
+			result = append(result, log)
+		}
+	}
+	if result == nil {
+		result = []config.SavedLoginLog{}
+	}
 	return result
 }

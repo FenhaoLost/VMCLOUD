@@ -45,7 +45,8 @@ func (m *Manager) CreateSnapshot(id int, createdBy string, scheduled bool, rotat
 
 	now := time.Now()
 	snapshotID := fmt.Sprintf("snap-%d-%s", id, now.Format("20060102150405-000000000"))
-	snapshotDir := filepath.Join(snapshotBaseDir(), lxcName, snapshotID)
+	// Use container ID instead of lxcName to avoid collision when containers are recreated
+	snapshotDir := filepath.Join(snapshotBaseDir(), strconv.Itoa(id), snapshotID)
 	if err := safePathUnder(snapshotDir, snapshotBaseDir()); err != nil {
 		return config.Snapshot{}, err
 	}

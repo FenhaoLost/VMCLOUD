@@ -1479,9 +1479,18 @@ func (m *Manager) DestroyContainer(id int) error {
 		}
 		return fmt.Errorf("container still exists after cleanup with status %s", status)
 	}
-	snapshotDir := filepath.Join(snapshotBaseDir(), lxcName)
+	// Remove snapshot physical files (by container ID, not lxcName)
+	snapshotDir := filepath.Join(snapshotBaseDir(), strconv.Itoa(id))
 	if err := safePathUnder(snapshotDir, snapshotBaseDir()); err == nil {
 		os.RemoveAll(snapshotDir)
+	}
+
+	// Also remove any legacy snapshot dir that used lxcName
+	legacySnapshotDir := filepath.Join(snapshotBaseDir(), lxcName)
+	if legacySnapshotDir != snapshotDir {
+		if err := safePathUnder(legacySnapshotDir, snapshotBaseDir()); err == nil {
+			os.RemoveAll(legacySnapshotDir)
+		}
 	}
 
 	if !config.RemoveContainer(id) {

@@ -12,6 +12,7 @@ import Settings from './pages/Settings'
 import ImageManagement from './pages/ImageManagement'
 import Snapshots from './pages/Snapshots'
 import Routing from './pages/Routing'
+import SubUserManagement from './pages/SubUserManagement'
 import Layout from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -63,6 +64,7 @@ function App() {
         <Route path="routing" element={<Routing />} />
         <Route path="audit-logs" element={<AuditLogs />} />
         <Route path="api-integration" element={<ApiIntegration />} />
+        <Route path="sub-users" element={<SubUserManagement />} />
         <Route path="settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

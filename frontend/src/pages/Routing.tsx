@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Network, RefreshCw, Route, Server } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Network, RefreshCw, Route, Search, Server, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { getRoutingInfo, RoutingInfo } from '../services/api'
+import { getRoutingInfo, RoutingInfo, NAT4Route, IPv6Route } from '../services/api'
 
 export default function Routing() {
   const navigate = useNavigate()
@@ -10,6 +10,8 @@ export default function Routing() {
   const [refreshing, setRefreshing] = useState(false)
   const [nat4Page, setNat4Page] = useState(1)
   const [ipv6Page, setIPv6Page] = useState(1)
+  const [nat4Search, setNat4Search] = useState('')
+  const [ipv6Search, setIPv6Search] = useState('')
 
   const fetchData = useCallback(async () => {
     try {
@@ -25,6 +27,39 @@ export default function Routing() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
+  const nat4Mappings = routing?.nat4_mappings || []
+  const ipv6Assignments = routing?.ipv6_assignments || []
+  const ipv6Prefix = routing?.ipv6_prefixes?.[0]?.prefix || '-'
+
+  // Filter helpers
+  const matchesNat4Search = (m: NAT4Route, query: string) => {
+    if (!query) return true
+    const q = query.toLowerCase()
+    return (
+      String(m.host_port).includes(q) ||
+      String(m.container_port).includes(q) ||
+      m.container_name.toLowerCase().includes(q) ||
+      m.lxc_name.toLowerCase().includes(q) ||
+      (m.ip || '').toLowerCase().includes(q)
+    )
+  }
+  const matchesIPv6Search = (item: IPv6Route, query: string) => {
+    if (!query) return true
+    const q = query.toLowerCase()
+    return (
+      (item.address || '').toLowerCase().includes(q) ||
+      item.container_name.toLowerCase().includes(q) ||
+      item.lxc_name.toLowerCase().includes(q)
+    )
+  }
+
+  const filteredNat4 = useMemo(() => nat4Mappings.filter(m => matchesNat4Search(m, nat4Search)), [nat4Mappings, nat4Search])
+  const filteredIPv6 = useMemo(() => ipv6Assignments.filter(m => matchesIPv6Search(m, ipv6Search)), [ipv6Assignments, ipv6Search])
+
+  // Reset page on search change
+  useEffect(() => { setNat4Page(1) }, [nat4Search])
+  useEffect(() => { setIPv6Page(1) }, [ipv6Search])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -33,16 +68,13 @@ export default function Routing() {
     )
   }
 
-  const nat4Mappings = routing?.nat4_mappings || []
-  const ipv6Assignments = routing?.ipv6_assignments || []
-  const ipv6Prefix = routing?.ipv6_prefixes?.[0]?.prefix || '-'
   const pageSize = 10
-  const nat4TotalPages = Math.max(1, Math.ceil(nat4Mappings.length / pageSize))
-  const ipv6TotalPages = Math.max(1, Math.ceil(ipv6Assignments.length / pageSize))
+  const nat4TotalPages = Math.max(1, Math.ceil(filteredNat4.length / pageSize))
+  const ipv6TotalPages = Math.max(1, Math.ceil(filteredIPv6.length / pageSize))
   const currentNat4Page = Math.min(nat4Page, nat4TotalPages)
   const currentIPv6Page = Math.min(ipv6Page, ipv6TotalPages)
-  const pagedNat4Mappings = nat4Mappings.slice((currentNat4Page - 1) * pageSize, currentNat4Page * pageSize)
-  const pagedIPv6Assignments = ipv6Assignments.slice((currentIPv6Page - 1) * pageSize, currentIPv6Page * pageSize)
+  const pagedNat4Mappings = filteredNat4.slice((currentNat4Page - 1) * pageSize, currentNat4Page * pageSize)
+  const pagedIPv6Assignments = filteredIPv6.slice((currentIPv6Page - 1) * pageSize, currentIPv6Page * pageSize)
 
   return (
     <div className="space-y-5">
@@ -80,10 +112,29 @@ export default function Routing() {
         />
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-        <div className="border-b border-gray-200 px-4 py-3">
-          <div className="text-sm font-medium text-black">NAT4 端口分配</div>
-          <div className="mt-1 text-xs text-gray-500">共 {nat4Mappings.length} 条映射</div>
+      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+        <div className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-black dark:text-white">NAT4 端口分配</div>
+            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {nat4Search ? `搜索 "${nat4Search}" 结果 ${filteredNat4.length} 条，` : ''}共 {nat4Mappings.length} 条映射
+            </div>
+          </div>
+          <div className="relative w-48">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+            <input
+              type="text"
+              value={nat4Search}
+              onChange={e => setNat4Search(e.target.value)}
+              placeholder="搜索端口/容器..."
+              className="w-full pl-8 pr-7 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white"
+            />
+            {nat4Search && (
+              <button onClick={() => setNat4Search('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
         </div>
         {nat4Mappings.length === 0 ? (
           <EmptyState icon={<Route className="h-7 w-7 text-gray-400" />} text="暂无 NAT4 端口映射" />
@@ -130,7 +181,7 @@ export default function Routing() {
           <Pagination
             page={currentNat4Page}
             totalPages={nat4TotalPages}
-            totalItems={nat4Mappings.length}
+            totalItems={filteredNat4.length}
             pageSize={pageSize}
             onPageChange={setNat4Page}
           />
@@ -138,10 +189,29 @@ export default function Routing() {
         )}
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-        <div className="border-b border-gray-200 px-4 py-3">
-          <div className="text-sm font-medium text-black">IPv6 地址分配</div>
-          <div className="mt-1 text-xs text-gray-500">共 {ipv6Assignments.length} 个地址</div>
+      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+        <div className="border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-black dark:text-white">IPv6 地址分配</div>
+            <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {ipv6Search ? `搜索 "${ipv6Search}" 结果 ${filteredIPv6.length} 条，` : ''}共 {ipv6Assignments.length} 个地址
+            </div>
+          </div>
+          <div className="relative w-48">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+            <input
+              type="text"
+              value={ipv6Search}
+              onChange={e => setIPv6Search(e.target.value)}
+              placeholder="搜索地址/容器..."
+              className="w-full pl-8 pr-7 py-1.5 text-xs border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-black dark:focus:ring-white"
+            />
+            {ipv6Search && (
+              <button onClick={() => setIPv6Search('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
         </div>
         {ipv6Assignments.length === 0 ? (
           <EmptyState icon={<Network className="h-7 w-7 text-gray-400" />} text="暂无 IPv6 地址分配" />
@@ -184,7 +254,7 @@ export default function Routing() {
           <Pagination
             page={currentIPv6Page}
             totalPages={ipv6TotalPages}
-            totalItems={ipv6Assignments.length}
+            totalItems={filteredIPv6.length}
             pageSize={pageSize}
             onPageChange={setIPv6Page}
           />
