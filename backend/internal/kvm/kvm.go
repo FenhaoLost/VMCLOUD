@@ -319,7 +319,9 @@ func (m *Manager) StartContainer(id int) error {
 	if status != "running" {
 		cmd := exec.Command("virsh", "start", name)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("virsh start failed: %v, output: %s", err, string(output))
+			if !strings.Contains(strings.ToLower(string(output)), "domain is already active") {
+				return fmt.Errorf("virsh start failed: %v, output: %s", err, string(output))
+			}
 		}
 	}
 	config.UpdateContainerStatus(id, "running")
@@ -339,7 +341,14 @@ func (m *Manager) StartContainer(id int) error {
 	if err := lxc.NewManager().ApplyPortMappings(id); err != nil {
 		return err
 	}
-	return m.EnsureSSH(id)
+	if c.IPv6 != "" {
+		if err := m.applyIPv6Runtime(c); err != nil {
+			return err
+		}
+	} else {
+		ensureKVMIPv6DenyRule("virbr0", c.MACAddress)
+	}
+	return nil
 }
 
 func (m *Manager) StopContainer(id int) error {
@@ -384,6 +393,7 @@ func (m *Manager) DestroyContainer(id int) error {
 		return fmt.Errorf("container not found: %d", id)
 	}
 	name := c.VirshName()
+	removeKVMIPv6Runtime(c)
 	_ = m.StopContainer(id)
 	_ = undefineDomain(name)
 	if err := os.RemoveAll(m.instanceDir(name)); err != nil {
@@ -447,13 +457,22 @@ func (m *Manager) ResetSSHPassword(id int) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("container not found: %d", id)
 	}
-	if c.Status != "running" || c.IP == "" || c.SSHPassword == "" {
-		return "", fmt.Errorf("KVM VM must be running with SSH ready before password reset")
+	if c.Status != "running" {
+		return "", fmt.Errorf("KVM VM must be running before password reset")
+	}
+	password := generateRandomString(16)
+	if err := runKVMGuestAgentSSHSetup(c.VirshName(), password); err == nil {
+		c.SSHPassword = password
+		c.SSHHostKey = ""
+		config.SaveConfig()
+		return password, nil
+	}
+	if c.IP == "" || c.SSHPassword == "" {
+		return "", fmt.Errorf("KVM guest agent is not ready and saved SSH credentials are unavailable")
 	}
 	if err := m.EnsureSSH(id); err != nil {
 		return "", err
 	}
-	password := generateRandomString(16)
 	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
 		User:            "root",
 		Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
@@ -1012,7 +1031,11 @@ func createOverlayDisk(base, target string, diskGB int) error {
 }
 
 func createSeedISO(seedPath, instanceID, hostname, password, mac, ipv6 string) error {
-	setupScript := indentScript(kvmSSHSetupScript(password), 4)
+	guestSetup := kvmSSHSetupScript(password)
+	if strings.TrimSpace(ipv6) != "" {
+		guestSetup += "\n" + kvmIPv6SetupScript(ipv6)
+	}
+	setupScript := indentScript(guestSetup, 4)
 	userData := fmt.Sprintf(`#cloud-config
 preserve_hostname: false
 hostname: %s
@@ -1041,6 +1064,7 @@ runcmd:
       routes:
         - to: default
           via: %s
+          on-link: true
           metric: 100`, ipv6, ipv6GatewayLinkLocal)
 	}
 	networkConfig := fmt.Sprintf(`version: 2
@@ -1315,7 +1339,10 @@ func runKVMGuestAgentSSHSetup(name string, password string) error {
 }
 
 func runKVMSSHSetup(client *ssh.Client, password string) error {
-	script := kvmSSHSetupScript(password)
+	return runKVMSSHScript(client, kvmSSHSetupScript(password), "KVM SSH", 150*time.Second)
+}
+
+func runKVMSSHScript(client *ssh.Client, script string, description string, timeout time.Duration) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return err
@@ -1331,12 +1358,12 @@ func runKVMSSHSetup(client *ssh.Client, password string) error {
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("failed to configure KVM SSH: %v, output: %s", err, string(output))
+			return fmt.Errorf("failed to configure %s: %v, output: %s", description, err, string(output))
 		}
 		return nil
-	case <-time.After(150 * time.Second):
+	case <-time.After(timeout):
 		_ = session.Close()
-		return fmt.Errorf("timed out configuring KVM SSH after 150s")
+		return fmt.Errorf("timed out configuring %s after %s", description, timeout)
 	}
 }
 
@@ -1486,6 +1513,37 @@ func (m *Manager) StartUsageMonitor() {
 			m.updateAllRates()
 		}
 	}()
+}
+
+func (m *Manager) StartIPv6Guard() {
+	go func() {
+		m.applyIPv6Guards()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.applyIPv6Guards()
+		}
+	}()
+}
+
+func (m *Manager) applyIPv6Guards() {
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if !c.IsKVM() || c.MACAddress == "" {
+			continue
+		}
+		if c.IPv6 == "" {
+			ensureKVMIPv6DenyRule("virbr0", c.MACAddress)
+			continue
+		}
+		if err := m.applyIPv6HostRuntime(c); err != nil {
+			fmt.Printf("Warning: failed to refresh KVM IPv6 guard for %s: %v\n", c.Name, err)
+			continue
+		}
+		if c.Status == "running" {
+			_ = m.applyGuestIPv6Runtime(c)
+		}
+	}
 }
 
 func (m *Manager) updateAllRates() {
@@ -1839,6 +1897,22 @@ func (m *Manager) applyIPv6Runtime(c *config.Container) error {
 	if c == nil || c.IPv6 == "" {
 		return nil
 	}
+	if err := m.applyIPv6HostRuntime(c); err != nil {
+		return err
+	}
+	if c.Status == "running" {
+		if err := m.applyGuestIPv6Runtime(c); err != nil {
+			fmt.Printf("Warning: failed to apply KVM guest IPv6 for %s: %v\n", c.Name, err)
+		}
+	}
+	ensureKVMIPv6NAT66(c.IPv6, c.IPv6Interface)
+	return nil
+}
+
+func (m *Manager) applyIPv6HostRuntime(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
 	if c.IPv6Interface == "" {
 		prefixes := lxc.DetectPublicIPv6Prefixes()
 		if len(prefixes) == 0 {
@@ -1861,17 +1935,7 @@ func (m *Manager) applyIPv6Runtime(c *config.Container) error {
 		return fmt.Errorf("failed to add IPv6 proxy NDP: %v, output: %s", err, string(out))
 	}
 	ensureKVMIPv6ForwardRules(c.IPv6, bridge)
-	if c.Status == "running" {
-		if err := m.applyGuestIPv6(c); err != nil {
-			return err
-		}
-		if !m.guestIPv6ConnectivityOK(c) {
-			ensureKVMIPv6NAT66(c.IPv6, c.IPv6Interface)
-			if !m.guestIPv6ConnectivityOK(c) {
-				fmt.Printf("Warning: IPv6 assigned for KVM VM %s, but guest connectivity test did not pass immediately\n", c.Name)
-			}
-		}
-	}
+	ensureKVMIPv6AntiSpoofRules(c.IPv6, bridge, c.MACAddress)
 	return nil
 }
 
@@ -1896,6 +1960,29 @@ func ensureKVMIPv6ForwardRules(ipv6 string, bridge string) {
 	}
 }
 
+func ensureKVMIPv6AntiSpoofRules(ipv6 string, bridge string, mac string) {
+	if ipv6 == "" || bridge == "" || mac == "" {
+		return
+	}
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	acceptRule := []string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-s", ipv6 + "/128", "-j", "ACCEPT"}
+	dropRule := []string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-j", "DROP"}
+	deleteIP6Rule(acceptRule)
+	deleteIP6Rule(dropRule)
+	insertIP6Rule(dropRule)
+	insertIP6Rule(acceptRule)
+}
+
+func ensureKVMIPv6DenyRule(bridge string, mac string) {
+	if bridge == "" || mac == "" {
+		return
+	}
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	rule := []string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-j", "DROP"}
+	deleteIP6Rule(rule)
+	insertIP6Rule(rule)
+}
+
 func ensureKVMIPv6NAT66(ipv6 string, uplink string) {
 	if ipv6 == "" || uplink == "" {
 		return
@@ -1908,35 +1995,128 @@ func ensureKVMIPv6NAT66(ipv6 string, uplink string) {
 	}
 }
 
+func removeKVMIPv6Runtime(c *config.Container) {
+	if c == nil {
+		return
+	}
+	bridge := "virbr0"
+	removeKVMIPv6DenyRule(bridge, c.MACAddress)
+	if c.IPv6 == "" {
+		return
+	}
+	removeKVMIPv6NAT66(c.IPv6, c.IPv6Interface)
+	removeKVMIPv6ForwardRules(c.IPv6, bridge)
+	removeKVMIPv6AntiSpoofRules(c.IPv6, bridge, c.MACAddress)
+	if c.IPv6Interface != "" {
+		_ = exec.Command("ip", "-6", "neigh", "del", "proxy", c.IPv6, "dev", c.IPv6Interface).Run()
+	}
+	_ = exec.Command("ip", "-6", "route", "del", c.IPv6+"/128", "dev", bridge).Run()
+}
+
+func removeKVMIPv6ForwardRules(ipv6 string, bridge string) {
+	if ipv6 == "" || bridge == "" {
+		return
+	}
+	rules := [][]string{
+		{"FORWARD", "-i", bridge, "-s", ipv6 + "/128", "-j", "ACCEPT"},
+		{"FORWARD", "-o", bridge, "-d", ipv6 + "/128", "-j", "ACCEPT"},
+	}
+	for _, rule := range rules {
+		deleteIP6Rule(rule)
+	}
+}
+
+func removeKVMIPv6AntiSpoofRules(ipv6 string, bridge string, mac string) {
+	if ipv6 == "" || bridge == "" || mac == "" {
+		return
+	}
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	deleteIP6Rule([]string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-s", ipv6 + "/128", "-j", "ACCEPT"})
+	deleteIP6Rule([]string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-j", "DROP"})
+}
+
+func removeKVMIPv6DenyRule(bridge string, mac string) {
+	if bridge == "" || mac == "" {
+		return
+	}
+	mac = strings.ToLower(strings.TrimSpace(mac))
+	deleteIP6Rule([]string{"FORWARD", "-i", bridge, "-m", "mac", "--mac-source", mac, "-j", "DROP"})
+}
+
+func removeKVMIPv6NAT66(ipv6 string, uplink string) {
+	if ipv6 == "" || uplink == "" {
+		return
+	}
+	rule := []string{"POSTROUTING", "-s", ipv6 + "/128", "-o", uplink, "-j", "MASQUERADE"}
+	for {
+		del := append([]string{"-t", "nat", "-D"}, rule...)
+		if exec.Command("ip6tables", del...).Run() != nil {
+			return
+		}
+	}
+}
+
+func insertIP6Rule(rule []string) {
+	if len(rule) == 0 {
+		return
+	}
+	add := append([]string{"-I"}, append([]string{rule[0], "1"}, rule[1:]...)...)
+	_ = exec.Command("ip6tables", add...).Run()
+}
+
+func deleteIP6Rule(rule []string) {
+	for {
+		del := append([]string{"-D"}, rule...)
+		if exec.Command("ip6tables", del...).Run() != nil {
+			return
+		}
+	}
+}
+
 func (m *Manager) applyGuestIPv6(c *config.Container) error {
 	if c == nil || c.IPv6 == "" {
 		return nil
 	}
 	script := kvmIPv6SetupScript(c.IPv6)
-	if c.IP != "" && c.SSHPassword != "" {
-		client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
-			User:            "root",
-			Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-			Timeout:         8 * time.Second,
-		})
-		if err == nil {
-			defer client.Close()
-			session, err := client.NewSession()
-			if err != nil {
-				return err
-			}
-			defer session.Close()
-			if output, err := session.CombinedOutput(script); err != nil {
-				return fmt.Errorf("failed to apply guest IPv6 over SSH: %v, output: %s", err, string(output))
-			}
-			return nil
-		}
-	}
 	if err := qemuGuestPing(c.VirshName()); err != nil {
-		return fmt.Errorf("failed to apply guest IPv6: SSH unavailable and %w", err)
+		return err
 	}
 	return qemuGuestExec(c.VirshName(), script, 60*time.Second)
+}
+
+func (m *Manager) applyGuestIPv6Runtime(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
+	qgaErr := m.applyGuestIPv6(c)
+	if qgaErr == nil {
+		return nil
+	}
+	sshErr := m.applyGuestIPv6OverSSH(c)
+	if sshErr == nil {
+		return nil
+	}
+	return fmt.Errorf("QGA: %v; SSH: %v", qgaErr, sshErr)
+}
+
+func (m *Manager) applyGuestIPv6OverSSH(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
+	if c.IP == "" || c.SSHPassword == "" {
+		return fmt.Errorf("missing guest IPv4 or SSH password")
+	}
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
+		User:            "root",
+		Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         8 * time.Second,
+	})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return runKVMSSHScript(client, kvmIPv6SetupScript(c.IPv6), "KVM IPv6", 60*time.Second)
 }
 
 func kvmIPv6SetupScript(ipv6 string) string {
@@ -1955,7 +2135,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf."$IFACE".disable_ipv6=0 >/dev/null 2>&1 || true
 ip -6 addr replace "$IPV6_ADDR/128" dev "$IFACE"
-ip -6 route replace default via "$IPV6_GW" dev "$IFACE" metric 100
+ip -6 route replace default via "$IPV6_GW" dev "$IFACE" onlink metric 100
 mkdir -p /usr/local/sbin /etc/systemd/system /etc/network/if-up.d /etc/local.d
 cat > /usr/local/sbin/clicd-kvm-ipv6-init <<'EOF'
 #!/bin/sh
@@ -1971,7 +2151,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
 sysctl -w net.ipv6.conf."$IFACE".disable_ipv6=0 >/dev/null 2>&1 || true
 ip -6 addr replace "$IPV6_ADDR/128" dev "$IFACE"
-ip -6 route replace default via "$IPV6_GW" dev "$IFACE" metric 100
+ip -6 route replace default via "$IPV6_GW" dev "$IFACE" onlink metric 100
 EOF
 chmod +x /usr/local/sbin/clicd-kvm-ipv6-init
 cat > /etc/systemd/system/clicd-kvm-ipv6.service <<'EOF'
@@ -2006,34 +2186,6 @@ cat > /etc/network/if-up.d/clicd-kvm-ipv6 <<'EOF'
 EOF
 chmod +x /etc/network/if-up.d/clicd-kvm-ipv6
 `
-}
-
-func (m *Manager) guestIPv6ConnectivityOK(c *config.Container) bool {
-	if c == nil || c.IP == "" || c.SSHPassword == "" {
-		return false
-	}
-	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
-		User:            "root",
-		Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         8 * time.Second,
-	})
-	if err != nil {
-		return false
-	}
-	defer client.Close()
-	for _, target := range []string{"2606:4700:4700::1111", "2001:4860:4860::8888"} {
-		session, err := client.NewSession()
-		if err != nil {
-			continue
-		}
-		err = session.Run("ping -6 -c 1 -W 2 " + shellQuote(target))
-		_ = session.Close()
-		if err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func (m *Manager) allocateIPv6ForContainer(id int) (string, int, string, error) {

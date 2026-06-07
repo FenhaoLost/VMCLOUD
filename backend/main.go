@@ -64,6 +64,7 @@ func main() {
 		// Start usage monitors (computes CPU/network/disk rates every 5s)
 		manager.StartUsageMonitor()
 		kvmManager.StartUsageMonitor()
+		kvmManager.StartIPv6Guard()
 
 		// Start scheduled snapshot scanners.
 		manager.StartSnapshotScheduler()
