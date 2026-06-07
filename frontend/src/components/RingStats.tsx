@@ -16,8 +16,8 @@ export function RingStat({ value, max = 100, label, subLabel, size = 120, stroke
 
   const radius = (size - strokeWidth) / 2
   const circumference = radius * 2 * Math.PI
-  const percentage = Math.min(Math.max(value / max * 100, 0), 100)
-  const strokeDashoffset = circumference - (percentage / 100) * circumference
+  const percentage = max === Infinity ? Math.max(value, 0) : Math.min(Math.max(value / max * 100, 0), 100)
+  const strokeDashoffset = circumference - (Math.min(percentage, 100) / 100) * circumference
 
   const bgStroke = isDark ? '#374151' : '#f3f4f6'
   const progressStroke = isDark ? '#f9fafb' : '#000000'
@@ -51,7 +51,7 @@ export function RingStat({ value, max = 100, label, subLabel, size = 120, stroke
         </svg>
         {/* Center value */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-bold text-black dark:text-white">{value.toFixed(percentage < 1 ? 2 : 1)}%</span>
+          <span className="text-2xl font-bold text-black dark:text-white">{percentage.toFixed(percentage < 1 ? 2 : 1)}%</span>
         </div>
       </div>
       <div className="mt-2 text-center">
@@ -73,7 +73,6 @@ interface RingStatsProps {
   swapUsed?: number
   swapTotal?: number
   loadPercent: number
-  loadStatus: string
   diskPercent: number
   diskUsed: number
   diskTotal: number
@@ -90,7 +89,6 @@ export default function RingStats({
   swapUsed = 0,
   swapTotal = 0,
   loadPercent,
-  loadStatus,
   diskPercent,
   diskUsed,
   diskTotal,
@@ -125,8 +123,8 @@ export default function RingStats({
         )}
         <RingStat
           value={loadPercent}
+          max={Infinity}
           label="负载"
-          subLabel={loadStatus}
         />
         <RingStat
           value={diskPercent}

@@ -119,8 +119,7 @@ export default function Dashboard() {
           ramPercent={host.ram.total_mb > 0 ? (host.ram.used_mb / host.ram.total_mb) * 100 : 0}
           ramUsed={host.ram.used_mb}
           ramTotal={host.ram.total_mb}
-          loadPercent={Math.min((host.load.load1 / host.cpu.cores) * 100, 100)}
-          loadStatus={host.load.load1 < host.cpu.cores * 0.7 ? '正常' : host.load.load1 < host.cpu.cores * 1.0 ? '中等' : '高'}
+          loadPercent={(host.load.load1 / Math.max(host.cpu.cores, 1)) * 100}
           diskPercent={host.disk.total_gb > 0 ? (host.disk.used_gb / host.disk.total_gb) * 100 : 0}
           diskUsed={host.disk.used_gb * 1024}
           diskTotal={host.disk.total_gb * 1024}

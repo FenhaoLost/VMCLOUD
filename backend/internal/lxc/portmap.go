@@ -174,12 +174,24 @@ func normalizePortMapping(c *config.Container, skipIndex int, pm config.PortMapp
 	if pm.HostPort <= 0 {
 		pm.HostPort = pm.ContainerPort
 	}
+	// Check current container's own mappings
 	for i, existing := range c.PortMappings {
 		if i == skipIndex {
 			continue
 		}
 		if existing.HostPort == pm.HostPort && existing.Protocol == pm.Protocol {
-			return pm, fmt.Errorf("host port %d/%s already mapped", pm.HostPort, pm.Protocol)
+			return pm, fmt.Errorf("host port %d/%s already mapped in this container", pm.HostPort, pm.Protocol)
+		}
+	}
+	// Check all other containers (LXC + KVM) for port conflicts
+	for _, oc := range config.AppConfig.Containers {
+		if oc.ID == c.ID {
+			continue
+		}
+		for _, existing := range oc.PortMappings {
+			if existing.HostPort == pm.HostPort && existing.Protocol == pm.Protocol {
+				return pm, fmt.Errorf("host port %d/%s already used by container %s (ID: %d)", pm.HostPort, pm.Protocol, oc.Name, oc.ID)
+			}
 		}
 	}
 	return pm, nil
@@ -190,9 +202,19 @@ func allocateDefaultEqualPorts(c *config.Container, count int) []int {
 		return nil
 	}
 	used := map[int]bool{}
+	// Mark current container's ports
 	for _, pm := range c.PortMappings {
 		used[pm.HostPort] = true
 		used[pm.ContainerPort] = true
+	}
+	// Also mark all other containers' host ports (LXC + KVM)
+	for _, oc := range config.AppConfig.Containers {
+		if oc.ID == c.ID {
+			continue
+		}
+		for _, pm := range oc.PortMappings {
+			used[pm.HostPort] = true
+		}
 	}
 	ports := make([]int, 0, count)
 	next := 20000

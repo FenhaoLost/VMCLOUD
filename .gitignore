@@ -64,3 +64,4 @@ backend/tmp/
 Thumbs.db
 linux.txt
 push-release.ps1
+deploy.ps1

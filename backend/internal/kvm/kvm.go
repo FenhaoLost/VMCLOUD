@@ -503,7 +503,8 @@ func (m *Manager) ApplyContainerLimits(c *config.Container) error {
 		return nil
 	}
 	if c.Status == "running" {
-		return fmt.Errorf("KVM resource changes require shutdown and start")
+		// Config already saved; domain definition will be refreshed on next start
+		return nil
 	}
 	if c.DiskImage == "" || c.MACAddress == "" {
 		return nil
@@ -901,6 +902,9 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 		"disk_write_bytes":   writeBytes,
 		"disk_read_bps":      0.0,
 		"disk_write_bps":     0.0,
+		"load1":              0.0,
+		"load5":              0.0,
+		"load15":             0.0,
 	}
 	if c.DiskImage != "" {
 		if info, err := os.Stat(c.DiskImage); err == nil {
@@ -2264,9 +2268,19 @@ func allocateDefaultEqualPorts(c *config.Container, count int) []int {
 		return nil
 	}
 	used := map[int]bool{}
+	// Mark current container's ports
 	for _, pm := range c.PortMappings {
 		used[pm.HostPort] = true
 		used[pm.ContainerPort] = true
+	}
+	// Also mark all other containers' host ports (LXC + KVM)
+	for _, oc := range config.AppConfig.Containers {
+		if oc.ID == c.ID {
+			continue
+		}
+		for _, pm := range oc.PortMappings {
+			used[pm.HostPort] = true
+		}
 	}
 	ports := make([]int, 0, count)
 	for next := 20000; next <= 65535 && len(ports) < count; next++ {

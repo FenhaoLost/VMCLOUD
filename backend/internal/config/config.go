@@ -716,12 +716,27 @@ func UpdateVNC(containers []Container) {
 	SaveConfig()
 }
 
-// AllocateSSHPort allocates a new SSH port
+// AllocateSSHPort allocates a new SSH port, skipping ports already used by any container
 func AllocateSSHPort() int {
+	used := collectAllHostPorts()
 	port := AppConfig.NextSSHPort
-	AppConfig.NextSSHPort++
+	for used[port] {
+		port++
+	}
+	AppConfig.NextSSHPort = port + 1
 	SaveConfig()
 	return port
+}
+
+// collectAllHostPorts collects all host ports used by any container (LXC + KVM)
+func collectAllHostPorts() map[int]bool {
+	used := map[int]bool{}
+	for _, c := range AppConfig.Containers {
+		for _, pm := range c.PortMappings {
+			used[pm.HostPort] = true
+		}
+	}
+	return used
 }
 
 // IsValidContainerName checks if container name is valid (no duplicate check needed, ID is primary key)

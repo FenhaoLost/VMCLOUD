@@ -654,6 +654,7 @@ export default function ContainerDetail() {
   const filtered = filterHistory(history, range)
   const cpuPct = clamp(usage?.cpu_usage_pct || 0)
   const ramPct = container.ram_mb > 0 ? clamp(((usage?.memory_usage_bytes || 0) / (container.ram_mb * 1024 * 1024)) * 100) : 0
+  const loadPct = container.vcpu > 0 ? ((usage?.load1 || 0) / container.vcpu) * 100 : 0
   const diskPct = container.disk_gb > 0 ? clamp(((usage?.disk_usage_bytes || 0) / (container.disk_gb * 1024 * 1024 * 1024)) * 100) : 0
   const networkBps = (usage?.network_rx_bps || 0) + (usage?.network_tx_bps || 0)
   const rx = usage?.network_rx_bps || 0
@@ -873,9 +874,9 @@ export default function ContainerDetail() {
               subLabel={`${formatMB(usage?.memory_usage_bytes || 0)} / ${formatMB(container.ram_mb * 1024 * 1024)}`}
             />
             <RingStat
-              value={Math.min(cpuPct, 100)}
+              value={loadPct}
+              max={Infinity}
               label="负载"
-              subLabel={cpuPct < 70 ? '正常' : cpuPct < 90 ? '中等' : '高'}
             />
             <RingStat
               value={diskPct}

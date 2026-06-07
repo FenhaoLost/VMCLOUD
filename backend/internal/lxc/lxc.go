@@ -2272,6 +2272,11 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 	usage := make(map[string]interface{})
 
 	// Read raw values
+	load1, load5, load15 := m.getContainerLoadAvg(lxcName)
+	usage["load1"] = load1
+	usage["load5"] = load5
+	usage["load15"] = load15
+
 	memUsage := readIntCommand(fmt.Sprintf(
 		"cat /sys/fs/cgroup/lxc/%[1]s/memory.current 2>/dev/null || "+
 			"cat /sys/fs/cgroup/lxc.payload.%[1]s/memory.current 2>/dev/null || "+
@@ -2317,6 +2322,25 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 	}
 
 	return usage, nil
+}
+
+func (m *Manager) getContainerLoadAvg(lxcName string) (float64, float64, float64) {
+	pid := m.getContainerInitPID(lxcName)
+	if pid == "" {
+		return 0, 0, 0
+	}
+	out, err := exec.Command("nsenter", "-t", pid, "-m", "-p", "cat", "/proc/loadavg").Output()
+	if err != nil {
+		return 0, 0, 0
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) < 3 {
+		return 0, 0, 0
+	}
+	load1, _ := strconv.ParseFloat(parts[0], 64)
+	load5, _ := strconv.ParseFloat(parts[1], 64)
+	load15, _ := strconv.ParseFloat(parts[2], 64)
+	return load1, load5, load15
 }
 
 func (m *Manager) getContainerNetworkBytes(lxcName string) (uint64, uint64) {

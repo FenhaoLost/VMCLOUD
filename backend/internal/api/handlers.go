@@ -298,7 +298,11 @@ func updateResourceLimit(w http.ResponseWriter, r *http.Request, id int) {
 		}
 	}
 
-	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Resource limits updated"})
+	msg := "Resource limits updated"
+	if c.IsKVM() && c.Status == "running" {
+		msg = "资源已保存，请关机重启虚拟机后生效"
+	}
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: msg})
 }
 
 func getRandomPort(w http.ResponseWriter, r *http.Request, id int) {

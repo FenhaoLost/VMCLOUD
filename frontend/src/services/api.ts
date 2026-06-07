@@ -170,6 +170,9 @@ export interface ContainerUsage {
   disk_write_bytes: number
   disk_read_bps: number
   disk_write_bps: number
+  load1: number
+  load5: number
+  load15: number
 }
 
 export interface APIResponse<T = unknown> {
