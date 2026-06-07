@@ -3,13 +3,6 @@ import { Lock, User } from 'lucide-react'
 import AppIcon from '../components/AppIcon'
 import { useAuth } from '../contexts/AuthContext'
 
-async function sha256Hash(input: string): Promise<string> {
-  const msgBuffer = new TextEncoder().encode(input)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
 export default function Login() {
   const { login, accessCodeLogin } = useAuth()
   const [username, setUsername] = useState('')
@@ -36,7 +29,7 @@ export default function Login() {
       }
     } catch (err: unknown) {
       const error = err as { response?: { data?: { message?: string } } }
-      setError(error.response?.data?.message || '鐧诲綍澶辫触锛岃妫€鏌ョ敤鎴峰悕鍜屽瘑鐮?)
+      setError(error.response?.data?.message || '登录失败，请检查用户名和密码')
     } finally {
       setLoading(false)
     }
@@ -51,7 +44,7 @@ export default function Login() {
                 <AppIcon className="w-10 h-10" />
               </div>
               <h1 className="text-2xl font-bold text-gray-950">CLICD</h1>
-              <p className="text-gray-500 mt-1 text-sm">{isAccessCodeLogin ? '瀹瑰櫒绠＄悊鐧诲綍' : 'LXC Container Manager'}</p>
+              <p className="text-gray-500 mt-1 text-sm">{isAccessCodeLogin ? '容器管理登录' : 'LXC Container Manager'}</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
@@ -64,7 +57,7 @@ export default function Login() {
               {!isAccessCodeLogin && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    鐢ㄦ埛鍚?
+                    用户名
                   </label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -75,7 +68,7 @@ export default function Login() {
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
                       className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-md text-black bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm"
-                      placeholder="杈撳叆鐢ㄦ埛鍚?
+                      placeholder="输入用户名"
                       required
                       autoComplete="username"
                     />
@@ -85,7 +78,7 @@ export default function Login() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                瀵嗙爜
+                密码
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -96,7 +89,7 @@ export default function Login() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-md text-black bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm"
-                  placeholder="杈撳叆瀵嗙爜"
+                  placeholder="输入密码"
                   required
                   autoComplete="current-password"
                 />
@@ -108,7 +101,7 @@ export default function Login() {
               disabled={loading}
               className="w-full bg-black text-white py-2.5 rounded-md hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-black focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
             >
-              {loading ? '鐧诲綍涓?..' : '鐧诲綍'}
+              {loading ? '登录中...' : '登录'}
             </button>
           </form>
         </div>

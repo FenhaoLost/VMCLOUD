@@ -12,13 +12,3 @@ func Current() string {
 	return Version
 }
 
-
-
-
-
-
-
-
-
-
-
