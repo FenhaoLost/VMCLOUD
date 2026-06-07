@@ -101,14 +101,28 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c.IP == "" {
-		if ip, err := lxcManager.GetContainerIP(c.LxcName()); err == nil {
+		var ip string
+		var err error
+		if c.IsKVM() {
+			ip, err = kvmManager.GetContainerIP(c.VirshName())
+		} else {
+			ip, err = lxcManager.GetContainerIP(c.LxcName())
+		}
+		if err == nil {
 			c.IP = ip
 			config.SaveConfig()
 		}
 	}
-	if c.IP == "" {
+	if c.IP == "" && !c.IsKVM() {
 		if ip, err := lxcManager.EnsureContainerIPv4(c.ID); err == nil && ip != "" {
 			c.IP = ip
+		}
+	}
+	if c.IP == "" && c.IsKVM() {
+		if err := kvmManager.EnsureSSH(c.ID); err == nil {
+			if refreshed := config.FindContainer(c.ID); refreshed != nil {
+				c = refreshed
+			}
 		}
 	}
 	if c.IP == "" {
@@ -127,6 +141,10 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	if c.SSHPassword == "" {
+		if c.IsKVM() {
+			writeWebSocketText(ws, nil, "\r\nKVM SSH password is not available. Reinstall or reset after SSH is ready.\r\n")
+			return
+		}
 		writeWebSocketText(ws, nil, "\r\nPreparing SSH service. This can take up to 90 seconds on first boot...\r\n")
 		if err := lxcManager.EnsureSSH(c.ID); err != nil {
 			writeWebSocketText(ws, nil, fmt.Sprintf("\r\nSSH auto setup failed: %v\r\n", err))
@@ -154,25 +172,48 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 	writeWebSocketText(ws, nil, fmt.Sprintf("Connecting to %s...\r\n", addr))
 	client, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
-		writeWebSocketText(ws, nil, "\r\nSSH is not ready yet, preparing service. This can take up to 90 seconds on first boot...\r\n")
-		if setupErr := lxcManager.EnsureSSH(c.ID); setupErr != nil {
-			writeWebSocketText(ws, nil, fmt.Sprintf("\r\nSSH auto setup failed: %v\r\n", setupErr))
-			return
-		}
-		if refreshed := config.FindContainer(c.ID); refreshed != nil {
-			c = refreshed
-		}
-		if ip, ipErr := lxcManager.GetContainerIP(c.LxcName()); ipErr == nil && ip != "" {
-			c.IP = ip
-			config.SaveConfig()
-			addr = net.JoinHostPort(c.IP, "22")
-		}
-		sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
-		sshConfig.Timeout = 10 * time.Second
-		client, err = ssh.Dial("tcp", addr, sshConfig)
-		if err != nil {
-			writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
-			return
+		if c.IsKVM() {
+			writeWebSocketText(ws, nil, "\r\nSSH is not ready yet, preparing KVM guest service. This can take a few minutes on first boot...\r\n")
+			if setupErr := kvmManager.EnsureSSH(c.ID); setupErr != nil {
+				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nKVM SSH auto setup failed: %v\r\n", setupErr))
+				return
+			}
+			if refreshed := config.FindContainer(c.ID); refreshed != nil {
+				c = refreshed
+			}
+			if ip, ipErr := kvmManager.GetContainerIP(c.VirshName()); ipErr == nil && ip != "" {
+				c.IP = ip
+				config.SaveConfig()
+				addr = net.JoinHostPort(c.IP, "22")
+			}
+			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
+			sshConfig.Timeout = 10 * time.Second
+			client, err = ssh.Dial("tcp", addr, sshConfig)
+			if err != nil {
+				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
+				return
+			}
+		} else {
+			writeWebSocketText(ws, nil, "\r\nSSH is not ready yet, preparing service. This can take up to 90 seconds on first boot...\r\n")
+			if setupErr := lxcManager.EnsureSSH(c.ID); setupErr != nil {
+				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nSSH auto setup failed: %v\r\n", setupErr))
+				return
+			}
+			if refreshed := config.FindContainer(c.ID); refreshed != nil {
+				c = refreshed
+			}
+			if ip, ipErr := lxcManager.GetContainerIP(c.LxcName()); ipErr == nil && ip != "" {
+				c.IP = ip
+				config.SaveConfig()
+				addr = net.JoinHostPort(c.IP, "22")
+			}
+			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
+			sshConfig.Timeout = 10 * time.Second
+			client, err = ssh.Dial("tcp", addr, sshConfig)
+			if err != nil {
+				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
+				return
+			}
 		}
 	}
 	defer client.Close()

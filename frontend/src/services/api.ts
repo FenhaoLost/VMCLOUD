@@ -48,6 +48,7 @@ export interface Container {
   id: number
   uuid: string
   name: string
+  virtualization?: string
   template: string
   vcpu: number
   ram_mb: number
@@ -85,6 +86,7 @@ export interface Container {
 export interface Template {
   id: string
   name: string
+  type?: string
   distro: string
   release: string
   arch: string
@@ -94,6 +96,7 @@ export interface Template {
 
 export interface CreateContainerRequest {
   name: string
+  virtualization: string
   template_id: string
   vcpu: number
   cpu_percent: number
@@ -338,6 +341,7 @@ export const getTemplates = () =>
 export interface ImageInfo {
   id: string
   name: string
+  type: string
   distro: string
   release: string
   arch: string
@@ -352,7 +356,7 @@ export const getImages = () =>
   api.get<APIResponse<ImageInfo[]>>('/images')
 
 export const downloadImage = (templateId: string) =>
-  api.post<APIResponse>('/images/download', { template_id: templateId }, { timeout: 600000 }) // 10min timeout
+  api.post<APIResponse>('/images/download', { template_id: templateId }, { timeout: 1800000 }) // 30min timeout
 
 export const deleteImage = (templateId: string) =>
   api.delete<APIResponse>('/images/delete', { data: { template_id: templateId } })
@@ -360,8 +364,8 @@ export const deleteImage = (templateId: string) =>
 export const toggleImage = (templateId: string, enabled: boolean) =>
   api.put<APIResponse>('/images/toggle', { template_id: templateId, enabled })
 
-export const getEnabledImages = () =>
-  api.get<APIResponse<Template[]>>('/images/enabled')
+export const getEnabledImages = (virtualization = 'lxc') =>
+  api.get<APIResponse<Template[]>>('/images/enabled', { params: { type: virtualization } })
 
 // Dashboard
 export const getDashboard = () =>

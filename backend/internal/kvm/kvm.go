@@ -1,0 +1,2135 @@
+package kvm
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"html"
+	"io"
+	"math/big"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"clicd/internal/config"
+	"clicd/internal/lxc"
+
+	"golang.org/x/crypto/ssh"
+)
+
+type Manager struct {
+	BasePath string
+}
+
+const ipv6GatewayLinkLocal = "fe80::1"
+
+type usageSample struct {
+	CPUUsec    uint64
+	RXBytes    uint64
+	TXBytes    uint64
+	ReadBytes  uint64
+	WriteBytes uint64
+	At         time.Time
+}
+
+type rateSnapshot struct {
+	CPUPct    float64
+	RXBps     float64
+	TXBps     float64
+	ReadBps   float64
+	WriteBps  float64
+	UpdatedAt time.Time
+}
+
+type trafficSample struct {
+	RXBytes uint64
+	TXBytes uint64
+}
+
+var (
+	usageMu             sync.RWMutex
+	lastUsage           = map[string]usageSample{}
+	rateCache           = map[string]rateSnapshot{}
+	trafficMu           sync.Mutex
+	lastTrafficSnapshot = map[string]trafficSample{}
+	kvmSnapshotMu       sync.Mutex
+	kvmSSHEnsureLocks   sync.Map
+)
+
+func BaseDir() string {
+	return "/var/lib/clicd/kvm"
+}
+
+func NewManager() *Manager {
+	return &Manager{BasePath: BaseDir()}
+}
+
+func (m *Manager) instancesDir() string {
+	return filepath.Join(m.BasePath, "instances")
+}
+
+func (m *Manager) instanceDir(name string) string {
+	return filepath.Join(m.instancesDir(), name)
+}
+
+func ImageDownloadedInfo(id string) (bool, int64) {
+	path := ImagePath(id)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false, 0
+	}
+	return true, info.Size()
+}
+
+func DownloadImage(image Image) error {
+	if err := os.MkdirAll(CacheDir(), 0755); err != nil {
+		return err
+	}
+	target := ImagePath(image.ID)
+	if ok, _ := ImageDownloadedInfo(image.ID); ok {
+		return nil
+	}
+	tmp := target + ".tmp"
+	_ = os.Remove(tmp)
+	if err := downloadFile(image.URL, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := normalizeQCOW2(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(target, 0644)
+	return nil
+}
+
+func DeleteImage(id string) error {
+	return os.RemoveAll(ImagePath(id))
+}
+
+func downloadFile(url, target string) error {
+	client := http.Client{Timeout: 30 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+	out, err := os.Create(target)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+func normalizeQCOW2(src, target string) error {
+	if err := requireCommand("qemu-img"); err != nil {
+		return err
+	}
+	cmd := exec.Command("qemu-img", "convert", "-O", "qcow2", src, target)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img convert failed: %v, output: %s", err, string(output))
+	}
+	return os.Remove(src)
+}
+
+func (m *Manager) CreateContainer(cfg lxc.ContainerConfig) error {
+	image := FindImage(cfg.TemplateID)
+	if image == nil {
+		return fmt.Errorf("KVM image not found: %s", cfg.TemplateID)
+	}
+	if ok, _ := ImageDownloadedInfo(image.ID); !ok {
+		return fmt.Errorf("KVM image is not downloaded: %s", cfg.TemplateID)
+	}
+	if err := m.validateHost(); err != nil {
+		return err
+	}
+	if !config.IsValidContainerName(cfg.Name) {
+		return fmt.Errorf("invalid VM name: %s", cfg.Name)
+	}
+	if config.FindContainerByName(cfg.Name) != nil {
+		return fmt.Errorf("container name already exists: %s", cfg.Name)
+	}
+	if cfg.VCPU < 1 || cfg.VCPU != float64(int(cfg.VCPU)) {
+		return fmt.Errorf("KVM vCPU must be a whole number and at least 1")
+	}
+	if cfg.PortMappingCount < 2 {
+		cfg.PortMappingCount = 2
+	}
+	if cfg.SnapshotLimit <= 0 {
+		cfg.SnapshotLimit = config.DefaultSnapshotLimit
+	}
+
+	id := config.AllocateContainerID()
+	vmName := fmt.Sprintf("vm-%d", id)
+	c, err := m.defineContainer(id, vmName, cfg, true)
+	if err != nil {
+		_ = m.cleanupVM(vmName)
+		return err
+	}
+	config.AddContainer(*c)
+	return nil
+}
+
+func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig, allocatePorts bool) (*config.Container, error) {
+	image := FindImage(cfg.TemplateID)
+	if image == nil {
+		return nil, fmt.Errorf("KVM image not found: %s", cfg.TemplateID)
+	}
+	if err := os.MkdirAll(m.instanceDir(vmName), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(m.BasePath, 0755); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Chmod(m.instancesDir(), 0755); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.Chmod(m.instanceDir(vmName), 0755); err != nil {
+		return nil, err
+	}
+	diskPath := filepath.Join(m.instanceDir(vmName), "disk.qcow2")
+	seedPath := filepath.Join(m.instanceDir(vmName), "seed.iso")
+	mac := randomMAC()
+	sshPassword := generateRandomString(16)
+	ipv6 := ""
+	ipv6PrefixLen := 0
+	ipv6Interface := ""
+	if cfg.AssignIPv6 {
+		assigned, prefixLen, iface, err := m.allocateIPv6ForContainer(id)
+		if err != nil {
+			return nil, err
+		}
+		ipv6 = assigned
+		ipv6PrefixLen = prefixLen
+		ipv6Interface = iface
+	}
+
+	if err := createOverlayDisk(ImagePath(image.ID), diskPath, cfg.DiskGB); err != nil {
+		return nil, err
+	}
+	if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, mac, ipv6); err != nil {
+		return nil, err
+	}
+
+	xml := domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, seedPath, mac, cfg.IOSpeedMBps, cfg.NetworkBWMbps)
+	xmlPath := filepath.Join(m.instanceDir(vmName), "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("virsh", "define", xmlPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("virsh define failed: %v, output: %s", err, string(output))
+	}
+
+	sshPort := 0
+	portMappings := []config.PortMapping{}
+	if allocatePorts {
+		sshPort = config.AllocateSSHPort()
+		portMappings = lxc.SetupDefaultPortMappings(sshPort)
+		tempC := &config.Container{PortMappings: portMappings}
+		extraPorts := cfg.ExtraPorts
+		if len(extraPorts) == 0 && cfg.PortMappingCount > 1 {
+			extraPorts = allocateDefaultEqualPorts(tempC, cfg.PortMappingCount-1)
+		}
+		for _, port := range extraPorts {
+			if port <= 0 {
+				continue
+			}
+			tempC.PortMappings = append(tempC.PortMappings, config.PortMapping{
+				ContainerPort: port,
+				HostPort:      port,
+				Protocol:      "tcp",
+				Description:   fmt.Sprintf("Port-%d", port),
+			})
+		}
+		portMappings = tempC.PortMappings
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	trafficMode := cfg.TrafficMode
+	if trafficMode == "" {
+		trafficMode = "total"
+	}
+	return &config.Container{
+		ID:               id,
+		UUID:             config.NewContainerUUID(),
+		Name:             cfg.Name,
+		Virtualization:   config.VirtualizationKVM,
+		KVMName:          vmName,
+		DiskImage:        diskPath,
+		MACAddress:       mac,
+		Template:         cfg.TemplateID,
+		VCPU:             cfg.VCPU,
+		RAMMB:            cfg.RAMMB,
+		DiskGB:           cfg.DiskGB,
+		NetworkBWMbps:    cfg.NetworkBWMbps,
+		MonthlyTrafficGB: cfg.MonthlyTrafficGB,
+		TrafficMode:      trafficMode,
+		TrafficInGB:      cfg.TrafficInGB,
+		TrafficOutGB:     cfg.TrafficOutGB,
+		TrafficResetDate: now[:7],
+		IOSpeedMBps:      cfg.IOSpeedMBps,
+		IPv6:             ipv6,
+		IPv6PrefixLen:    ipv6PrefixLen,
+		IPv6Interface:    ipv6Interface,
+		Status:           "stopped",
+		SSHPort:          sshPort,
+		SSHPassword:      sshPassword,
+		PortMappings:     portMappings,
+		PortMappingLimit: cfg.PortMappingCount,
+		SnapshotLimit:    config.NormalizeSnapshotLimit(cfg.SnapshotLimit),
+		CreatedAt:        now,
+		ExpiresAt:        cfg.ExpiresAt,
+	}, nil
+}
+
+func (m *Manager) StartContainer(id int) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	if err := m.validateHost(); err != nil {
+		return err
+	}
+	name := c.VirshName()
+	if err := m.ensureDomainDefinition(c); err != nil {
+		fmt.Printf("Warning: failed to refresh KVM domain definition for %s: %v\n", name, err)
+	}
+	status, _ := m.GetContainerStatus(name)
+	if status != "running" {
+		cmd := exec.Command("virsh", "start", name)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("virsh start failed: %v, output: %s", err, string(output))
+		}
+	}
+	config.UpdateContainerStatus(id, "running")
+	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--live").Run()
+	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--config").Run()
+	for i := 0; i < 90; i++ {
+		if ip, err := m.GetContainerIP(name); err == nil && ip != "" {
+			c.IP = ip
+			config.SaveConfig()
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if c.IP == "" {
+		return fmt.Errorf("KVM VM %s started but no IPv4 address was detected", c.Name)
+	}
+	if err := lxc.NewManager().ApplyPortMappings(id); err != nil {
+		return err
+	}
+	return m.EnsureSSH(id)
+}
+
+func (m *Manager) StopContainer(id int) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	_ = lxc.NewManager().CleanPortMappings(id)
+	name := c.VirshName()
+	status, _ := m.GetContainerStatus(name)
+	if status != "running" {
+		config.UpdateContainerStatus(id, "stopped")
+		return nil
+	}
+	exec.Command("virsh", "shutdown", name).Run()
+	for i := 0; i < 20; i++ {
+		if status, _ := m.GetContainerStatus(name); status != "running" {
+			config.UpdateContainerStatus(id, "stopped")
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	cmd := exec.Command("virsh", "destroy", name)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("virsh destroy failed: %v, output: %s", err, string(output))
+	}
+	config.UpdateContainerStatus(id, "stopped")
+	return nil
+}
+
+func (m *Manager) RestartContainer(id int) error {
+	if err := m.StopContainer(id); err != nil {
+		return err
+	}
+	time.Sleep(1 * time.Second)
+	return m.StartContainer(id)
+}
+
+func (m *Manager) DestroyContainer(id int) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	name := c.VirshName()
+	_ = m.StopContainer(id)
+	_ = undefineDomain(name)
+	if err := os.RemoveAll(m.instanceDir(name)); err != nil {
+		return err
+	}
+	if !config.RemoveContainer(id) {
+		return fmt.Errorf("VM destroyed but config entry was not removed: %d", id)
+	}
+	return nil
+}
+
+func (m *Manager) ReinstallContainer(id int, templateID string) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	image := FindImage(templateID)
+	if image == nil {
+		return fmt.Errorf("KVM image not found: %s", templateID)
+	}
+	if ok, _ := ImageDownloadedInfo(image.ID); !ok {
+		return fmt.Errorf("KVM image is not downloaded: %s", templateID)
+	}
+	name := c.VirshName()
+	_ = m.StopContainer(id)
+	_ = undefineDomain(name)
+	_ = os.RemoveAll(m.instanceDir(name))
+	cfg := lxc.ContainerConfig{
+		Name:             c.Name,
+		TemplateID:       templateID,
+		VCPU:             c.VCPU,
+		RAMMB:            c.RAMMB,
+		DiskGB:           c.DiskGB,
+		NetworkBWMbps:    c.NetworkBWMbps,
+		MonthlyTrafficGB: c.MonthlyTrafficGB,
+		TrafficMode:      c.TrafficMode,
+		TrafficInGB:      c.TrafficInGB,
+		TrafficOutGB:     c.TrafficOutGB,
+		IOSpeedMBps:      c.IOSpeedMBps,
+		PortMappingCount: c.PortMappingLimit,
+		SnapshotLimit:    c.SnapshotLimit,
+		ExpiresAt:        c.ExpiresAt,
+	}
+	next, err := m.defineContainer(id, name, cfg, false)
+	if err != nil {
+		return err
+	}
+	c.Template = templateID
+	c.DiskImage = next.DiskImage
+	c.MACAddress = next.MACAddress
+	c.SSHPassword = next.SSHPassword
+	c.SSHHostKey = ""
+	c.IP = ""
+	c.Status = "stopped"
+	config.SaveConfig()
+	return m.StartContainer(id)
+}
+
+func (m *Manager) ResetSSHPassword(id int) (string, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return "", fmt.Errorf("container not found: %d", id)
+	}
+	if c.Status != "running" || c.IP == "" || c.SSHPassword == "" {
+		return "", fmt.Errorf("KVM VM must be running with SSH ready before password reset")
+	}
+	if err := m.EnsureSSH(id); err != nil {
+		return "", err
+	}
+	password := generateRandomString(16)
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
+		User:            "root",
+		Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         8 * time.Second,
+	})
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+	cmd := fmt.Sprintf("printf 'root:%s\\n' | chpasswd", shellQuote(password))
+	if output, err := session.CombinedOutput(cmd); err != nil {
+		return "", fmt.Errorf("failed to reset password: %v, output: %s", err, string(output))
+	}
+	c.SSHPassword = password
+	c.SSHHostKey = ""
+	config.SaveConfig()
+	return password, nil
+}
+
+func (m *Manager) ApplyContainerLimits(c *config.Container) error {
+	if c == nil || !c.IsKVM() {
+		return nil
+	}
+	if c.Status == "running" {
+		return fmt.Errorf("KVM resource changes require shutdown and start")
+	}
+	if c.DiskImage == "" || c.MACAddress == "" {
+		return nil
+	}
+	seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
+	xml := domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("virsh", "define", xmlPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("virsh define failed: %v, output: %s", err, string(output))
+	}
+	return nil
+}
+
+func (m *Manager) ensureDomainDefinition(c *config.Container) error {
+	if c == nil || !c.IsKVM() || c.DiskImage == "" || c.MACAddress == "" {
+		return nil
+	}
+	seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
+	xml := domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
+		return err
+	}
+	cmd := exec.Command("virsh", "define", xmlPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("virsh define failed: %v, output: %s", err, string(output))
+	}
+	return nil
+}
+
+func (m *Manager) CreateSnapshot(id int, createdBy string, scheduled bool, rotateLimit int) (config.Snapshot, error) {
+	kvmSnapshotMu.Lock()
+	defer kvmSnapshotMu.Unlock()
+
+	c := config.FindContainer(id)
+	if c == nil {
+		return config.Snapshot{}, fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return config.Snapshot{}, fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	if scheduled && rotateLimit > 0 {
+		for {
+			existing := config.ContainerSnapshots(id)
+			if len(existing) < rotateLimit {
+				break
+			}
+			sortSnapshotsOldestFirst(existing)
+			if err := m.deleteSnapshotLocked(existing[0]); err != nil {
+				return config.Snapshot{}, err
+			}
+		}
+	}
+
+	name := c.VirshName()
+	instanceDir := m.instanceDir(name)
+	if err := safePathUnder(instanceDir, m.instancesDir()); err != nil {
+		return config.Snapshot{}, err
+	}
+	if _, err := os.Stat(instanceDir); err != nil {
+		return config.Snapshot{}, fmt.Errorf("VM storage not found: %v", err)
+	}
+
+	now := time.Now()
+	snapshotID := fmt.Sprintf("snap-%d-%s", id, now.Format("20060102150405-000000000"))
+	snapshotDir := filepath.Join(snapshotBaseDir(), "kvm", strconv.Itoa(id), snapshotID)
+	if err := safePathUnder(snapshotDir, snapshotBaseDir()); err != nil {
+		return config.Snapshot{}, err
+	}
+	if err := os.MkdirAll(snapshotDir, 0700); err != nil {
+		return config.Snapshot{}, err
+	}
+
+	wasRunning, err := m.prepareVMForColdCopy(id, name)
+	if err != nil {
+		_ = os.RemoveAll(snapshotDir)
+		return config.Snapshot{}, err
+	}
+	if wasRunning {
+		defer func() {
+			if err := m.StartContainer(id); err != nil {
+				fmt.Printf("Warning: failed to restart %s after snapshot: %v\n", name, err)
+			}
+		}()
+	}
+
+	if err := copyTree(instanceDir, snapshotDir); err != nil {
+		_ = os.RemoveAll(snapshotDir)
+		return config.Snapshot{}, err
+	}
+
+	snapshot := config.Snapshot{
+		ID:            snapshotID,
+		ContainerID:   c.ID,
+		ContainerName: c.Name,
+		LXCName:       name,
+		CreatedAt:     now.Format("2006-01-02 15:04:05"),
+		CreatedBy:     createdBy,
+		Scheduled:     scheduled,
+		Path:          snapshotDir,
+		SizeBytes:     dirSizeBytes(snapshotDir),
+	}
+	config.AddSnapshot(snapshot)
+	return snapshot, nil
+}
+
+func (m *Manager) DeleteSnapshot(id string) error {
+	kvmSnapshotMu.Lock()
+	defer kvmSnapshotMu.Unlock()
+
+	snapshot := config.FindSnapshot(id)
+	if snapshot == nil {
+		return fmt.Errorf("snapshot not found: %s", id)
+	}
+	return m.deleteSnapshotLocked(*snapshot)
+}
+
+func (m *Manager) deleteSnapshotLocked(snapshot config.Snapshot) error {
+	if snapshot.Path != "" {
+		if err := safePathUnder(snapshot.Path, snapshotBaseDir()); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(snapshot.Path); err != nil {
+			return fmt.Errorf("failed to delete snapshot files: %v", err)
+		}
+	}
+	config.RemoveSnapshot(snapshot.ID)
+	return nil
+}
+
+func (m *Manager) RestoreSnapshot(id string) error {
+	kvmSnapshotMu.Lock()
+	defer kvmSnapshotMu.Unlock()
+
+	snapshot := config.FindSnapshot(id)
+	if snapshot == nil {
+		return fmt.Errorf("snapshot not found: %s", id)
+	}
+	if snapshot.Path == "" {
+		return fmt.Errorf("snapshot path is empty")
+	}
+	if err := safePathUnder(snapshot.Path, snapshotBaseDir()); err != nil {
+		return err
+	}
+	if _, err := os.Stat(snapshot.Path); err != nil {
+		return fmt.Errorf("snapshot files not found: %v", err)
+	}
+
+	c := config.FindContainer(snapshot.ContainerID)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", snapshot.ContainerID)
+	}
+	if !c.IsKVM() {
+		return fmt.Errorf("container is not a KVM VM: %d", c.ID)
+	}
+	name := c.VirshName()
+	instanceDir := m.instanceDir(name)
+	if err := safePathUnder(instanceDir, m.instancesDir()); err != nil {
+		return err
+	}
+
+	wasRunning, err := m.prepareVMForColdCopy(c.ID, name)
+	if err != nil {
+		return err
+	}
+	backupDir := filepath.Join(m.instancesDir(), fmt.Sprintf(".%s-restore-backup-%d", name, time.Now().UnixNano()))
+	if err := safePathUnder(backupDir, m.instancesDir()); err != nil {
+		return err
+	}
+	if err := os.Rename(instanceDir, backupDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to move current VM aside: %v", err)
+	}
+	if err := copyTree(snapshot.Path, instanceDir); err != nil {
+		_ = os.RemoveAll(instanceDir)
+		_ = os.Rename(backupDir, instanceDir)
+		return fmt.Errorf("failed to restore snapshot: %v", err)
+	}
+	_ = os.RemoveAll(backupDir)
+	if err := undefineDomain(name); err != nil {
+		fmt.Printf("Warning: failed to undefine %s before restore redefine: %v\n", name, err)
+	}
+	xmlPath := filepath.Join(instanceDir, "domain.xml")
+	if output, err := exec.Command("virsh", "define", xmlPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("virsh define failed after restore: %v, output: %s", err, string(output))
+	}
+	c.DiskImage = filepath.Join(instanceDir, "disk.qcow2")
+	c.Status = "stopped"
+	c.IP = ""
+	config.SaveConfig()
+	if wasRunning {
+		return m.StartContainer(c.ID)
+	}
+	return nil
+}
+
+func (m *Manager) SetSnapshotSchedule(id int, enabled bool, intervalHours int, scheduleTime string, createdBy string) (*config.Container, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return nil, fmt.Errorf("container not found: %d", id)
+	}
+	if intervalHours < 24 {
+		return nil, fmt.Errorf("snapshot schedule interval cannot be less than 24 hours")
+	}
+	if _, err := parseScheduleClock(scheduleTime); err != nil {
+		return nil, err
+	}
+	c.SnapshotScheduleEnabled = enabled
+	c.SnapshotScheduleIntervalHours = intervalHours
+	c.SnapshotScheduleTime = scheduleTime
+	c.SnapshotScheduleCreatedBy = createdBy
+	if enabled {
+		c.SnapshotScheduleNextRun = nextSnapshotRun(time.Now(), intervalHours, scheduleTime).Format(time.RFC3339)
+	} else {
+		c.SnapshotScheduleNextRun = ""
+	}
+	if err := config.SaveConfig(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (m *Manager) StartSnapshotScheduler() {
+	go func() {
+		m.runDueSnapshotSchedules()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.runDueSnapshotSchedules()
+		}
+	}()
+}
+
+func (m *Manager) runDueSnapshotSchedules() {
+	now := time.Now()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	for _, c := range containers {
+		if !c.IsKVM() || !c.SnapshotScheduleEnabled {
+			continue
+		}
+		nextRun, err := time.Parse(time.RFC3339, c.SnapshotScheduleNextRun)
+		if err != nil || c.SnapshotScheduleNextRun == "" {
+			nextRun = now
+		}
+		if now.Before(nextRun) {
+			continue
+		}
+		createdBy := c.SnapshotScheduleCreatedBy
+		if createdBy == "" {
+			createdBy = "admin"
+		}
+		rotateLimit := 0
+		if strings.HasPrefix(createdBy, "user:") {
+			rotateLimit = config.ContainerSnapshotLimit(&c)
+		}
+		if _, err := m.CreateSnapshot(c.ID, createdBy, true, rotateLimit); err != nil {
+			fmt.Printf("Warning: scheduled KVM snapshot failed for %s: %v\n", c.Name, err)
+			continue
+		}
+		if current := config.FindContainer(c.ID); current != nil {
+			interval := current.SnapshotScheduleIntervalHours
+			if interval < 24 {
+				interval = 24
+			}
+			next := nextRun.Add(time.Duration(interval) * time.Hour)
+			for !next.After(now) {
+				next = next.Add(time.Duration(interval) * time.Hour)
+			}
+			current.SnapshotScheduleLastRun = now.Format(time.RFC3339)
+			current.SnapshotScheduleNextRun = next.Format(time.RFC3339)
+			config.SaveConfig()
+		}
+	}
+}
+
+func (m *Manager) prepareVMForColdCopy(id int, name string) (bool, error) {
+	status, _ := m.GetContainerStatus(name)
+	wasRunning := status == "running"
+	if wasRunning {
+		if err := m.StopContainer(id); err != nil {
+			return false, err
+		}
+		time.Sleep(time.Second)
+	} else {
+		_ = lxc.NewManager().CleanPortMappings(id)
+	}
+	return wasRunning, nil
+}
+
+func parseScheduleClock(value string) (time.Duration, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("snapshot schedule time must be HH:MM")
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return 0, fmt.Errorf("snapshot schedule hour must be 00-23")
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return 0, fmt.Errorf("snapshot schedule minute must be 00-59")
+	}
+	return time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute, nil
+}
+
+func nextSnapshotRun(from time.Time, intervalHours int, scheduleTime string) time.Time {
+	clock, err := parseScheduleClock(scheduleTime)
+	if err != nil {
+		clock = 3 * time.Hour
+	}
+	midnight := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, from.Location())
+	next := midnight.Add(clock)
+	interval := time.Duration(intervalHours) * time.Hour
+	for !next.After(from) {
+		next = next.Add(interval)
+	}
+	return next
+}
+
+func snapshotBaseDir() string {
+	return filepath.Join(config.AppConfig.DataDir, "snapshots")
+}
+
+func copyTree(src string, dst string) error {
+	if err := os.MkdirAll(dst, 0700); err != nil {
+		return err
+	}
+	output, err := exec.Command("cp", "-a", "--sparse=always", "--reflink=auto", src+string(os.PathSeparator)+".", dst+string(os.PathSeparator)).CombinedOutput()
+	if err != nil {
+		output, err = exec.Command("cp", "-a", "--sparse=always", src+string(os.PathSeparator)+".", dst+string(os.PathSeparator)).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("cp failed: %v, output: %s", err, string(output))
+		}
+	}
+	return nil
+}
+
+func dirSizeBytes(path string) int64 {
+	out, err := exec.Command("du", "-s", "-B1", path).Output()
+	if err != nil {
+		return 0
+	}
+	parts := strings.Fields(string(out))
+	if len(parts) == 0 {
+		return 0
+	}
+	var size int64
+	fmt.Sscanf(parts[0], "%d", &size)
+	return size
+}
+
+func safePathUnder(path string, base string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+	if absPath == absBase || strings.HasPrefix(absPath, absBase+string(os.PathSeparator)) {
+		return nil
+	}
+	return fmt.Errorf("refusing unsafe path: %s", absPath)
+}
+
+func sortSnapshotsOldestFirst(snapshots []config.Snapshot) {
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		ti, _ := time.Parse("2006-01-02 15:04:05", snapshots[i].CreatedAt)
+		tj, _ := time.Parse("2006-01-02 15:04:05", snapshots[j].CreatedAt)
+		return ti.Before(tj)
+	})
+}
+
+func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return nil, fmt.Errorf("container not found: %d", id)
+	}
+	name := c.VirshName()
+	cpuUsec, rxBytes, txBytes, readBytes, writeBytes := m.getUsageCounters(c)
+	usage := map[string]interface{}{
+		"memory_usage_bytes": int64(0),
+		"cpu_usage_usec":     cpuUsec,
+		"cpu_usage_pct":      0.0,
+		"disk_usage_bytes":   int64(0),
+		"network_rx_bytes":   rxBytes,
+		"network_tx_bytes":   txBytes,
+		"network_rx_bps":     0.0,
+		"network_tx_bps":     0.0,
+		"disk_read_bytes":    readBytes,
+		"disk_write_bytes":   writeBytes,
+		"disk_read_bps":      0.0,
+		"disk_write_bps":     0.0,
+	}
+	if c.DiskImage != "" {
+		if info, err := os.Stat(c.DiskImage); err == nil {
+			usage["disk_usage_bytes"] = info.Size()
+		}
+	}
+	if c.Status == "running" {
+		if mem := virshMemBytes(name); mem > 0 {
+			usage["memory_usage_bytes"] = mem
+		}
+	}
+	usageMu.RLock()
+	rate, hasRate := rateCache[name]
+	usageMu.RUnlock()
+	if hasRate && time.Since(rate.UpdatedAt) < 15*time.Second {
+		usage["cpu_usage_pct"] = rate.CPUPct
+		usage["network_rx_bps"] = rate.RXBps
+		usage["network_tx_bps"] = rate.TXBps
+		usage["disk_read_bps"] = rate.ReadBps
+		usage["disk_write_bps"] = rate.WriteBps
+	}
+	return usage, nil
+}
+
+func (m *Manager) ListContainers(containers []config.Container) []config.Container {
+	for i := range containers {
+		if !containers[i].IsKVM() {
+			continue
+		}
+		status, err := m.GetContainerStatus(containers[i].VirshName())
+		if err == nil && status != "" {
+			containers[i].Status = status
+		}
+		if status == "running" {
+			if ip, err := m.GetContainerIP(containers[i].VirshName()); err == nil && ip != "" {
+				containers[i].IP = ip
+			}
+		}
+	}
+	return containers
+}
+
+func (m *Manager) GetContainerStatus(name string) (string, error) {
+	cmd := exec.Command("virsh", "domstate", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	state := strings.ToLower(strings.TrimSpace(string(out)))
+	if strings.Contains(state, "running") {
+		return "running", nil
+	}
+	if strings.Contains(state, "shut") || strings.Contains(state, "off") {
+		return "stopped", nil
+	}
+	return state, nil
+}
+
+func (m *Manager) GetContainerIP(name string) (string, error) {
+	for _, source := range []string{"lease", "arp", "agent"} {
+		cmd := exec.Command("virsh", "domifaddr", name, "--source", source)
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		if ip := firstIPv4(string(out)); ip != "" {
+			return ip, nil
+		}
+	}
+	if mac := domainMACAddress(name); mac != "" {
+		if ip := dhcpLeaseIP("default", mac); ip != "" {
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("no IPv4 address found for %s", name)
+}
+
+func (m *Manager) validateHost() error {
+	for _, name := range []string{"virsh", "qemu-img", "cloud-localds"} {
+		if err := requireCommand(name); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		return fmt.Errorf("KVM is not available: /dev/kvm not found")
+	}
+	if err := ensureDefaultNetwork(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func requireCommand(name string) error {
+	if _, err := exec.LookPath(name); err != nil {
+		return fmt.Errorf("%s is required for KVM support", name)
+	}
+	return nil
+}
+
+func ensureDefaultNetwork() error {
+	if exec.Command("virsh", "net-info", "default").Run() != nil {
+		return fmt.Errorf("libvirt default network is required for KVM support")
+	}
+	if exec.Command("virsh", "net-info", "default").Run() == nil {
+		out, _ := exec.Command("virsh", "net-info", "default").Output()
+		if !strings.Contains(strings.ToLower(string(out)), "active:") || !strings.Contains(strings.ToLower(string(out)), "yes") {
+			_ = exec.Command("virsh", "net-start", "default").Run()
+		}
+		_ = exec.Command("virsh", "net-autostart", "default").Run()
+	}
+	return nil
+}
+
+func createOverlayDisk(base, target string, diskGB int) error {
+	if diskGB < 1 {
+		diskGB = 5
+	}
+	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", base, target)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create failed: %v, output: %s", err, string(output))
+	}
+	cmd = exec.Command("qemu-img", "resize", target, fmt.Sprintf("%dG", diskGB))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img resize failed: %v, output: %s", err, string(output))
+	}
+	_ = os.Chmod(target, 0644)
+	return nil
+}
+
+func createSeedISO(seedPath, instanceID, hostname, password, mac, ipv6 string) error {
+	setupScript := indentScript(kvmSSHSetupScript(password), 4)
+	userData := fmt.Sprintf(`#cloud-config
+preserve_hostname: false
+hostname: %s
+ssh_pwauth: true
+disable_root: false
+package_update: true
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: %s
+      type: text
+users:
+  - name: root
+    lock_passwd: false
+runcmd:
+  - |
+%s
+`, hostname, password, setupScript)
+	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", instanceID, hostname)
+	ipv6Block := ""
+	if strings.TrimSpace(ipv6) != "" {
+		ipv6Block = fmt.Sprintf(`
+      addresses:
+        - %s/128
+      routes:
+        - to: default
+          via: %s
+          metric: 100`, ipv6, ipv6GatewayLinkLocal)
+	}
+	networkConfig := fmt.Sprintf(`version: 2
+ethernets:
+  nic0:
+    match:
+      macaddress: "%s"
+    dhcp4: true
+    dhcp6: false%s
+`, strings.ToLower(mac), ipv6Block)
+	dir := filepath.Dir(seedPath)
+	userPath := filepath.Join(dir, "user-data")
+	metaPath := filepath.Join(dir, "meta-data")
+	networkPath := filepath.Join(dir, "network-config")
+	if err := os.WriteFile(userPath, []byte(userData), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(metaPath, []byte(metaData), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(networkPath, []byte(networkConfig), 0600); err != nil {
+		return err
+	}
+	cmd := exec.Command("cloud-localds", "--network-config="+networkPath, seedPath, userPath, metaPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cloud-localds failed: %v, output: %s", err, string(output))
+	}
+	_ = os.Chmod(seedPath, 0644)
+	return nil
+}
+
+func indentScript(script string, spaces int) string {
+	prefix := strings.Repeat(" ", spaces)
+	lines := strings.Split(strings.TrimRight(script, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string, ioSpeedMBps int, networkBWMbps int) string {
+	if vcpu < 1 {
+		vcpu = 1
+	}
+	if ramMB < 512 {
+		ramMB = 512
+	}
+	iotune := ""
+	if ioSpeedMBps > 0 {
+		bytesPerSecond := int64(ioSpeedMBps) * 1024 * 1024
+		iotune = fmt.Sprintf(`
+      <iotune>
+        <total_bytes_sec>%d</total_bytes_sec>
+      </iotune>`, bytesPerSecond)
+	}
+	bandwidth := ""
+	if networkBWMbps > 0 {
+		averageKiB := networkBWMbps * 128
+		bandwidth = fmt.Sprintf(`
+      <bandwidth>
+        <inbound average='%d'/>
+        <outbound average='%d'/>
+      </bandwidth>`, averageKiB, averageKiB)
+	}
+	return fmt.Sprintf(`<domain type='kvm'>
+  <name>%s</name>
+  %s
+  <memory unit='MiB'>%d</memory>
+  <currentMemory unit='MiB'>%d</currentMemory>
+  <vcpu placement='static' current='%d'>%d</vcpu>
+  <cputune><shares>2048</shares></cputune>
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <features><acpi/><apic/></features>
+  <cpu mode='host-passthrough' check='none'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none'/>
+      <source file='%s'/>
+      <target dev='vda' bus='virtio'/>%s
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='hdb' bus='ide'/>
+      <readonly/>
+    </disk>
+    <interface type='network'>
+      <mac address='%s'/>
+      <source network='default'/>
+      <model type='virtio'/>%s
+    </interface>
+    <serial type='pty'><target port='0'/></serial>
+    <console type='pty'><target type='serial' port='0'/></console>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <memballoon model='virtio'>
+      <stats period='10'/>
+    </memballoon>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
+    <video><model type='virtio'/></video>
+  </devices>
+</domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, xmlEscape(diskPath), iotune, xmlEscape(seedPath), xmlEscape(mac), bandwidth)
+}
+
+func xmlEscape(value string) string {
+	return html.EscapeString(value)
+}
+
+func domainUUIDXML(name string) string {
+	out, err := exec.Command("virsh", "domuuid", name).Output()
+	if err != nil {
+		return ""
+	}
+	uuid := strings.TrimSpace(string(out))
+	if uuid == "" {
+		return ""
+	}
+	return fmt.Sprintf("<uuid>%s</uuid>", xmlEscape(uuid))
+}
+
+func (m *Manager) cleanupVM(name string) error {
+	_ = exec.Command("virsh", "destroy", name).Run()
+	_ = undefineDomain(name)
+	return os.RemoveAll(m.instanceDir(name))
+}
+
+func undefineDomain(name string) error {
+	if err := exec.Command("virsh", "undefine", name, "--nvram").Run(); err == nil {
+		return nil
+	}
+	return exec.Command("virsh", "undefine", name).Run()
+}
+
+func firstIPv4(output string) string {
+	re := regexp.MustCompile(`\b((?:\d{1,3}\.){3}\d{1,3})(?:/\d+)?\b`)
+	for _, match := range re.FindAllStringSubmatch(output, -1) {
+		if len(match) > 1 && net.ParseIP(match[1]) != nil && !strings.HasPrefix(match[1], "127.") {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func domainMACAddress(name string) string {
+	out, err := exec.Command("virsh", "domiflist", name).Output()
+	if err != nil {
+		return ""
+	}
+	macRE := regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b`)
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(strings.ToLower(line), "network") || strings.Contains(strings.ToLower(line), "default") {
+			if mac := macRE.FindString(line); mac != "" {
+				return strings.ToLower(mac)
+			}
+		}
+	}
+	if mac := macRE.FindString(string(out)); mac != "" {
+		return strings.ToLower(mac)
+	}
+	return ""
+}
+
+func dhcpLeaseIP(networkName string, mac string) string {
+	if mac == "" {
+		return ""
+	}
+	out, err := exec.Command("virsh", "net-dhcp-leases", networkName, "--mac", mac).Output()
+	if err != nil {
+		return ""
+	}
+	return firstIPv4(string(out))
+}
+
+func kvmSSHEnsureLock(id int) *sync.Mutex {
+	lock, _ := kvmSSHEnsureLocks.LoadOrStore(id, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// EnsureSSH verifies root password SSH, installs missing SSH/agent packages, and
+// refreshes the SSH config for cloud images whose first boot is still settling.
+func (m *Manager) EnsureSSH(id int) error {
+	lock := kvmSSHEnsureLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	status, _ := m.GetContainerStatus(c.VirshName())
+	if status != "running" {
+		return fmt.Errorf("KVM VM %s is not running; cannot configure SSH", c.Name)
+	}
+	if err := m.ensureDomainDefinition(c); err != nil {
+		fmt.Printf("Warning: failed to refresh KVM domain definition for %s: %v\n", c.VirshName(), err)
+	}
+	if c.SSHPassword == "" {
+		return fmt.Errorf("KVM SSH password is empty; reinstall or reset password after boot")
+	}
+
+	deadline := time.Now().Add(4 * time.Minute)
+	var lastErr error
+	qgaAttempted := false
+	for time.Now().Before(deadline) {
+		if c.IP == "" {
+			if ip, err := m.GetContainerIP(c.VirshName()); err == nil && ip != "" {
+				c.IP = ip
+				config.SaveConfig()
+			}
+		}
+		if c.IP == "" {
+			lastErr = fmt.Errorf("waiting for VM IPv4 address")
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
+			User:            "root",
+			Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         8 * time.Second,
+		})
+		if err != nil {
+			lastErr = err
+			if !qgaAttempted {
+				qgaAttempted = true
+				if setupErr := runKVMGuestAgentSSHSetup(c.VirshName(), c.SSHPassword); setupErr != nil {
+					lastErr = fmt.Errorf("%v; guest-agent fallback failed: %w", err, setupErr)
+					if strings.Contains(setupErr.Error(), "QEMU guest agent is not active") {
+						return fmt.Errorf("KVM SSH is not reachable for %s, and QEMU guest agent is not active. Restart this VM once to attach the guest-agent channel, then try WebSSH again. If it was created before KVM SSH initialization support and still fails after restart, reinstall it", c.Name)
+					}
+				}
+			}
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		err = runKVMSSHSetup(client, c.SSHPassword)
+		_ = client.Close()
+		if err != nil {
+			lastErr = err
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if mapErr := lxc.NewManager().ApplyPortMappings(id); mapErr != nil {
+			return mapErr
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for SSH")
+	}
+	return fmt.Errorf("KVM SSH initialization failed for %s: %v", c.Name, lastErr)
+}
+
+func runKVMGuestAgentSSHSetup(name string, password string) error {
+	if err := qemuGuestPing(name); err != nil {
+		return err
+	}
+	return qemuGuestExec(name, kvmSSHSetupScript(password), 180*time.Second)
+}
+
+func runKVMSSHSetup(client *ssh.Client, password string) error {
+	script := kvmSSHSetupScript(password)
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	done := make(chan error, 1)
+	var output []byte
+	go func() {
+		var err error
+		output, err = session.CombinedOutput(script)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("failed to configure KVM SSH: %v, output: %s", err, string(output))
+		}
+		return nil
+	case <-time.After(150 * time.Second):
+		_ = session.Close()
+		return fmt.Errorf("timed out configuring KVM SSH after 150s")
+	}
+}
+
+func kvmSSHSetupScript(password string) string {
+	return `set -u
+ROOT_PASSWORD=` + shellQuote(password) + `
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+	if ! command -v sshd >/dev/null 2>&1 || ! command -v qemu-ga >/dev/null 2>&1; then
+		apt-get update || true
+		apt-get install -y openssh-server qemu-guest-agent || true
+	fi
+fi
+if command -v dnf >/dev/null 2>&1; then
+	if ! command -v sshd >/dev/null 2>&1 || ! command -v qemu-ga >/dev/null 2>&1; then
+		dnf install -y openssh-server qemu-guest-agent || true
+	fi
+fi
+if command -v yum >/dev/null 2>&1; then
+	if ! command -v sshd >/dev/null 2>&1 || ! command -v qemu-ga >/dev/null 2>&1; then
+		yum install -y openssh-server qemu-guest-agent || true
+	fi
+fi
+if command -v apk >/dev/null 2>&1; then
+	if ! command -v sshd >/dev/null 2>&1 || ! command -v qemu-ga >/dev/null 2>&1; then
+		apk update || true
+		apk add --no-cache openssh qemu-guest-agent shadow iproute2 || true
+	fi
+fi
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-clicd-root.conf <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+ChallengeResponseAuthentication yes
+EOF
+if [ -f /etc/ssh/sshd_config ]; then
+	grep -q '^PermitRootLogin ' /etc/ssh/sshd_config && sed -i 's/^PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config || printf '\nPermitRootLogin yes\n' >> /etc/ssh/sshd_config
+	grep -q '^#PermitRootLogin ' /etc/ssh/sshd_config && sed -i 's/^#PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
+	grep -q '^PasswordAuthentication ' /etc/ssh/sshd_config && sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || printf '\nPasswordAuthentication yes\n' >> /etc/ssh/sshd_config
+	grep -q '^#PasswordAuthentication ' /etc/ssh/sshd_config && sed -i 's/^#PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
+	grep -q '^KbdInteractiveAuthentication ' /etc/ssh/sshd_config && sed -i 's/^KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config || printf '\nKbdInteractiveAuthentication yes\n' >> /etc/ssh/sshd_config
+	grep -q '^#KbdInteractiveAuthentication ' /etc/ssh/sshd_config && sed -i 's/^#KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config || true
+fi
+if command -v chpasswd >/dev/null 2>&1; then
+	printf 'root:%s\n' "$ROOT_PASSWORD" | chpasswd || true
+fi
+ssh-keygen -A >/dev/null 2>&1 || true
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true
+	systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+fi
+if command -v rc-update >/dev/null 2>&1; then
+	rc-update add sshd default >/dev/null 2>&1 || true
+	rc-update add qemu-guest-agent default >/dev/null 2>&1 || rc-update add qemu-ga default >/dev/null 2>&1 || true
+	rc-service qemu-guest-agent start >/dev/null 2>&1 || rc-service qemu-ga start >/dev/null 2>&1 || true
+	rc-service sshd restart >/dev/null 2>&1 || /etc/init.d/sshd restart >/dev/null 2>&1 || true
+fi
+service qemu-guest-agent start >/dev/null 2>&1 || service qemu-ga start >/dev/null 2>&1 || true
+service ssh restart >/dev/null 2>&1 || service sshd restart >/dev/null 2>&1 || true
+`
+}
+
+func qemuGuestPing(name string) error {
+	out, err := exec.Command("virsh", "qemu-agent-command", name, `{"execute":"guest-ping"}`).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if strings.Contains(msg, "guest agent is not configured") || strings.Contains(msg, "QEMU guest agent is not configured") || strings.Contains(msg, "argument unsupported") {
+			return fmt.Errorf("QEMU guest agent is not active for %s; restart the VM once to attach the agent channel, or reinstall if the image was created before KVM SSH initialization support", name)
+		}
+		return fmt.Errorf("QEMU guest agent is not ready for %s: %v, output: %s", name, err, msg)
+	}
+	return nil
+}
+
+func qemuGuestExec(name string, script string, timeout time.Duration) error {
+	req := map[string]interface{}{
+		"execute": "guest-exec",
+		"arguments": map[string]interface{}{
+			"path":           "/bin/sh",
+			"arg":            []string{"-lc", script},
+			"capture-output": true,
+		},
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command("virsh", "qemu-agent-command", name, string(payload)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("guest-exec failed: %v, output: %s", err, string(out))
+	}
+	var started struct {
+		Return struct {
+			PID int `json:"pid"`
+		} `json:"return"`
+	}
+	if err := json.Unmarshal(out, &started); err != nil || started.Return.PID <= 0 {
+		return fmt.Errorf("guest-exec returned invalid response: %s", string(out))
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		statusReq := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, started.Return.PID)
+		statusOut, err := exec.Command("virsh", "qemu-agent-command", name, statusReq).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("guest-exec-status failed: %v, output: %s", err, string(statusOut))
+		}
+		var status struct {
+			Return struct {
+				Exited   bool   `json:"exited"`
+				Exitcode int    `json:"exitcode"`
+				OutData  string `json:"out-data"`
+				ErrData  string `json:"err-data"`
+			} `json:"return"`
+		}
+		if err := json.Unmarshal(statusOut, &status); err != nil {
+			return fmt.Errorf("guest-exec-status returned invalid response: %s", string(statusOut))
+		}
+		if !status.Return.Exited {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if status.Return.Exitcode == 0 {
+			return nil
+		}
+		stdout, _ := base64.StdEncoding.DecodeString(status.Return.OutData)
+		stderr, _ := base64.StdEncoding.DecodeString(status.Return.ErrData)
+		return fmt.Errorf("guest SSH setup exited with %d, stdout: %s, stderr: %s", status.Return.Exitcode, string(stdout), string(stderr))
+	}
+	return fmt.Errorf("timed out waiting for guest SSH setup after %s", timeout)
+}
+
+func (m *Manager) getUsageCounters(c *config.Container) (uint64, uint64, uint64, uint64, uint64) {
+	if c == nil || c.Status != "running" {
+		return 0, 0, 0, 0, 0
+	}
+	name := c.VirshName()
+	cpuUsec, readBytes, writeBytes := virshDomstatsCounters(name)
+	rxBytes, txBytes := virshInterfaceBytes(name, c.MACAddress)
+	return cpuUsec, rxBytes, txBytes, readBytes, writeBytes
+}
+
+func (m *Manager) StartUsageMonitor() {
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			m.updateAllRates()
+		}
+	}()
+}
+
+func (m *Manager) updateAllRates() {
+	usageMu.Lock()
+	defer usageMu.Unlock()
+
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if !c.IsKVM() {
+			continue
+		}
+		name := c.VirshName()
+		if c.Status != "running" {
+			delete(lastUsage, name)
+			delete(rateCache, name)
+			continue
+		}
+		cpuUsec, rxBytes, txBytes, readBytes, writeBytes := m.getUsageCounters(c)
+		now := time.Now()
+		sample := usageSample{CPUUsec: cpuUsec, RXBytes: rxBytes, TXBytes: txBytes, ReadBytes: readBytes, WriteBytes: writeBytes, At: now}
+		prev, exists := lastUsage[name]
+		lastUsage[name] = sample
+		rate := rateSnapshot{UpdatedAt: now}
+		if exists {
+			elapsed := sample.At.Sub(prev.At).Seconds()
+			if elapsed > 0 {
+				if sample.CPUUsec >= prev.CPUUsec {
+					rate.CPUPct = float64(sample.CPUUsec-prev.CPUUsec) / (elapsed * 1e6) * 100
+				}
+				if sample.RXBytes >= prev.RXBytes {
+					rate.RXBps = float64(sample.RXBytes-prev.RXBytes) / elapsed
+				}
+				if sample.TXBytes >= prev.TXBytes {
+					rate.TXBps = float64(sample.TXBytes-prev.TXBytes) / elapsed
+				}
+				if sample.ReadBytes >= prev.ReadBytes {
+					rate.ReadBps = float64(sample.ReadBytes-prev.ReadBytes) / elapsed
+				}
+				if sample.WriteBytes >= prev.WriteBytes {
+					rate.WriteBps = float64(sample.WriteBytes-prev.WriteBytes) / elapsed
+				}
+			}
+		}
+		rateCache[name] = rate
+	}
+}
+
+func virshDomstatsCounters(name string) (uint64, uint64, uint64) {
+	out, err := exec.Command("virsh", "domstats", name, "--cpu-total", "--block").Output()
+	if err != nil {
+		return 0, 0, 0
+	}
+	var cpuUsec, readBytes, writeBytes uint64
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key, value := parts[0], parts[1]
+		parsed, _ := strconv.ParseUint(value, 10, 64)
+		switch {
+		case key == "cpu.time":
+			cpuUsec = parsed / 1000
+		case strings.HasSuffix(key, ".rd.bytes"):
+			readBytes += parsed
+		case strings.HasSuffix(key, ".wr.bytes"):
+			writeBytes += parsed
+		}
+	}
+	return cpuUsec, readBytes, writeBytes
+}
+
+func virshInterfaceBytes(name string, mac string) (uint64, uint64) {
+	iface := virshInterfaceName(name, mac)
+	if iface == "" {
+		return 0, 0
+	}
+	out, err := exec.Command("virsh", "domifstat", name, iface).Output()
+	if err != nil {
+		return 0, 0
+	}
+	var rx, tx uint64
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := fields[0]
+		valueField := fields[len(fields)-1]
+		if len(fields) >= 3 && strings.HasPrefix(fields[0], iface) {
+			key = fields[1]
+			valueField = fields[2]
+		}
+		value, _ := strconv.ParseUint(valueField, 10, 64)
+		switch key {
+		case "rx_bytes":
+			rx = value
+		case "tx_bytes":
+			tx = value
+		}
+	}
+	return rx, tx
+}
+
+func virshInterfaceName(name string, mac string) string {
+	out, err := exec.Command("virsh", "domiflist", name).Output()
+	if err != nil {
+		return ""
+	}
+	mac = strings.ToLower(mac)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || strings.HasPrefix(fields[0], "-") || strings.EqualFold(fields[0], "Interface") {
+			continue
+		}
+		if mac == "" || strings.EqualFold(fields[4], mac) {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func (m *Manager) GetTrafficInfo(id int) map[string]interface{} {
+	c := config.FindContainer(id)
+	if c == nil {
+		return nil
+	}
+	m.accumulateContainerTraffic(c)
+	return trafficInfoMap(c)
+}
+
+func (m *Manager) AccumulateTraffic() {
+	currentMonth := time.Now().Format("2006-01")
+	changed := false
+	trafficMu.Lock()
+	defer trafficMu.Unlock()
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if !c.IsKVM() {
+			continue
+		}
+		if c.TrafficResetDate != currentMonth {
+			c.TrafficUsedRX = 0
+			c.TrafficUsedTX = 0
+			c.TrafficResetDate = currentMonth
+			delete(lastTrafficSnapshot, c.VirshName())
+			changed = true
+		}
+		if c.Status != "running" {
+			delete(lastTrafficSnapshot, c.VirshName())
+			continue
+		}
+		if accumulateTrafficLocked(c) {
+			changed = true
+		}
+	}
+	if changed {
+		config.SaveConfig()
+	}
+}
+
+func (m *Manager) accumulateContainerTraffic(c *config.Container) {
+	currentMonth := time.Now().Format("2006-01")
+	trafficMu.Lock()
+	defer trafficMu.Unlock()
+	changed := false
+	if c.TrafficResetDate != currentMonth {
+		c.TrafficUsedRX = 0
+		c.TrafficUsedTX = 0
+		c.TrafficResetDate = currentMonth
+		delete(lastTrafficSnapshot, c.VirshName())
+		changed = true
+	}
+	if c.Status == "running" && accumulateTrafficLocked(c) {
+		changed = true
+	}
+	if changed {
+		config.SaveConfig()
+	}
+}
+
+func accumulateTrafficLocked(c *config.Container) bool {
+	rx, tx := virshInterfaceBytes(c.VirshName(), c.MACAddress)
+	key := c.VirshName()
+	prev, exists := lastTrafficSnapshot[key]
+	changed := false
+	if exists && rx >= prev.RXBytes && tx >= prev.TXBytes {
+		deltaRX := int64(rx - prev.RXBytes)
+		deltaTX := int64(tx - prev.TXBytes)
+		if deltaRX > 0 || deltaTX > 0 {
+			c.TrafficUsedRX += deltaRX
+			c.TrafficUsedTX += deltaTX
+			changed = true
+		}
+	}
+	lastTrafficSnapshot[key] = trafficSample{RXBytes: rx, TXBytes: tx}
+	return changed
+}
+
+func trafficInfoMap(c *config.Container) map[string]interface{} {
+	totalUsed := c.TrafficUsedRX + c.TrafficUsedTX
+	limitGB := 0
+	usedPct := 0.0
+	if c.TrafficMode == "in_out" {
+		limitGB = c.TrafficInGB + c.TrafficOutGB
+		inLimit := float64(c.TrafficInGB) * 1073741824
+		outLimit := float64(c.TrafficOutGB) * 1073741824
+		if c.TrafficInGB > 0 {
+			usedPct = float64(c.TrafficUsedRX) / inLimit * 100
+		}
+		if c.TrafficOutGB > 0 {
+			outPct := float64(c.TrafficUsedTX) / outLimit * 100
+			if outPct > usedPct {
+				usedPct = outPct
+			}
+		}
+	} else {
+		limitGB = c.MonthlyTrafficGB
+		if limitGB > 0 {
+			usedPct = float64(totalUsed) / float64(limitGB*1073741824) * 100
+		}
+	}
+	return map[string]interface{}{
+		"total_used_bytes": totalUsed,
+		"rx_used_bytes":    c.TrafficUsedRX,
+		"tx_used_bytes":    c.TrafficUsedTX,
+		"mode":             c.TrafficMode,
+		"limit_gb":         limitGB,
+		"in_limit_gb":      c.TrafficInGB,
+		"out_limit_gb":     c.TrafficOutGB,
+		"used_pct":         usedPct,
+		"reset_date":       c.TrafficResetDate,
+	}
+}
+
+func (m *Manager) StartExpiryScanner() {
+	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			now := time.Now()
+			m.AccumulateTraffic()
+			m.StopExpiredContainers(now)
+			m.StopTrafficExceededContainers(now)
+		}
+	}()
+}
+
+func (m *Manager) StopExpiredContainers(now time.Time) {
+	for _, container := range config.AppConfig.Containers {
+		if !container.IsKVM() || !lxc.IsExpired(container) {
+			continue
+		}
+		status, err := m.GetContainerStatus(container.VirshName())
+		if err != nil {
+			status = container.Status
+		}
+		if status != "running" {
+			continue
+		}
+		fmt.Printf("KVM VM %s (ID=%d) expired at %s, stopping...\n", container.Name, container.ID, container.ExpiresAt)
+		if err := m.StopContainer(container.ID); err != nil {
+			fmt.Printf("Warning: failed to stop expired KVM VM %s: %v\n", container.Name, err)
+		}
+	}
+}
+
+func (m *Manager) StopTrafficExceededContainers(now time.Time) {
+	currentMonth := now.Format("2006-01")
+	saved := false
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if !c.IsKVM() || c.Status != "running" {
+			continue
+		}
+		if c.TrafficResetDate != currentMonth {
+			c.TrafficUsedRX = 0
+			c.TrafficUsedTX = 0
+			c.TrafficResetDate = currentMonth
+			saved = true
+			continue
+		}
+		if lxc.IsTrafficExceeded(*c) {
+			fmt.Printf("KVM VM %s (ID=%d) exceeded traffic limit, stopping...\n", c.Name, c.ID)
+			if err := m.StopContainer(c.ID); err != nil {
+				fmt.Printf("Warning: failed to stop traffic-exceeded KVM VM %s: %v\n", c.Name, err)
+			}
+		}
+	}
+	if saved {
+		config.SaveConfig()
+	}
+}
+
+func virshMemBytes(name string) int64 {
+	out, err := exec.Command("virsh", "dommemstat", name).Output()
+	if err != nil {
+		return 0
+	}
+	stats := map[string]int64{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		kib, err := strconv.ParseInt(fields[1], 10, 64)
+		if err == nil {
+			stats[fields[0]] = kib
+		}
+	}
+	if available := stats["available"]; available > 0 {
+		if unused, ok := stats["unused"]; ok && unused >= 0 && available >= unused {
+			return (available - unused) * 1024
+		}
+	}
+	if actual := stats["actual"]; actual > 0 {
+		if unused, ok := stats["unused"]; ok && unused > 0 && actual >= unused {
+			return (actual - unused) * 1024
+		}
+	}
+	if rss := stats["rss"]; rss > 0 {
+		return rss * 1024
+	}
+	return 0
+}
+
+func (m *Manager) AssignIPv6(id int) (*config.Container, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return nil, fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return nil, fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	if c.IPv6 == "" {
+		addr, prefixLen, iface, err := m.allocateIPv6ForContainer(id)
+		if err != nil {
+			return nil, err
+		}
+		c.IPv6 = addr
+		c.IPv6PrefixLen = prefixLen
+		c.IPv6Interface = iface
+		config.SaveConfig()
+	}
+	if err := m.applyIPv6Runtime(c); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (m *Manager) applyIPv6Runtime(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
+	if c.IPv6Interface == "" {
+		prefixes := lxc.DetectPublicIPv6Prefixes()
+		if len(prefixes) == 0 {
+			return fmt.Errorf("failed to detect IPv6 uplink for %s", c.IPv6)
+		}
+		c.IPv6Interface = prefixes[0].Interface
+		c.IPv6PrefixLen = prefixes[0].PrefixLen
+		config.SaveConfig()
+	}
+	runQuiet("sysctl", "-w", "net.ipv6.conf.all.forwarding=1")
+	runQuiet("sysctl", "-w", "net.ipv6.conf."+c.IPv6Interface+".accept_ra=2")
+	runQuiet("sysctl", "-w", "net.ipv6.conf."+c.IPv6Interface+".proxy_ndp=1")
+	bridge := "virbr0"
+	runQuiet("sysctl", "-w", "net.ipv6.conf."+bridge+".disable_ipv6=0")
+	runQuiet("ip", "-6", "addr", "add", ipv6GatewayLinkLocal+"/64", "dev", bridge)
+	if out, err := exec.Command("ip", "-6", "route", "replace", c.IPv6+"/128", "dev", bridge).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add IPv6 VM route: %v, output: %s", err, string(out))
+	}
+	if out, err := exec.Command("ip", "-6", "neigh", "replace", "proxy", c.IPv6, "dev", c.IPv6Interface).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add IPv6 proxy NDP: %v, output: %s", err, string(out))
+	}
+	ensureKVMIPv6ForwardRules(c.IPv6, bridge)
+	if c.Status == "running" {
+		if err := m.applyGuestIPv6(c); err != nil {
+			return err
+		}
+		if !m.guestIPv6ConnectivityOK(c) {
+			ensureKVMIPv6NAT66(c.IPv6, c.IPv6Interface)
+			if !m.guestIPv6ConnectivityOK(c) {
+				fmt.Printf("Warning: IPv6 assigned for KVM VM %s, but guest connectivity test did not pass immediately\n", c.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func runQuiet(name string, args ...string) {
+	_ = exec.Command(name, args...).Run()
+}
+
+func ensureKVMIPv6ForwardRules(ipv6 string, bridge string) {
+	if ipv6 == "" || bridge == "" {
+		return
+	}
+	rules := [][]string{
+		{"FORWARD", "-i", bridge, "-s", ipv6 + "/128", "-j", "ACCEPT"},
+		{"FORWARD", "-o", bridge, "-d", ipv6 + "/128", "-j", "ACCEPT"},
+	}
+	for _, rule := range rules {
+		check := append([]string{"-C"}, rule...)
+		add := append([]string{"-I"}, append([]string{rule[0], "1"}, rule[1:]...)...)
+		if exec.Command("ip6tables", check...).Run() != nil {
+			exec.Command("ip6tables", add...).Run()
+		}
+	}
+}
+
+func ensureKVMIPv6NAT66(ipv6 string, uplink string) {
+	if ipv6 == "" || uplink == "" {
+		return
+	}
+	rule := []string{"POSTROUTING", "-s", ipv6 + "/128", "-o", uplink, "-j", "MASQUERADE"}
+	check := append([]string{"-t", "nat", "-C"}, rule...)
+	add := append([]string{"-t", "nat", "-I"}, append([]string{rule[0], "1"}, rule[1:]...)...)
+	if exec.Command("ip6tables", check...).Run() != nil {
+		exec.Command("ip6tables", add...).Run()
+	}
+}
+
+func (m *Manager) applyGuestIPv6(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
+	script := kvmIPv6SetupScript(c.IPv6)
+	if c.IP != "" && c.SSHPassword != "" {
+		client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
+			User:            "root",
+			Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         8 * time.Second,
+		})
+		if err == nil {
+			defer client.Close()
+			session, err := client.NewSession()
+			if err != nil {
+				return err
+			}
+			defer session.Close()
+			if output, err := session.CombinedOutput(script); err != nil {
+				return fmt.Errorf("failed to apply guest IPv6 over SSH: %v, output: %s", err, string(output))
+			}
+			return nil
+		}
+	}
+	if err := qemuGuestPing(c.VirshName()); err != nil {
+		return fmt.Errorf("failed to apply guest IPv6: SSH unavailable and %w", err)
+	}
+	return qemuGuestExec(c.VirshName(), script, 60*time.Second)
+}
+
+func kvmIPv6SetupScript(ipv6 string) string {
+	return `set -eu
+IPV6_ADDR=` + shellQuote(ipv6) + `
+IPV6_GW=` + shellQuote(ipv6GatewayLinkLocal) + `
+IFACE="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
+if [ -z "$IFACE" ]; then
+	IFACE="$(ip -o link show up | awk -F': ' '$2 != "lo" {print $2; exit}' | cut -d@ -f1)"
+fi
+if [ -z "$IFACE" ]; then
+	echo "failed to detect guest network interface" >&2
+	exit 1
+fi
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf."$IFACE".disable_ipv6=0 >/dev/null 2>&1 || true
+ip -6 addr replace "$IPV6_ADDR/128" dev "$IFACE"
+ip -6 route replace default via "$IPV6_GW" dev "$IFACE" metric 100
+mkdir -p /usr/local/sbin /etc/systemd/system /etc/network/if-up.d /etc/local.d
+cat > /usr/local/sbin/clicd-kvm-ipv6-init <<'EOF'
+#!/bin/sh
+set -eu
+IPV6_ADDR=` + shellQuote(ipv6) + `
+IPV6_GW=` + shellQuote(ipv6GatewayLinkLocal) + `
+IFACE="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
+if [ -z "$IFACE" ]; then
+	IFACE="$(ip -o link show up | awk -F': ' '$2 != "lo" {print $2; exit}' | cut -d@ -f1)"
+fi
+[ -n "$IFACE" ] || exit 0
+sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -w net.ipv6.conf."$IFACE".disable_ipv6=0 >/dev/null 2>&1 || true
+ip -6 addr replace "$IPV6_ADDR/128" dev "$IFACE"
+ip -6 route replace default via "$IPV6_GW" dev "$IFACE" metric 100
+EOF
+chmod +x /usr/local/sbin/clicd-kvm-ipv6-init
+cat > /etc/systemd/system/clicd-kvm-ipv6.service <<'EOF'
+[Unit]
+Description=CLICD KVM IPv6 setup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clicd-kvm-ipv6-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable --now clicd-kvm-ipv6.service >/dev/null 2>&1 || true
+cat > /etc/local.d/clicd-kvm-ipv6.start <<'EOF'
+#!/bin/sh
+/usr/local/sbin/clicd-kvm-ipv6-init || true
+EOF
+chmod +x /etc/local.d/clicd-kvm-ipv6.start
+if command -v rc-update >/dev/null 2>&1; then
+	rc-update add local default >/dev/null 2>&1 || true
+	rc-service local restart >/dev/null 2>&1 || true
+fi
+cat > /etc/network/if-up.d/clicd-kvm-ipv6 <<'EOF'
+#!/bin/sh
+[ "$IFACE" = "lo" ] && exit 0
+/usr/local/sbin/clicd-kvm-ipv6-init || true
+EOF
+chmod +x /etc/network/if-up.d/clicd-kvm-ipv6
+`
+}
+
+func (m *Manager) guestIPv6ConnectivityOK(c *config.Container) bool {
+	if c == nil || c.IP == "" || c.SSHPassword == "" {
+		return false
+	}
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, "22"), &ssh.ClientConfig{
+		User:            "root",
+		Auth:            []ssh.AuthMethod{ssh.Password(c.SSHPassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         8 * time.Second,
+	})
+	if err != nil {
+		return false
+	}
+	defer client.Close()
+	for _, target := range []string{"2606:4700:4700::1111", "2001:4860:4860::8888"} {
+		session, err := client.NewSession()
+		if err != nil {
+			continue
+		}
+		err = session.Run("ping -6 -c 1 -W 2 " + shellQuote(target))
+		_ = session.Close()
+		if err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) allocateIPv6ForContainer(id int) (string, int, string, error) {
+	prefixes := lxc.DetectPublicIPv6Prefixes()
+	if len(prefixes) == 0 {
+		return "", 0, "", fmt.Errorf("public IPv6 allocation is unavailable: no usable public IPv6 prefix found")
+	}
+	prefixInfo := prefixes[0]
+	prefix, err := netip.ParsePrefix(prefixInfo.Prefix)
+	if err != nil {
+		return "", 0, "", err
+	}
+
+	used := map[string]bool{}
+	hostAddrs := map[string]bool{}
+	for _, p := range prefixes {
+		hostAddrs[p.Address] = true
+	}
+	for _, c := range config.AppConfig.Containers {
+		if c.IPv6 != "" {
+			used[c.IPv6] = true
+		}
+	}
+	for offset := uint64(0x2000 + id); offset < 0x100000; offset++ {
+		addr, err := ipv6Add(prefix.Masked().Addr(), offset)
+		if err != nil || !prefix.Contains(addr) {
+			break
+		}
+		candidate := addr.String()
+		if !used[candidate] && !hostAddrs[candidate] {
+			return candidate, prefix.Bits(), prefixInfo.Interface, nil
+		}
+	}
+	return "", 0, "", fmt.Errorf("no free IPv6 address in %s", prefix.String())
+}
+
+func ipv6Add(base netip.Addr, offset uint64) (netip.Addr, error) {
+	raw := base.As16()
+	value := big.NewInt(0).SetBytes(raw[:])
+	add := make([]byte, 8)
+	binary.BigEndian.PutUint64(add, offset)
+	value.Add(value, big.NewInt(0).SetBytes(add))
+	bytes := value.Bytes()
+	if len(bytes) > 16 {
+		return netip.Addr{}, fmt.Errorf("IPv6 address overflow")
+	}
+	padded := make([]byte, 16)
+	copy(padded[16-len(bytes):], bytes)
+	var out [16]byte
+	copy(out[:], padded)
+	return netip.AddrFrom16(out), nil
+}
+
+func randomMAC() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("52:54:00:%02x:%02x:%02x", time.Now().UnixNano()&0xff, (time.Now().UnixNano()>>8)&0xff, (time.Now().UnixNano()>>16)&0xff)
+	}
+	return fmt.Sprintf("52:54:00:%02x:%02x:%02x", b[0], b[1], b[2])
+}
+
+func generateRandomString(length int) string {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())[:length]
+	}
+	return hex.EncodeToString(b)[:length]
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func allocateDefaultEqualPorts(c *config.Container, count int) []int {
+	if count <= 0 {
+		return nil
+	}
+	used := map[int]bool{}
+	for _, pm := range c.PortMappings {
+		used[pm.HostPort] = true
+		used[pm.ContainerPort] = true
+	}
+	ports := make([]int, 0, count)
+	for next := 20000; next <= 65535 && len(ports) < count; next++ {
+		if !used[next] {
+			ports = append(ports, next)
+		}
+	}
+	return ports
+}
+
+func runStdin(command string, stdin []byte, args ...string) error {
+	cmd := exec.Command(command, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s failed: %v, output: %s", command, err, string(output))
+	}
+	return nil
+}

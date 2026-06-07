@@ -73,6 +73,9 @@ func (m *Manager) WarmRunningContainersSSH() {
 	containers := append([]config.Container(nil), config.AppConfig.Containers...)
 	for _, container := range containers {
 		c := container
+		if c.IsKVM() {
+			continue
+		}
 		status, err := m.GetContainerStatus(c.LxcName())
 		if err != nil || status != "running" {
 			continue
@@ -102,6 +105,11 @@ func (m *Manager) updateAllRates() {
 
 	for i := range config.AppConfig.Containers {
 		c := &config.AppConfig.Containers[i]
+		if c.IsKVM() {
+			delete(lastUsage, c.VirshName())
+			delete(rateCache, c.VirshName())
+			continue
+		}
 		if c.Status != "running" {
 			delete(lastUsage, c.LxcName())
 			delete(rateCache, c.LxcName())
@@ -211,6 +219,7 @@ func NewManager() *Manager {
 // ContainerConfig defines container creation parameters
 type ContainerConfig struct {
 	Name             string  `json:"name"`
+	Virtualization   string  `json:"virtualization,omitempty"`
 	TemplateID       string  `json:"template_id"`
 	VCPU             float64 `json:"vcpu"`
 	CPUPercent       int     `json:"cpu_percent"`
@@ -345,6 +354,7 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		ID:               id,
 		UUID:             config.NewContainerUUID(),
 		Name:             cfg.Name,
+		Virtualization:   config.VirtualizationLXC,
 		Template:         cfg.TemplateID,
 		VCPU:             cfg.VCPU,
 		RAMMB:            cfg.RAMMB,
@@ -1986,6 +1996,9 @@ func (m *Manager) GetContainerIP(lxcName string) (string, error) {
 func (m *Manager) ListContainers() ([]config.Container, error) {
 	containers := config.AppConfig.Containers
 	for i := range containers {
+		if containers[i].IsKVM() {
+			continue
+		}
 		status, err := m.GetContainerStatus(containers[i].LxcName())
 		if err == nil {
 			containers[i].Status = status
@@ -2061,6 +2074,7 @@ func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
 			UUID:             config.NewContainerUUID(),
 			Name:             name,
 			LXCName:          lxcName,
+			Virtualization:   config.VirtualizationLXC,
 			Template:         "imported",
 			VCPU:             1,
 			RAMMB:            512,
@@ -2577,6 +2591,9 @@ func (m *Manager) AccumulateTraffic() {
 		if c.Status != "running" {
 			// Remove snapshot for stopped containers
 			delete(lastTrafficSnapshot, c.LxcName())
+			continue
+		}
+		if c.IsKVM() {
 			continue
 		}
 		// Reset if new month

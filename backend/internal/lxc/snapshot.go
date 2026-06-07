@@ -207,7 +207,7 @@ func (m *Manager) runDueSnapshotSchedules() {
 	now := time.Now()
 	containers := append([]config.Container(nil), config.AppConfig.Containers...)
 	for _, c := range containers {
-		if !c.SnapshotScheduleEnabled {
+		if c.IsKVM() || !c.SnapshotScheduleEnabled {
 			continue
 		}
 		nextRun, err := time.Parse(time.RFC3339, c.SnapshotScheduleNextRun)

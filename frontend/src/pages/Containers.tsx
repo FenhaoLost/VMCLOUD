@@ -48,6 +48,7 @@ export default function Containers() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [queuedCreates, setQueuedCreates] = useState<Record<string, CreateContainerRequest>>({})
   const [searchText, setSearchText] = useState('')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [systemFilter, setSystemFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [page, setPage] = useState(1)
@@ -168,12 +169,13 @@ export default function Containers() {
   const filteredContainers = useMemo(() => {
     return filterContainers(displayContainers, {
       search: searchText,
+      type: typeFilter,
       system: systemFilter,
       status: statusFilter,
       taskStatusMap,
       taskNameMap,
     })
-  }, [displayContainers, searchText, systemFilter, statusFilter, tasks])
+  }, [displayContainers, searchText, typeFilter, systemFilter, statusFilter, tasks])
   const totalPages = Math.max(1, Math.ceil(filteredContainers.length / pageSize))
   const currentPage = Math.min(page, totalPages)
   const pageStart = (currentPage - 1) * pageSize
@@ -185,7 +187,7 @@ export default function Containers() {
 
   useEffect(() => {
     setPage(1)
-  }, [searchText, systemFilter, statusFilter, pageSize])
+  }, [searchText, typeFilter, systemFilter, statusFilter, pageSize])
 
   const toggleAll = () => {
     if (allFilteredSelected) {
@@ -235,70 +237,6 @@ export default function Containers() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {selected.size > 0 && (
-            <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-md px-3 py-1.5">
-              <span className="text-xs text-gray-500 mr-1">{selected.size} 个</span>
-              <button onClick={() => handleBatchAction('start')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-200 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
-                <Play className="w-3 h-3" />{batchLoading ? '执行中...' : '开机'}
-              </button>
-              <button onClick={() => handleBatchAction('stop')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-200 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
-                <Square className="w-3 h-3" />{batchLoading ? '执行中...' : '关机'}
-              </button>
-              <button onClick={() => handleBatchAction('restart')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-gray-700 hover:bg-gray-200 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
-                <RotateCcw className="w-3 h-3" />{batchLoading ? '执行中...' : '重启'}
-              </button>
-              <button onClick={() => handleBatchAction('delete')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 rounded border border-red-200 disabled:opacity-50 disabled:cursor-not-allowed">
-                <Trash2 className="w-3 h-3" />{batchLoading ? '执行中...' : '删除'}
-              </button>
-            </div>
-          )}
-          {displayContainers.length > 0 && (
-            <>
-              <div className="relative w-[260px]">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
-                <input
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                  className="h-8 w-full rounded-md border border-gray-300 bg-white pl-8 pr-2 text-xs text-black outline-none focus:border-black focus:ring-2 focus:ring-black"
-                  placeholder="搜索名称、ID、UUID、IP"
-                />
-              </div>
-              <select
-                value={systemFilter}
-                onChange={(event) => setSystemFilter(event.target.value)}
-                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
-                title="系统筛选"
-              >
-                <option value="all">全部系统</option>
-                {systemOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              <select
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
-                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
-                title="状态筛选"
-              >
-                <option value="all">全部状态</option>
-                <option value="running">在线</option>
-                <option value="stopped">离线</option>
-                <option value="task">任务中</option>
-                <option value="creating">创建中</option>
-                <option value="failed">失败</option>
-              </select>
-              <select
-                value={pageSize}
-                onChange={(event) => setPageSize(Number(event.target.value))}
-                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
-                title="每页数量"
-              >
-                <option value={10}>10 / 页</option>
-                <option value={20}>20 / 页</option>
-                <option value={50}>50 / 页</option>
-              </select>
-            </>
-          )}
           <button
             onClick={handleRefreshList}
             disabled={refreshing}
@@ -332,6 +270,84 @@ export default function Containers() {
         </div>
       </div>
 
+      {displayContainers.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-[260px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+              <input
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                className="h-8 w-full rounded-md border border-gray-300 bg-white pl-8 pr-2 text-xs text-black outline-none focus:border-black focus:ring-2 focus:ring-black"
+                placeholder="搜索名称、ID、UUID、IP"
+              />
+            </div>
+            <select
+              value={typeFilter}
+              onChange={(event) => setTypeFilter(event.target.value)}
+              className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+              title="类型筛选"
+            >
+              <option value="all">全部类型</option>
+              <option value="lxc">LXC</option>
+              <option value="kvm">KVM</option>
+            </select>
+            <select
+              value={systemFilter}
+              onChange={(event) => setSystemFilter(event.target.value)}
+              className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+              title="系统筛选"
+            >
+              <option value="all">全部系统</option>
+              {systemOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+              className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+              title="状态筛选"
+            >
+              <option value="all">全部状态</option>
+              <option value="running">在线</option>
+              <option value="stopped">离线</option>
+              <option value="task">任务中</option>
+              <option value="creating">创建中</option>
+              <option value="failed">失败</option>
+            </select>
+            <select
+              value={pageSize}
+              onChange={(event) => setPageSize(Number(event.target.value))}
+              className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+              title="每页数量"
+            >
+              <option value={10}>10 / 页</option>
+              <option value={20}>20 / 页</option>
+              <option value={50}>50 / 页</option>
+            </select>
+          </div>
+
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <span className="text-xs text-gray-500">{selected.size} 个</span>
+              <button onClick={() => handleBatchAction('start')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex h-8 items-center gap-1 px-2.5 text-xs text-gray-700 hover:bg-gray-100 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Play className="w-3 h-3" />{batchLoading ? '执行中...' : '开机'}
+              </button>
+              <button onClick={() => handleBatchAction('stop')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex h-8 items-center gap-1 px-2.5 text-xs text-gray-700 hover:bg-gray-100 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Square className="w-3 h-3" />{batchLoading ? '执行中...' : '关机'}
+              </button>
+              <button onClick={() => handleBatchAction('restart')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex h-8 items-center gap-1 px-2.5 text-xs text-gray-700 hover:bg-gray-100 rounded border border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed">
+                <RotateCcw className="w-3 h-3" />{batchLoading ? '执行中...' : '重启'}
+              </button>
+              <button onClick={() => handleBatchAction('delete')} disabled={batchLoading || hasActiveTasks(tasks)} className="inline-flex h-8 items-center gap-1 px-2.5 text-xs text-red-600 hover:bg-red-50 rounded border border-red-200 disabled:opacity-50 disabled:cursor-not-allowed">
+                <Trash2 className="w-3 h-3" />{batchLoading ? '执行中...' : '删除'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {displayContainers.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-lg p-12 text-center">
           <div className="w-16 h-16 bg-gray-100 rounded-lg flex items-center justify-center mx-auto mb-4">
@@ -343,7 +359,7 @@ export default function Containers() {
       ) : (
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1200px]">
+            <table className="w-full min-w-[1260px]">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50">
                   <th className="w-10 px-3 py-3">
@@ -361,6 +377,7 @@ export default function Containers() {
                   <TableHead>名称</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>系统</TableHead>
+                  <TableHead>类型</TableHead>
                   <TableHead icon><Cpu className="w-3.5 h-3.5" />CPU</TableHead>
                   <TableHead icon><MemoryStick className="w-3.5 h-3.5" />MEMORY</TableHead>
                   <TableHead icon><HardDrive className="w-3.5 h-3.5" />DISK</TableHead>
@@ -420,6 +437,9 @@ export default function Containers() {
                           {getTemplateIcon(container.template)}
                           {getTemplateName(container.template)}
                         </span>
+                      </td>
+                      <td className="px-2.5 py-2 align-top">
+                        <RuntimeBadge runtime={container.virtualization || 'lxc'} />
                       </td>
                       <td className="px-2.5 py-2 align-top">
                         <ProgressCell pct={cpuPct} />
@@ -612,6 +632,15 @@ function StatusBadge({ running, task, placeholder }: { running: boolean; task?: 
   )
 }
 
+function RuntimeBadge({ runtime }: { runtime: string }) {
+  const normalized = runtime === 'kvm' ? 'kvm' : 'lxc'
+  return (
+    <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${normalized === 'kvm' ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-100 text-gray-700'}`}>
+      {normalized.toUpperCase()}
+    </span>
+  )
+}
+
 function buildDisplayContainers(
   containers: Container[],
   queuedCreates: Record<string, CreateContainerRequest>,
@@ -643,6 +672,7 @@ function toPlaceholder(cfg: CreateContainerRequest): DisplayContainer {
     id: 0,
     uuid: '',
     name: cfg.name,
+    virtualization: cfg.virtualization || 'lxc',
     template: cfg.template_id,
     vcpu: cfg.vcpu,
     ram_mb: cfg.ram_mb,
@@ -715,6 +745,7 @@ function hasActiveTasks(tasks: Task[]) {
 
 type ContainerFilters = {
   search: string
+  type: string
   system: string
   status: string
   taskStatusMap: Record<number, Task>
@@ -726,6 +757,9 @@ function filterContainers(containers: DisplayContainer[], filters: ContainerFilt
   return containers.filter((container) => {
     const task = (container.id > 0 ? filters.taskStatusMap[container.id] : filters.taskNameMap[container.name]) || container.createTask
     if (filters.system !== 'all' && getSystemFilterValue(container.template) !== filters.system) {
+      return false
+    }
+    if (filters.type !== 'all' && (container.virtualization || 'lxc') !== filters.type) {
       return false
     }
     if (filters.status !== 'all' && getContainerStatusFilterValue(container, task) !== filters.status) {
@@ -740,6 +774,7 @@ function filterContainers(containers: DisplayContainer[], filters: ContainerFilt
       container.ip,
       container.ipv6,
       container.template,
+      container.virtualization || 'lxc',
       getTemplateName(container.template),
       getSystemFilterLabel(getSystemFilterValue(container.template)),
       String(container.ssh_port || ''),
@@ -760,14 +795,15 @@ function buildSystemOptions(containers: DisplayContainer[]) {
 }
 
 function getSystemFilterValue(template: string) {
-  if (template.startsWith('ubuntu')) return 'ubuntu'
-  if (template.startsWith('debian')) return 'debian'
-  if (template.startsWith('alpine')) return 'alpine'
-  if (template.startsWith('centos')) return 'centos'
-  if (template.startsWith('archlinux')) return 'archlinux'
-  if (template.startsWith('fedora')) return 'fedora'
-  if (template.startsWith('rockylinux')) return 'rockylinux'
-  return template || 'unknown'
+  const normalized = template.startsWith('kvm-') ? template.slice(4) : template
+  if (normalized.startsWith('ubuntu')) return 'ubuntu'
+  if (normalized.startsWith('debian')) return 'debian'
+  if (normalized.startsWith('alpine')) return 'alpine'
+  if (normalized.startsWith('centos')) return 'centos'
+  if (normalized.startsWith('archlinux')) return 'archlinux'
+  if (normalized.startsWith('fedora')) return 'fedora'
+  if (normalized.startsWith('rockylinux')) return 'rockylinux'
+  return normalized || 'unknown'
 }
 
 function getSystemFilterLabel(system: string) {
@@ -903,12 +939,18 @@ function getTemplateName(id: string) {
     'archlinux-current': 'Arch Linux',
     'fedora-44': 'Fedora 44',
     'rockylinux-10': 'Rocky 10',
+    'kvm-ubuntu-noble': 'Ubuntu 24.04',
+    'kvm-ubuntu-jammy': 'Ubuntu 22.04',
+    'kvm-debian-bookworm': 'Debian 12',
+    'kvm-debian-bullseye': 'Debian 11',
+    'kvm-rockylinux-9': 'Rocky 9',
   }
   return map[id] || id
 }
 
 function getTemplateIcon(id: string): ReactNode {
   const size = 'w-4 h-4'
+  id = id.startsWith('kvm-') ? id.slice(4) : id
   if (id.startsWith('debian')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M935.473 375.359a558.602 558.602 0 0 0-22.351-114.655l13.308 4.436c-35.66-81.385-90.086-163.623-153.556-199.282-8.701-5.118-35.147 4.948-26.616-12.113s-37.536-8.19-56.816-4.778c-26.275 4.266-30.028-29.175-75.071-35.83-25.593-3.582-32.247 18.427-44.702 13.309-23.545-9.384-20.816-27.64-57.669-9.384-18.427 9.042 11.602-26.105-49.138-4.607L457.744 0C349.23 41.63 318.69 76.266 288.15 79.337c-6.996 0-34.124 32.759-53.574 53.062-17.062 17.062-26.275 36.512-49.138 39.583l-17.062 70.636A136.494 136.494 0 0 0 119.41 339.7a66.711 66.711 0 0 1 4.436-52.892c-17.062 6.825-45.896 17.062-29.687 96.91 12.796 63.13-5.29 135.13 10.066 204.742 4.777 20.986 0 40.095 6.142 51.185 107.66 235.794 208.836 392.08 472.44 384.06l4.436-8.872c-28.152-6.825-55.11-17.062-111.584-30.711-18.597-4.436-23.033-34.124-40.265-44.19-9.384-5.46-28.323-4.095-37.195-9.896s4.266-21.668-19.962-14.332c-8.531 2.56-13.82-10.92-20.133-17.061s0-23.716-23.375-24.74-18.426-29.687-19.791-44.702c-12.114 1.536-1.195-1.535-13.308 4.436a63.64 63.64 0 0 1-23.887-31.735c-10.237-48.967-10.578-21.497-15.014-32.417a322.297 322.297 0 0 0-19.28-42.142l26.787 8.872h4.436l4.436-13.309-26.616-8.701h31.223c-7.678 13.99 2.047 5.29-13.479 8.872v13.308l22.35-8.872v-13.308c-20.644-10.237-28.663-13.308-49.137-22.01l9.043 8.872v4.436h-49.138c-22.01-14.843-13.99-31.734-17.915-53.062 17.062 0 9.213 6.655 17.062-13.137l-17.062 8.872 13.308-33.953-13.308 13.138c-29.176-38.73-16.209-97.764-11.943-152.02A180.684 180.684 0 0 1 211.2 372.97c8.872-10.067 5.119-25.251 5.46-37.195l31.223-26.445H265.8c7.678 17.061 4.777 5.46 0 22.01l8.872 4.435c7.166-8.701 6.142-5.971 8.872-22.01-10.066-10.578-6.995-9.895-26.616-13.308A119.432 119.432 0 0 1 368.51 243.13l4.436-13.308-17.915 9.043-4.436-13.138a109.536 109.536 0 0 1 76.095-27.128c6.313 0 6.996-17.062 12.797-19.45 161.574-60.57 309.33 9.383 371.093 147.413a324.173 324.173 0 0 1 8.19 34.123c17.061 56.987-7.167 121.48 9.725 155.604-7.849 36-36.683 13.82-40.266 30.881-8.531 41.29-14.844 59.717-40.778 78.826a196.38 196.38 0 0 1-30.711 22.35 84.285 84.285 0 0 0 22.35-39.753c-106.294 111.584-262.58 63.981-290.049-105.954a101.176 101.176 0 0 1 35.147-93.157c92.987-87.527 150.144-52.38 205.765-20.474l-8.872-30.711c-32.93-24.398-17.062-19.792-9.043-57.328v-4.436l-17.915-13.137c2.56 10.066 1.024 5.289 9.043 17.061-4.436 16.039 0 9.043-8.872 17.062-15.014 9.725-23.716 7.337-44.702 4.436l4.436-13.308-13.308-13.308c0 11.773-4.095 2.73 0 17.062-126.086 9.896-218.05 80.02-178.636 260.191a220.608 220.608 0 0 0 8.872 44.19l-8.872 8.702-4.436-26.446h-13.48l-4.435 13.308c-12.626-25.763-0.853 10.75 40.265 52.892a149.29 149.29 0 0 0 12.797 12.625c47.773 34.124 113.29 81.385 201.328 49.138h9.043v-4.436l-102.37-13.308-4.436-8.701c106.806 24.74 176.93-8.531 236.646-48.456 13.138-17.062 11.431-24.057 22.18-9.043 19.28-17.061 3.925-26.786 13.48-44.019 6.483-11.772 32.587-17.062 44.7-35.318l40.096-136.494h-17.062c3.071-14.332 22.522-34.123-4.436-48.455-2.559-1.536 9.043-1.365 8.872-4.266a145.537 145.537 0 0 0-22.18-66.37c33.1 21.669 36.342 68.247 53.574 105.783v8.872h4.436V375.36zM453.308 595.455l-9.555-26.446 62.446 57.328zM146.196 211.736l-23.204-4.436v39.754c16.72-10.578 18.939-10.407 22.35-35.318z m574.981 176.419a57.498 57.498 0 0 0-17.062 44.19l13.48 8.701a37.877 37.877 0 0 0 4.435-52.891zM868.42 555.872c26.275-11.602 54.598-58.01 35.83-97.081l-35.83 96.91z m-174.03-79.508c-15.697 11.773-19.791 13.308-22.35 39.754l13.307 8.872 17.915-8.872a60.228 60.228 0 0 0 4.436-48.455c-8.36 13.478-2.559 20.644-13.308 8.701z m-67.053 79.508c15.868-10.92 11.944-14.844 17.915-22.18v-4.778a292.097 292.097 0 0 1-62.446 0c-13.137-13.99-13.308-29.346-31.223-39.583 17.062 35.147 3.242 38.218 31.223 61.764a158.162 158.162 0 0 0 40.095 4.436c1.536 0-6.824-1.024 4.436 0zM207.79 520.554H194.31l-8.872 8.702c9.555 10.237 5.46 7.166 13.308-4.436L212.225 547l4.436-17.062-8.872-8.701z m17.062 57.328l4.436-8.873c-10.067-8.701 0-3.583-13.308 0l-13.309-17.061 4.436 17.061v8.873h17.062z" fill="#CE0C48"/></svg>
   if (id.startsWith('ubuntu')) return <svg className={size} viewBox="0 0 1024 1024"><circle cx="512" cy="512" r="511" fill="#DD4814"/><path d="M164.532 442.532c-37.676 0-68.2 30.524-68.2 68.2 0 37.656 30.524 68.184 68.2 68.184 37.66 0 68.184-30.528 68.184-68.184 0-37.676-30.524-68.2-68.184-68.2z m486.86 309.912c-32.612 18.84-43.8 60.52-24.96 93.116 18.82 32.616 60.5 43.796 93.116 24.96 32.612-18.82 43.796-60.5 24.96-93.12-18.82-32.592-60.524-43.772-93.116-24.956z m-338.744-241.712c0-67.384 33.472-126.92 84.684-162.968L347.48 264.268c-59.656 39.88-104.048 100.816-122.496 172.188 21.528 17.56 35.304 44.3 35.304 74.272 0 29.956-13.776 56.696-35.304 74.26C243.408 656.376 287.8 717.32 347.48 757.2l49.852-83.52c-51.212-36.028-84.684-95.56-84.684-162.948z m199.168-199.188c104.052 0 189.42 79.776 198.38 181.52l97.16-1.432c-4.776-75.112-37.592-142.544-88.008-192.128-25.928 9.796-55.88 8.296-81.76-6.624-25.932-14.964-42.192-40.208-46.636-67.608a297.04 297.04 0 0 0-79.14-10.76 295.148 295.148 0 0 0-131.276 30.652l47.38 84.908a198.384 198.384 0 0 1 83.9-18.528z m0 398.36a198.404 198.404 0 0 1-83.896-18.528l-47.38 84.9a294.848 294.848 0 0 0 131.28 30.684 296.16 296.16 0 0 0 79.136-10.788c4.444-27.4 20.708-52.62 46.632-67.608 25.904-14.948 55.836-16.42 81.76-6.624 50.42-49.584 83.232-117.016 88.016-192.128l-97.188-1.432c-8.94 101.772-94.304 181.52-198.36 181.52z m139.552-440.924c32.616 18.832 74.3 7.68 93.116-24.936 18.84-32.616 7.68-74.3-24.936-93.14-32.616-18.816-74.296-7.64-93.14 24.976-18.812 32.6-7.632 74.28 24.96 93.1z" fill="#FFF"/></svg>
   if (id.startsWith('alpine')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M255.914667 68.565333L0 512l255.914667 443.434667h512.170666L1024 512 768.085333 68.565333H255.914667zM425.173333 303.786667L540.16 422.4l68.181333 68.053333 0.085334-0.085333 102.826666 100.821333c-8.533333 5.973333-16.469333 10.752-24.021333 14.677334a160.256 160.256 0 0 1-21.162667 9.258666 115.285333 115.285333 0 0 1-18.133333 4.736c-5.589333 0.981333-10.666667 1.450667-15.274667 1.450667-5.546667 0-10.325333-0.597333-14.421333-1.450667a56.192 56.192 0 0 1-10.24-3.072 40.533333 40.533333 0 0 1-8.533333-4.821333l-45.312-46.592-129.664-129.749333-46.933334 44.928-130.986666 131.072a41.557333 41.557333 0 0 1-8.533334 4.736 54.357333 54.357333 0 0 1-10.112 3.114666 70.826667 70.826667 0 0 1-14.421333 1.408c-4.608 0-9.685333-0.384-15.274667-1.322666a115.2 115.2 0 0 1-18.133333-4.864 159.914667 159.914667 0 0 1-21.162667-9.258667 223.061333 223.061333 0 0 1-24.021333-14.634667L425.173333 303.786667z m201.386667 33.493333l195.370667 196.181333 58.965333 57.728a223.573333 223.573333 0 0 1-24.064 14.677334 159.146667 159.146667 0 0 1-21.077333 9.258666 115.072 115.072 0 0 1-18.176 4.736c-5.546667 0.981333-10.709333 1.450667-15.36 1.450667-5.504 0-10.282667-0.597333-14.378667-1.450667a54.826667 54.826667 0 0 1-16.426667-6.229333 10.197333 10.197333 0 0 1-2.261333-1.706667l-52.565333-51.968-90.069334-90.069333-14.250666 14.250667L545.706667 418.133333l80.896-80.938666z m-254.549333 175.786667v107.904a90.794667 90.794667 0 0 1-15.189334-1.493334 117.973333 117.973333 0 0 1-18.005333-4.949333 158.208 158.208 0 0 1-20.821333-9.130667 222.592 222.592 0 0 1-23.68-14.506666l77.653333-77.866667z" fill="#0D597F"/></svg>

@@ -105,10 +105,7 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func listContainers(w http.ResponseWriter, r *http.Request) {
-	containers, err := lxcManager.ListContainers()
-	if err != nil {
-		containers = config.AppConfig.Containers
-	}
+	containers, _ := listByRuntime()
 	containers = filterContainersForRequest(r, containers)
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: containers})
 }
@@ -123,11 +120,12 @@ func createContainer(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Container name is required"})
 		return
 	}
+	cfg.Virtualization = runtimeFromRequest(cfg.Virtualization)
 	if cfg.TemplateID == "" {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Template is required"})
 		return
 	}
-	if !isTemplateEnabledAndDownloaded(cfg.TemplateID) {
+	if !isImageEnabledAndDownloaded(cfg.TemplateID, cfg.Virtualization) {
 		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Template is not enabled or downloaded"})
 		return
 	}
@@ -150,7 +148,7 @@ func createContainer(w http.ResponseWriter, r *http.Request) {
 	if cfg.SnapshotLimit <= 0 {
 		cfg.SnapshotLimit = config.DefaultSnapshotLimit
 	}
-	if err := validateContainerResourceRequest(cfg.VCPU, cfg.RAMMB, cfg.DiskGB); err != nil {
+	if err := validateRuntimeResourceRequest(cfg.Virtualization, cfg.VCPU, cfg.RAMMB, cfg.DiskGB); err != nil {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
@@ -166,7 +164,7 @@ func createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := lxcManager.CreateContainer(cfg); err != nil {
+	if err := createByRuntime(cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
@@ -183,7 +181,7 @@ func getContainer(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func getUsage(w http.ResponseWriter, r *http.Request, id int) {
-	usage, err := lxcManager.GetResourceUsage(id)
+	usage, err := usageByRuntime(id)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
@@ -192,7 +190,7 @@ func getUsage(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func getTraffic(w http.ResponseWriter, r *http.Request, id int) {
-	info := lxcManager.GetTrafficInfo(id)
+	info := trafficByRuntime(id)
 	if info == nil {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
 		return
@@ -281,7 +279,7 @@ func updateResourceLimit(w http.ResponseWriter, r *http.Request, id int) {
 	if req.RAMMB > 0 {
 		nextRAMMB = req.RAMMB
 	}
-	if err := validateContainerResourceRequest(nextVCPU, nextRAMMB, c.DiskGB); err != nil {
+	if err := validateRuntimeResourceRequest(c.Runtime(), nextVCPU, nextRAMMB, c.DiskGB); err != nil {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
@@ -294,7 +292,7 @@ func updateResourceLimit(w http.ResponseWriter, r *http.Request, id int) {
 
 	// Re-apply resource limits to running container
 	if c.Status == "running" {
-		if err := lxcManager.ApplyContainerLimits(c); err != nil {
+		if err := applyLimitsByRuntime(c); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return
 		}
@@ -354,10 +352,7 @@ func HandleDashboard(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
 		return
 	}
-	containers, err := lxcManager.ListContainers()
-	if err != nil {
-		containers = config.AppConfig.Containers
-	}
+	containers, _ := listByRuntime()
 	running := 0
 	stopped := 0
 	for _, c := range containers {
@@ -391,7 +386,7 @@ func resetSSHPassword(w http.ResponseWriter, r *http.Request, id int) {
 		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "容器已到期，不允许此操作"})
 		return
 	}
-	newPassword, err := lxcManager.ResetSSHPassword(id)
+	newPassword, err := resetPasswordByRuntime(id)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return

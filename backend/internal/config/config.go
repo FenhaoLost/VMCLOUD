@@ -73,7 +73,11 @@ type Container struct {
 	ID                            int           `json:"id"`
 	UUID                          string        `json:"uuid"`
 	Name                          string        `json:"name"`
+	Virtualization                string        `json:"virtualization,omitempty"`
 	LXCName                       string        `json:"lxc_name,omitempty"`
+	KVMName                       string        `json:"kvm_name,omitempty"`
+	DiskImage                     string        `json:"disk_image,omitempty"`
+	MACAddress                    string        `json:"mac_address,omitempty"`
 	Template                      string        `json:"template"`
 	VCPU                          float64       `json:"vcpu"`
 	RAMMB                         int           `json:"ram_mb"`
@@ -109,12 +113,42 @@ type Container struct {
 	SnapshotScheduleCreatedBy     string        `json:"snapshot_schedule_created_by"`
 }
 
+const (
+	VirtualizationLXC = "lxc"
+	VirtualizationKVM = "kvm"
+)
+
+func NormalizeVirtualization(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case VirtualizationKVM:
+		return VirtualizationKVM
+	default:
+		return VirtualizationLXC
+	}
+}
+
+func (c *Container) Runtime() string {
+	return NormalizeVirtualization(c.Virtualization)
+}
+
+func (c *Container) IsKVM() bool {
+	return c.Runtime() == VirtualizationKVM
+}
+
 // LxcName returns the internal LXC container name (ct-{id})
 func (c *Container) LxcName() string {
 	if c.LXCName != "" {
 		return c.LXCName
 	}
 	return fmt.Sprintf("ct-%d", c.ID)
+}
+
+// VirshName returns the internal libvirt domain name for KVM instances.
+func (c *Container) VirshName() string {
+	if c.KVMName != "" {
+		return c.KVMName
+	}
+	return fmt.Sprintf("vm-%d", c.ID)
 }
 
 // SubUser represents a sub-user with access to specific containers
@@ -343,6 +377,9 @@ func InitConfig() (*ClicdConfig, error) {
 		AppConfig.Oversell.SubUserSnapshotLimit = 3
 	}
 	changed := ensureContainerUUIDs()
+	if ensureContainerVirtualization() {
+		changed = true
+	}
 	if ensureContainerPortMappingLimits() {
 		changed = true
 	}
@@ -365,6 +402,18 @@ func InitConfig() (*ClicdConfig, error) {
 	}
 
 	return AppConfig, nil
+}
+
+func ensureContainerVirtualization() bool {
+	changed := false
+	for i := range AppConfig.Containers {
+		next := NormalizeVirtualization(AppConfig.Containers[i].Virtualization)
+		if AppConfig.Containers[i].Virtualization != next {
+			AppConfig.Containers[i].Virtualization = next
+			changed = true
+		}
+	}
+	return changed
 }
 
 func ensureContainerSnapshotScheduleDefaults() bool {
@@ -519,6 +568,7 @@ func AddContainer(c Container) {
 	if c.UUID == "" {
 		c.UUID = NewContainerUUID()
 	}
+	c.Virtualization = NormalizeVirtualization(c.Virtualization)
 	AppConfig.Containers = append(AppConfig.Containers, c)
 	SaveConfig()
 }
@@ -792,6 +842,19 @@ func CleanStaleContainers() {
 	valid := make([]Container, 0)
 	changed := false
 	for _, c := range AppConfig.Containers {
+		if c.IsKVM() {
+			if c.DiskImage == "" {
+				valid = append(valid, c)
+				continue
+			}
+			if _, err := os.Stat(c.DiskImage); os.IsNotExist(err) {
+				fmt.Printf("Cleaning stale KVM config: %s (disk image not found)\n", c.VirshName())
+				changed = true
+				continue
+			}
+			valid = append(valid, c)
+			continue
+		}
 		lxcDir := "/var/lib/lxc/" + c.LxcName()
 		if _, err := os.Stat(lxcDir); os.IsNotExist(err) {
 			fmt.Printf("Cleaning stale container config: %s (LXC dir not found)\n", c.LxcName())

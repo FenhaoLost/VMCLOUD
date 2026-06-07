@@ -12,6 +12,7 @@ interface CreateContainerModalProps {
 
 const defaultForm: CreateContainerRequest = {
   name: '',
+  virtualization: 'lxc',
   template_id: '',
   vcpu: 1,
   cpu_percent: 100,
@@ -43,13 +44,11 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
   useEffect(() => {
     if (!isOpen) return
 
-    getEnabledImages()
+    getEnabledImages(form.virtualization)
       .then((res) => {
         const data = res.data.data || []
         setTemplates(data)
-        if (data.length > 0) {
-          setForm((prev) => ({ ...prev, template_id: prev.template_id || data[0].id }))
-        }
+        setForm((prev) => ({ ...prev, template_id: data.some((item) => item.id === prev.template_id) ? prev.template_id : (data[0]?.id || '') }))
       })
       .catch(console.error)
 
@@ -69,13 +68,14 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
     getHostInfo()
       .then((res) => setHostInfo(res.data.data || null))
       .catch(() => setHostInfo(null))
-  }, [isOpen])
+  }, [isOpen, form.virtualization])
 
   const ipv6Available = !!ipv6Status?.available
   const ipv6Prefix = ipv6Status?.prefixes?.[0]?.prefix || ''
   const maxVCPU = hostInfo?.cpu.cores || 64
   const maxRAMMB = hostInfo?.ram.total_mb ? Number(hostInfo.ram.total_mb) : undefined
   const maxDiskGB = hostInfo?.disk.total_gb ? Math.max(1, Math.floor(hostInfo.disk.total_gb)) : undefined
+  const resourceErrors = validateResourceInputs(form, maxVCPU, maxRAMMB, maxDiskGB)
 
   const autoPorts = useMemo(() => {
     const count = Math.max(2, form.port_mapping_count)
@@ -119,7 +119,12 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
       return
     }
 
-    const boundedForm = clampCreateForm(form, maxVCPU, maxRAMMB, maxDiskGB)
+    if (Object.keys(resourceErrors).length > 0) {
+      dialog.alert('资源配置有误', '请按红色提示修改 vCPU、内存或磁盘配置')
+      return
+    }
+
+    const boundedForm = normalizeCreateForm(form)
 
     // Build batch of containers
     const containers: CreateContainerRequest[] = []
@@ -181,10 +186,29 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
           </div>
           {batchCount > 1 && <p className="text-xs text-gray-400">将创建 {batchCount} 个容器：{form.name}-{batchStartIndex} 至 {form.name}-{batchStartIndex + batchCount - 1}</p>}
 
+          <Field label="虚拟化架构">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setForm((prev) => ({ ...prev, virtualization: 'lxc', template_id: '' }))}
+                className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${form.virtualization === 'lxc' ? 'border-black bg-black text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+              >
+                LXC 容器
+              </button>
+              <button
+                type="button"
+                onClick={() => setForm((prev) => ({ ...prev, virtualization: 'kvm', template_id: '' }))}
+                className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${form.virtualization === 'kvm' ? 'border-black bg-black text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+              >
+                KVM 虚拟机
+              </button>
+            </div>
+          </Field>
+
           <Field label="系统模板">
             {templates.length === 0 ? (
               <div className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                暂无可用的系统镜像，请先在「镜像管理」中下载镜像模板。
+                暂无可用的{form.virtualization === 'kvm' ? ' KVM' : ' LXC'}系统镜像，请先在「镜像管理」中下载镜像模板。
               </div>
             ) : (
             <select
@@ -219,16 +243,39 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="vCPU">
-              <NumberInput value={form.vcpu} min={0.25} max={maxVCPU} step={0.25} onChange={(value) => setForm({ ...form, vcpu: clampVCPU(value, maxVCPU) })} />
+              <NumberInput
+                value={form.vcpu}
+                min={form.virtualization === 'kvm' ? 1 : 0.25}
+                max={maxVCPU}
+                step={form.virtualization === 'kvm' ? 1 : 0.25}
+                invalid={!!resourceErrors.vcpu}
+                onChange={(value) => setForm({ ...form, vcpu: value })}
+              />
+              {resourceErrors.vcpu && <p className="mt-1 text-xs text-red-500">{resourceErrors.vcpu}</p>}
             </Field>
             <Field label="内存 (MB)">
-              <NumberInput value={form.ram_mb} min={128} max={maxRAMMB} step={128} onChange={(value) => setForm({ ...form, ram_mb: clampInt(value, 128, maxRAMMB, 512) })} />
+              <NumberInput
+                value={form.ram_mb}
+                min={128}
+                max={maxRAMMB}
+                step={128}
+                invalid={!!resourceErrors.ram_mb}
+                onChange={(value) => setForm({ ...form, ram_mb: value })}
+              />
+              {resourceErrors.ram_mb && <p className="mt-1 text-xs text-red-500">{resourceErrors.ram_mb}</p>}
             </Field>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
             <Field label="磁盘 (GB)">
-              <NumberInput value={form.disk_gb} min={1} max={maxDiskGB} onChange={(value) => setForm({ ...form, disk_gb: clampInt(value, 1, maxDiskGB, 10) })} />
+              <NumberInput
+                value={form.disk_gb}
+                min={1}
+                max={maxDiskGB}
+                invalid={!!resourceErrors.disk_gb}
+                onChange={(value) => setForm({ ...form, disk_gb: value })}
+              />
+              {resourceErrors.disk_gb && <p className="mt-1 text-xs text-red-500">{resourceErrors.disk_gb}</p>}
             </Field>
             <Field label="带宽 (Mbps)">
               <NumberInput value={form.network_bw_mbps} min={0} onChange={(value) => setForm({ ...form, network_bw_mbps: value })} />
@@ -342,44 +389,96 @@ function NumberInput({
   min,
   max,
   step,
+  invalid,
   onChange,
 }: {
   value: number
   min?: number
   max?: number
   step?: number
+  invalid?: boolean
   onChange: (value: number) => void
 }) {
+  const [draft, setDraft] = useState(Number.isFinite(value) ? String(value) : '')
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) {
+      setDraft(Number.isFinite(value) ? String(value) : '')
+    }
+  }, [focused, value])
+
   return (
     <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      step={step}
+      type="text"
+      inputMode={step && !Number.isInteger(step) ? 'decimal' : 'numeric'}
+      value={draft}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false)
+        setDraft(Number.isFinite(value) ? String(value) : '')
+      }}
       onChange={(event) => {
         const raw = event.target.value
-        const value = step && !Number.isInteger(step) ? parseFloat(raw) : parseInt(raw, 10)
-        onChange(value)
+        setDraft(raw)
+        const next = step && !Number.isInteger(step) ? parseFloat(raw) : parseInt(raw, 10)
+        onChange(next)
       }}
-      className={inputClass}
+      aria-invalid={invalid || undefined}
+      data-min={min}
+      data-max={max}
+      data-step={step}
+      className={`${inputClass} ${invalid ? 'border-red-400 focus:border-red-400 focus:ring-red-400' : ''}`}
     />
   )
 }
 
-function clampCreateForm(form: CreateContainerRequest, maxVCPU: number, maxRAMMB?: number, maxDiskGB?: number): CreateContainerRequest {
+function validateResourceInputs(form: CreateContainerRequest, maxVCPU: number, maxRAMMB?: number, maxDiskGB?: number) {
+  const errors: Partial<Record<'vcpu' | 'ram_mb' | 'disk_gb', string>> = {}
+  const minVCPU = form.virtualization === 'kvm' ? 1 : 0.25
+
+  if (!Number.isFinite(form.vcpu)) {
+    errors.vcpu = '请输入 vCPU'
+  } else if (form.vcpu < minVCPU) {
+    errors.vcpu = `不能小于 ${minVCPU} 核`
+  } else if (form.vcpu > maxVCPU) {
+    errors.vcpu = `不能大于 ${maxVCPU} 核`
+  } else if (form.virtualization === 'kvm' && form.vcpu !== Math.round(form.vcpu)) {
+    errors.vcpu = 'KVM vCPU 必须是整数'
+  }
+
+  if (!Number.isFinite(form.ram_mb)) {
+    errors.ram_mb = '请输入内存'
+  } else if (form.ram_mb < 128) {
+    errors.ram_mb = '不能小于 128 MB'
+  } else if (maxRAMMB && form.ram_mb > maxRAMMB) {
+    errors.ram_mb = `不能大于 ${maxRAMMB} MB`
+  }
+
+  if (!Number.isFinite(form.disk_gb)) {
+    errors.disk_gb = '请输入磁盘'
+  } else if (form.disk_gb < 1) {
+    errors.disk_gb = '不能小于 1 GB'
+  } else if (maxDiskGB && form.disk_gb > maxDiskGB) {
+    errors.disk_gb = `不能大于 ${maxDiskGB} GB`
+  }
+
+  return errors
+}
+
+function normalizeCreateForm(form: CreateContainerRequest): CreateContainerRequest {
   return {
     ...form,
-    vcpu: clampVCPU(form.vcpu, maxVCPU),
-    ram_mb: clampInt(form.ram_mb, 128, maxRAMMB, 512),
-    disk_gb: clampInt(form.disk_gb, 1, maxDiskGB, 10),
+    vcpu: form.virtualization === 'kvm' ? Math.round(form.vcpu) : normalizeLXCvCPU(form.vcpu),
+    ram_mb: Math.round(form.ram_mb),
+    disk_gb: Math.round(form.disk_gb),
     snapshot_limit: clampInt(form.snapshot_limit, 1, undefined, 3),
   }
 }
 
-function clampVCPU(value: number, max: number) {
+function normalizeLXCvCPU(value: number) {
   const rounded = Math.round((Number.isFinite(value) ? value : 1) * 4) / 4
-  return Number(Math.min(Math.max(rounded, 0.25), max).toFixed(2))
+  return Number(rounded.toFixed(2))
 }
 
 function clampInt(value: number, min: number, max?: number, fallback = min) {

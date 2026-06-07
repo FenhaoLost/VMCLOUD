@@ -226,7 +226,7 @@ func (q *TaskQueue) createWorker() {
 		c := config.FindContainerByName(task.Config.Name)
 		if c == nil {
 			// 1) Download image + apply limits (lxc-create)
-			err := lxcManager.CreateContainer(task.Config)
+			err := createByRuntime(task.Config)
 			if err != nil {
 				task.Status = "failed"
 				task.Error = err.Error()
@@ -256,10 +256,10 @@ func (q *TaskQueue) createWorker() {
 
 		// 3) Start + initialize SSH/network in the same worker.
 		//    If init fails, destroy the container so no dead entry remains.
-		startErr := lxcManager.StartContainer(c.ID)
+		startErr := startByRuntime(c.ID)
 		if startErr != nil {
 			if createdByTask {
-				lxcManager.DestroyContainer(c.ID)
+				_ = destroyByRuntime(c.ID)
 			}
 			task.Status = "failed"
 			task.Error = startErr.Error()
@@ -304,13 +304,13 @@ func (q *TaskQueue) opWorker() {
 		if err == nil {
 			switch task.Type {
 			case TaskStart:
-				err = lxcManager.StartContainer(task.ContainerID)
+				err = startByRuntime(task.ContainerID)
 			case TaskStop:
-				err = lxcManager.StopContainer(task.ContainerID)
+				err = stopByRuntime(task.ContainerID)
 			case TaskRestart:
-				err = lxcManager.RestartContainer(task.ContainerID)
+				err = restartByRuntime(task.ContainerID)
 			case TaskDelete:
-				err = lxcManager.DestroyContainer(task.ContainerID)
+				err = destroyByRuntime(task.ContainerID)
 				if err == nil {
 					time.Sleep(1 * time.Second)
 					if config.FindContainer(task.ContainerID) != nil {
@@ -318,7 +318,7 @@ func (q *TaskQueue) opWorker() {
 					}
 				}
 			case TaskReinstall:
-				err = lxcManager.ReinstallContainer(task.ContainerID, task.TemplateID)
+				err = reinstallByRuntime(task.ContainerID, task.TemplateID)
 			}
 		}
 
@@ -456,7 +456,11 @@ func HandleSingleTaskAction(w http.ResponseWriter, r *http.Request, id int, acti
 				templateID = c.Template
 			}
 		}
-		if !isTemplateEnabledAndDownloaded(templateID) {
+		runtime := runtimeFromTemplateID(templateID)
+		if c := config.FindContainer(id); c != nil {
+			runtime = c.Runtime()
+		}
+		if !isImageEnabledAndDownloaded(templateID, runtime) {
 			jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Template is not enabled or downloaded"})
 			return
 		}
@@ -516,13 +520,14 @@ func HandleBatchCreate(w http.ResponseWriter, r *http.Request) {
 		if req.Containers[i].VCPU <= 0 {
 			req.Containers[i].VCPU = 1
 		}
+		req.Containers[i].Virtualization = runtimeFromRequest(req.Containers[i].Virtualization)
 		if req.Containers[i].RAMMB < 128 {
 			req.Containers[i].RAMMB = 512
 		}
 		if req.Containers[i].DiskGB < 1 {
 			req.Containers[i].DiskGB = 5
 		}
-		if !isTemplateEnabledAndDownloaded(req.Containers[i].TemplateID) {
+		if !isImageEnabledAndDownloaded(req.Containers[i].TemplateID, req.Containers[i].Virtualization) {
 			jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: name + ": template is not enabled or downloaded"})
 			return
 		}
@@ -532,7 +537,7 @@ func HandleBatchCreate(w http.ResponseWriter, r *http.Request) {
 		if req.Containers[i].SnapshotLimit <= 0 {
 			req.Containers[i].SnapshotLimit = config.DefaultSnapshotLimit
 		}
-		if err := validateContainerResourceRequest(req.Containers[i].VCPU, req.Containers[i].RAMMB, req.Containers[i].DiskGB); err != nil {
+		if err := validateRuntimeResourceRequest(req.Containers[i].Virtualization, req.Containers[i].VCPU, req.Containers[i].RAMMB, req.Containers[i].DiskGB); err != nil {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: name + ": " + err.Error()})
 			return
 		}

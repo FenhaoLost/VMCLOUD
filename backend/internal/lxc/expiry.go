@@ -15,7 +15,7 @@ func IsExpired(c config.Container) bool {
 // StopExpiredContainers stops running containers whose expiration date has passed.
 func (m *Manager) StopExpiredContainers(now time.Time) {
 	for _, container := range config.AppConfig.Containers {
-		if !isContainerExpired(container, now) {
+		if container.IsKVM() || !isContainerExpired(container, now) {
 			continue
 		}
 
@@ -53,7 +53,7 @@ func (m *Manager) StopTrafficExceededContainers(now time.Time) {
 	saved := false
 	for i := range config.AppConfig.Containers {
 		c := &config.AppConfig.Containers[i]
-		if c.Status != "running" {
+		if c.IsKVM() || c.Status != "running" {
 			continue
 		}
 

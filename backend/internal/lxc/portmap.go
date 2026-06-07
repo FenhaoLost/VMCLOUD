@@ -18,8 +18,14 @@ func (m *Manager) ApplyPortMappings(id int) error {
 		return fmt.Errorf("container has no IP")
 	}
 	tag := clicdTag(id)
+	bridge := "lxcbr0"
+	subnet := "10.0.3.0/24"
+	if c.IsKVM() {
+		bridge = "virbr0"
+		subnet = "192.168.122.0/24"
+	}
 
-	EnsureForwardRules()
+	EnsureForwardRules(bridge)
 	m.CleanPortMappings(id)
 
 	for _, pm := range c.PortMappings {
@@ -41,8 +47,8 @@ func (m *Manager) ApplyPortMappings(id int) error {
 		fmt.Printf("Port mapping: host:%d -> %s:%d\n", pm.HostPort, c.IP, pm.ContainerPort)
 	}
 
-	if exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", "10.0.3.0/24", "-o", "eth+", "-j", "MASQUERADE").Run() != nil {
-		exec.Command("iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-s", "10.0.3.0/24", "-o", "eth+", "-j", "MASQUERADE").Run()
+	if exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-o", "eth+", "-j", "MASQUERADE").Run() != nil {
+		exec.Command("iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-s", subnet, "-o", "eth+", "-j", "MASQUERADE").Run()
 	}
 
 	return nil
@@ -50,18 +56,25 @@ func (m *Manager) ApplyPortMappings(id int) error {
 
 func clicdTag(id int) string { return "c" + strconv.Itoa(id) }
 
-// EnsureForwardRules makes sure iptables FORWARD chain allows LXC bridge traffic
-func EnsureForwardRules() {
+// EnsureForwardRules makes sure iptables FORWARD chain allows bridge traffic.
+func EnsureForwardRules(bridge string) {
+	if bridge == "" {
+		bridge = "lxcbr0"
+	}
 	rules := [][]string{
-		{"-A", "FORWARD", "-i", "lxcbr0", "-j", "ACCEPT"},
-		{"-A", "FORWARD", "-o", "lxcbr0", "-j", "ACCEPT"},
-		{"-A", "FORWARD", "-i", "lxcbr0", "-o", "lxcbr0", "-j", "ACCEPT"},
+		{"-i", bridge, "-j", "ACCEPT"},
+		{"-o", bridge, "-j", "ACCEPT"},
+		{"-i", bridge, "-o", bridge, "-j", "ACCEPT"},
 	}
 	for _, args := range rules {
-		checkArgs := append([]string{"-C", "FORWARD"}, args[2:]...)
-		if exec.Command("iptables", checkArgs...).Run() != nil {
-			exec.Command("iptables", args...).Run()
+		for {
+			deleteArgs := append([]string{"-D", "FORWARD"}, args...)
+			if exec.Command("iptables", deleteArgs...).Run() != nil {
+				break
+			}
 		}
+		insertArgs := append([]string{"-I", "FORWARD", "1"}, args...)
+		exec.Command("iptables", insertArgs...).Run()
 	}
 }
 

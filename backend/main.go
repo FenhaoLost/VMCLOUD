@@ -9,6 +9,7 @@ import (
 	"clicd/internal/api"
 	"clicd/internal/cli"
 	"clicd/internal/config"
+	"clicd/internal/kvm"
 	"clicd/internal/lxc"
 	"clicd/internal/server"
 
@@ -50,18 +51,23 @@ func main() {
 		// Start security scanner
 		api.InitScanner()
 
-		// Ensure iptables FORWARD rules allow LXC traffic
-		lxc.EnsureForwardRules()
+		// Ensure iptables FORWARD rules allow managed bridge traffic.
+		lxc.EnsureForwardRules("lxcbr0")
+		lxc.EnsureForwardRules("virbr0")
 
-		// Start expiry scanner (stops expired containers every 30s)
+		// Start expiry scanners (stops expired/over-traffic workloads every 30s)
 		manager := lxc.NewManager()
+		kvmManager := kvm.NewManager()
 		manager.StartExpiryScanner()
+		kvmManager.StartExpiryScanner()
 
-		// Start usage monitor (computes CPU/network/disk rates every 5s)
+		// Start usage monitors (computes CPU/network/disk rates every 5s)
 		manager.StartUsageMonitor()
+		kvmManager.StartUsageMonitor()
 
-		// Start scheduled snapshot scanner.
+		// Start scheduled snapshot scanners.
 		manager.StartSnapshotScheduler()
+		kvmManager.StartSnapshotScheduler()
 
 		// Clean up stale container configs (LXC dir was deleted but config remains)
 		config.CleanStaleContainers()

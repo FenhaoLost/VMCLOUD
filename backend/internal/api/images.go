@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"clicd/internal/config"
+	"clicd/internal/kvm"
 	"clicd/internal/lxc"
 )
 
@@ -17,6 +18,7 @@ import (
 type ImageInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	Type        string `json:"type"`
 	Distro      string `json:"distro"`
 	Release     string `json:"release"`
 	Arch        string `json:"arch"`
@@ -78,6 +80,9 @@ func getEnabledImageSet() map[string]bool {
 		for _, t := range lxc.GetTemplates() {
 			set[t.ID] = true
 		}
+		for _, t := range kvm.GetImages() {
+			set[t.ID] = true
+		}
 	} else {
 		for _, id := range config.AppConfig.EnabledImages {
 			set[id] = true
@@ -93,16 +98,34 @@ func HandleImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	templates := lxc.GetTemplates()
 	enabledSet := getEnabledImageSet()
 
-	images := make([]ImageInfo, 0, len(templates))
+	templates := lxc.GetTemplates()
+	images := make([]ImageInfo, 0, len(templates)+len(kvm.GetImages()))
 	for _, t := range templates {
 		_, downloading := imageDownloads[t.ID]
 		downloaded, size := imageDownloadedInfo(t.Distro, t.Release, t.Arch)
 		images = append(images, ImageInfo{
 			ID:          t.ID,
 			Name:        t.Name,
+			Type:        config.VirtualizationLXC,
+			Distro:      t.Distro,
+			Release:     t.Release,
+			Arch:        t.Arch,
+			Description: t.Description,
+			Downloaded:  downloaded,
+			Enabled:     enabledSet[t.ID],
+			Downloading: downloading,
+			SizeBytes:   size,
+		})
+	}
+	for _, t := range kvm.GetImages() {
+		_, downloading := imageDownloads[t.ID]
+		downloaded, size := kvm.ImageDownloadedInfo(t.ID)
+		images = append(images, ImageInfo{
+			ID:          t.ID,
+			Name:        t.Name,
+			Type:        config.VirtualizationKVM,
 			Distro:      t.Distro,
 			Release:     t.Release,
 			Arch:        t.Arch,
@@ -134,7 +157,35 @@ func HandleImageDownload(w http.ResponseWriter, r *http.Request) {
 
 	tmpl := lxc.FindTemplate(req.TemplateID)
 	if tmpl == nil {
-		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Template not found"})
+		image := kvm.FindImage(req.TemplateID)
+		if image == nil {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Template not found"})
+			return
+		}
+		if ok, _ := kvm.ImageDownloadedInfo(image.ID); ok {
+			ensureImageEnabled(image.ID)
+			jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Already downloaded"})
+			return
+		}
+		imageDownloadsMu.Lock()
+		if imageDownloads[req.TemplateID] {
+			imageDownloadsMu.Unlock()
+			jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: "Already downloading"})
+			return
+		}
+		imageDownloads[req.TemplateID] = true
+		imageDownloadsMu.Unlock()
+		defer func() {
+			imageDownloadsMu.Lock()
+			delete(imageDownloads, req.TemplateID)
+			imageDownloadsMu.Unlock()
+		}()
+		ensureImageEnabled(image.ID)
+		if err := kvm.DownloadImage(*image); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Download failed: " + err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Downloaded successfully"})
 		return
 	}
 
@@ -206,6 +257,15 @@ func HandleImageDelete(w http.ResponseWriter, r *http.Request) {
 
 	tmpl := lxc.FindTemplate(req.TemplateID)
 	if tmpl == nil {
+		if image := kvm.FindImage(req.TemplateID); image != nil {
+			if err := kvm.DeleteImage(image.ID); err != nil {
+				jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to delete image cache: " + err.Error()})
+				return
+			}
+			removeImageEnabled(image.ID)
+			jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Deleted"})
+			return
+		}
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Template not found"})
 		return
 	}
@@ -259,13 +319,27 @@ func HandleEnabledImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	templates := lxc.GetTemplates()
+	runtime := runtimeFromRequest(r.URL.Query().Get("type"))
 	enabledSet := getEnabledImageSet()
 
-	result := make([]lxc.Template, 0)
-	for _, t := range templates {
-		if enabledSet[t.ID] && isImageDownloaded(t.Distro, t.Release, t.Arch) {
-			result = append(result, t)
+	result := make([]map[string]string, 0)
+	if runtime == config.VirtualizationKVM {
+		for _, t := range kvm.GetImages() {
+			if downloaded, _ := kvm.ImageDownloadedInfo(t.ID); enabledSet[t.ID] && downloaded {
+				result = append(result, map[string]string{
+					"id": t.ID, "name": t.Name, "distro": t.Distro, "release": t.Release, "arch": t.Arch,
+					"description": t.Description, "type": config.VirtualizationKVM,
+				})
+			}
+		}
+	} else {
+		for _, t := range lxc.GetTemplates() {
+			if enabledSet[t.ID] && isImageDownloaded(t.Distro, t.Release, t.Arch) {
+				result = append(result, map[string]string{
+					"id": t.ID, "name": t.Name, "distro": t.Distro, "release": t.Release, "arch": t.Arch,
+					"variant": t.Variant, "description": t.Description, "type": config.VirtualizationLXC,
+				})
+			}
 		}
 	}
 
@@ -273,6 +347,20 @@ func HandleEnabledImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func isTemplateEnabledAndDownloaded(templateID string) bool {
+	return isImageEnabledAndDownloaded(templateID, runtimeFromTemplateID(templateID))
+}
+
+func isImageEnabledAndDownloaded(templateID string, runtime string) bool {
+	runtime = runtimeFromRequest(runtime)
+	if runtime == config.VirtualizationKVM {
+		image := kvm.FindImage(templateID)
+		if image == nil {
+			return false
+		}
+		enabledSet := getEnabledImageSet()
+		downloaded, _ := kvm.ImageDownloadedInfo(image.ID)
+		return enabledSet[image.ID] && downloaded
+	}
 	tmpl := lxc.FindTemplate(templateID)
 	if tmpl == nil {
 		return false
@@ -286,6 +374,9 @@ func ensureImageEnabled(id string) {
 	// We must populate the list with all template IDs first so that explicit toggles stick.
 	if len(config.AppConfig.EnabledImages) == 0 {
 		for _, t := range lxc.GetTemplates() {
+			config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
+		}
+		for _, t := range kvm.GetImages() {
 			config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
 		}
 		config.SaveConfig()
@@ -309,6 +400,11 @@ func removeImageEnabled(id string) {
 	// then remove the one being disabled.
 	if len(config.AppConfig.EnabledImages) == 0 {
 		for _, t := range lxc.GetTemplates() {
+			if t.ID != id {
+				config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
+			}
+		}
+		for _, t := range kvm.GetImages() {
 			if t.ID != id {
 				config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
 			}

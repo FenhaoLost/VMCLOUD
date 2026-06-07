@@ -12,7 +12,7 @@ func HandleIPv6Status(w http.ResponseWriter, r *http.Request) {
 }
 
 func assignIPv6(w http.ResponseWriter, r *http.Request, id int) {
-	c, err := lxcManager.AssignIPv6(id)
+	c, err := assignIPv6ByRuntime(id)
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return

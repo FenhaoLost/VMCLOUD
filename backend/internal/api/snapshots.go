@@ -74,7 +74,7 @@ func createContainerSnapshot(w http.ResponseWriter, r *http.Request, containerID
 			return
 		}
 	}
-	snapshot, err := lxcManager.CreateSnapshot(containerID, user, false, 0)
+	snapshot, err := createSnapshotByRuntime(containerID, user, false, 0)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
@@ -138,7 +138,7 @@ func updateSnapshotSchedule(w http.ResponseWriter, r *http.Request, containerID 
 		req.Time = "03:00"
 	}
 	user := requestUser(r)
-	c, err := lxcManager.SetSnapshotSchedule(containerID, req.Enabled, req.IntervalHours, req.Time, user)
+	c, err := setSnapshotScheduleByRuntime(containerID, req.Enabled, req.IntervalHours, req.Time, user)
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return
@@ -162,7 +162,7 @@ func deleteContainerSnapshot(w http.ResponseWriter, r *http.Request, containerID
 		return
 	}
 	user := requestUser(r)
-	if err := lxcManager.DeleteSnapshot(snapshotID); err != nil {
+	if err := deleteSnapshotByRuntime(snapshotID); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
@@ -177,7 +177,7 @@ func restoreContainerSnapshot(w http.ResponseWriter, r *http.Request, containerI
 		return
 	}
 	user := requestUser(r)
-	if err := lxcManager.RestoreSnapshot(snapshotID); err != nil {
+	if err := restoreSnapshotByRuntime(snapshotID); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
