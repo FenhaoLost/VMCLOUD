@@ -681,7 +681,7 @@ func cliImportExistingContainers() {
 func cliUninstall(reader *bufio.Reader) {
 	fmt.Println("\n--- 卸载 CLICD ---")
 	fmt.Println("将删除 CLICD 服务和 /usr/local/bin/clicd。")
-	fmt.Println("同时会删除 /root/.clicd、/var/lib/lxc 下全部 LXC 容器，以及 /var/cache/lxc 镜像缓存。")
+	fmt.Println("同时会删除 /root/.clicd、/var/lib/lxc、/var/lib/clicd、镜像缓存、备份、临时文件、/swapfile 和 CLICD 网络规则。")
 
 	if os.Geteuid() != 0 {
 		fmt.Println("卸载需要 root 权限。")
@@ -696,6 +696,10 @@ func cliUninstall(reader *bufio.Reader) {
 	}
 
 	destroyAllLXCContainers()
+	destroyAllKVMDomains()
+	cleanupCLICDNetworking()
+	removeCLICDHostHooks()
+	removeCLICDQuotaRecords()
 	stopAndRemoveService()
 	removePath("/usr/local/bin/clicd")
 	removePath("/etc/sysctl.d/99-clicd.conf")
@@ -703,13 +707,18 @@ func cliUninstall(reader *bufio.Reader) {
 	removePath("/var/log/clicd.err")
 	removePath("/root/.clicd")
 	removePath("/var/lib/lxc")
+	removePath("/var/lib/clicd")
 	removePath("/var/cache/lxc")
+	removePath("/var/cache/clicd")
+	removePath("/root/clicd-backups")
+	removeCLICDTmpFiles()
+	removeCLICDSwapfile()
 
 	reloadSysctl()
 
 	fmt.Println()
 	fmt.Println("CLICD 已卸载。")
-	fmt.Println("服务、二进制、配置、容器和 LXC 镜像缓存均已删除。")
+	fmt.Println("服务、二进制、配置、容器/虚拟机、本地镜像、缓存、备份、临时文件和 CLICD 网络规则均已删除。")
 }
 
 func destroyAllLXCContainers() {
@@ -728,6 +737,151 @@ func destroyAllLXCContainers() {
 		runQuiet("lxc-destroy", "-n", name, "-f")
 		removeLXCContainerPath("/var/lib/lxc/" + name)
 	}
+}
+
+func destroyAllKVMDomains() {
+	if !commandExists("virsh") {
+		return
+	}
+	out, err := exec.Command("virsh", "list", "--all", "--name").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if isCLICDKVMDomain(name) {
+			removeKVMDomain(name)
+		}
+	}
+}
+
+func isCLICDKVMDomain(name string) bool {
+	if !strings.HasPrefix(name, "vm-") || len(name) <= len("vm-") {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(name, "vm-") {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	if dirExists("/var/lib/clicd/kvm/instances/" + name) {
+		return true
+	}
+	out, err := exec.Command("virsh", "dumpxml", name).Output()
+	return err == nil && strings.Contains(string(out), "/var/lib/clicd/kvm/")
+}
+
+func removeKVMDomain(name string) {
+	fmt.Printf("Removing KVM domain %s...\n", name)
+	runQuiet("virsh", "destroy", name)
+	if runCommandOK("virsh", "undefine", name, "--remove-all-storage", "--nvram") {
+		return
+	}
+	if runCommandOK("virsh", "undefine", name, "--nvram") {
+		return
+	}
+	runQuiet("virsh", "undefine", name)
+}
+
+func cleanupCLICDNetworking() {
+	removeCLICDNATRules()
+	for _, bridge := range []string{"lxcbr0", "virbr0"} {
+		deleteFilterRule("FORWARD", "-i", bridge, "-j", "ACCEPT")
+		deleteFilterRule("FORWARD", "-o", bridge, "-j", "ACCEPT")
+		deleteFilterRule("FORWARD", "-i", bridge, "-o", bridge, "-j", "ACCEPT")
+		deleteIP6TablesBridgeRules(bridge)
+	}
+}
+
+func removeCLICDNATRules() {
+	if commandExists("iptables") {
+		for {
+			out, err := exec.Command("sh", "-c", "iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep 'clicd-' | awk '{print $1}' | head -n 1").Output()
+			line := strings.TrimSpace(string(out))
+			if err != nil || line == "" {
+				break
+			}
+			if !runCommandOK("iptables", "-t", "nat", "-D", "PREROUTING", line) {
+				break
+			}
+		}
+		deleteNATRule("POSTROUTING", "-s", "10.0.3.0/24", "-o", "eth+", "-j", "MASQUERADE")
+		deleteNATRule("POSTROUTING", "-s", "192.168.122.0/24", "-o", "eth+", "-j", "MASQUERADE")
+	}
+}
+
+func deleteNATRule(args ...string) {
+	fullArgs := append([]string{"-t", "nat", "-D"}, args...)
+	for runCommandOK("iptables", fullArgs...) {
+	}
+}
+
+func deleteFilterRule(args ...string) {
+	fullArgs := append([]string{"-D"}, args...)
+	for runCommandOK("iptables", fullArgs...) {
+	}
+}
+
+func deleteIP6TablesBridgeRules(bridge string) {
+	if !commandExists("ip6tables") {
+		return
+	}
+	for {
+		cmd := fmt.Sprintf("ip6tables -S FORWARD 2>/dev/null | grep -- %s | sed 's/^-A /-D /' | head -n 1", shellQuote(bridge))
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		rule := strings.TrimSpace(string(out))
+		if err != nil || rule == "" {
+			return
+		}
+		if !runCommandOK("sh", "-c", "ip6tables "+rule) {
+			return
+		}
+	}
+}
+
+func removeCLICDHostHooks() {
+	runQuiet("systemctl", "stop", "clicd-kvm-ipv6.service")
+	runQuiet("systemctl", "disable", "clicd-kvm-ipv6.service")
+	runQuiet("rc-service", "clicd-kvm-ipv6", "stop")
+	runQuiet("rc-update", "del", "clicd-kvm-ipv6", "default")
+	removePath("/usr/local/sbin/clicd-kvm-ipv6-init")
+	removePath("/etc/systemd/system/clicd-kvm-ipv6.service")
+	removePath("/etc/local.d/clicd-kvm-ipv6.start")
+	removePath("/etc/network/if-up.d/clicd-kvm-ipv6")
+}
+
+func removeCLICDQuotaRecords() {
+	for _, path := range []string{"/etc/projects", "/etc/projid"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var kept []string
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == "" || strings.Contains(line, "clicd-") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+		_ = os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0644)
+	}
+}
+
+func removeCLICDTmpFiles() {
+	for _, pattern := range []string{"/tmp/clicd-*", "/tmp/clicd.*"} {
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			removePath(path)
+		}
+	}
+}
+
+func removeCLICDSwapfile() {
+	if !fileExists("/swapfile") {
+		return
+	}
+	runQuiet("swapoff", "/swapfile")
+	removePath("/swapfile")
 }
 
 func removeLXCContainerPath(path string) {
@@ -819,6 +973,16 @@ func removePath(path string) {
 	fmt.Printf("Removed %s\n", path)
 }
 
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 func reloadSysctl() {
 	if commandExists("sysctl") {
 		runQuiet("sysctl", "--system")
@@ -830,8 +994,16 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
+func runCommandOK(name string, args ...string) bool {
+	return exec.Command(name, args...).Run() == nil
+}
+
 func runQuiet(name string, args ...string) {
 	_ = exec.Command(name, args...).Run()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func restartWebPanelForConfigChange() {

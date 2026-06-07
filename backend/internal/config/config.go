@@ -3,7 +3,6 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,69 +280,91 @@ func InitConfig() (*ClicdConfig, error) {
 	dataDir := getDataDir()
 
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0700); err != nil {
-		return nil, fmt.Errorf("failed to create config directory: %v", err)
+		return nil, fmt.Errorf("failed to create data directory: %v", err)
 	}
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %v", err)
 	}
+	if err := openConfigDB(); err != nil {
+		return nil, err
+	}
 
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		// First run: generate new config
-		adminUser := "admin"
-		adminPass := generateRandomString(16)
-		jwtSecret := generateRandomString(32)
-		hash, err := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, fmt.Errorf("failed to hash password: %v", err)
+	cfg, ok, err := loadConfigFromDB()
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		AppConfig = cfg
+		normalizeConfigDefaults(dataDir)
+		if migrateLoadedConfig() {
+			if err := SaveConfig(); err != nil {
+				return nil, err
+			}
 		}
-
-		AppConfig = &ClicdConfig{
-			AdminUser:       adminUser,
-			AdminPassHash:   string(hash),
-			JWTSecret:       jwtSecret,
-			Port:            8999,
-			DataDir:         dataDir,
-			Containers:      []Container{},
-			NextContainerID: 1,
-			NextVNCPort:     5900,
-			NextSSHPort:     22000,
-			SetupComplete:   false,
-			SubUsers:        []SubUser{},
-			AuditLogs:       []AuditLog{},
-			Tasks:           []SavedTask{},
-			LoginLogs:       []SavedLoginLog{},
-			Snapshots:       []Snapshot{},
-		}
-
-		if err := SaveConfig(); err != nil {
-			return nil, err
-		}
-
-		fmt.Println("\n========================================")
-		fmt.Println("  CLICD - LXC Container Manager")
-		fmt.Println("========================================")
-		fmt.Printf("  Username: %s\n", adminUser)
-		fmt.Printf("  Password: %s\n", adminPass)
-		fmt.Println("========================================")
-		fmt.Println("  Please save these credentials!")
-		fmt.Println("  Web Interface: http://0.0.0.0:8999")
-		fmt.Println("========================================")
-		fmt.Println()
-
 		return AppConfig, nil
 	}
 
-	// Load existing config
-	data, err := os.ReadFile(cfgPath)
+	legacy, ok, err := loadLegacyJSONConfig(cfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config: %v", err)
+		return nil, err
+	}
+	if ok {
+		AppConfig = legacy
+		normalizeConfigDefaults(dataDir)
+		if migrateLoadedConfig() {
+			// Save below persists normalized legacy data into SQLite.
+		}
+		if err := SaveConfig(); err != nil {
+			return nil, err
+		}
+		return AppConfig, nil
 	}
 
-	AppConfig = &ClicdConfig{}
-	if err := json.Unmarshal(data, AppConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse config: %v", err)
+	adminUser := "admin"
+	adminPass := generateRandomString(16)
+	jwtSecret := generateRandomString(32)
+	hash, err := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %v", err)
 	}
 
+	AppConfig = &ClicdConfig{
+		AdminUser:       adminUser,
+		AdminPassHash:   string(hash),
+		JWTSecret:       jwtSecret,
+		Port:            8999,
+		DataDir:         dataDir,
+		Containers:      []Container{},
+		NextContainerID: 1,
+		NextVNCPort:     5900,
+		NextSSHPort:     22000,
+		SetupComplete:   false,
+		SubUsers:        []SubUser{},
+		AuditLogs:       []AuditLog{},
+		Tasks:           []SavedTask{},
+		LoginLogs:       []SavedLoginLog{},
+		Snapshots:       []Snapshot{},
+	}
+
+	if err := SaveConfig(); err != nil {
+		return nil, err
+	}
+
+	fmt.Println("\n========================================")
+	fmt.Println("  CLICD - LXC Container Manager")
+	fmt.Println("========================================")
+	fmt.Printf("  Username: %s\n", adminUser)
+	fmt.Printf("  Password: %s\n", adminPass)
+	fmt.Println("========================================")
+	fmt.Println("  Please save these credentials!")
+	fmt.Println("  Web Interface: http://0.0.0.0:8999")
+	fmt.Println("========================================")
+	fmt.Println()
+
+	return AppConfig, nil
+}
+
+func normalizeConfigDefaults(dataDir string) {
 	if AppConfig.Port == 0 {
 		AppConfig.Port = 8999
 	}
@@ -365,6 +386,27 @@ func InitConfig() (*ClicdConfig, error) {
 	if AppConfig.Snapshots == nil {
 		AppConfig.Snapshots = make([]Snapshot, 0)
 	}
+	if AppConfig.SubUsers == nil {
+		AppConfig.SubUsers = make([]SubUser, 0)
+	}
+	if AppConfig.ApiKeys == nil {
+		AppConfig.ApiKeys = make([]ApiKeyConfig, 0)
+	}
+	if AppConfig.AuditLogs == nil {
+		AppConfig.AuditLogs = make([]AuditLog, 0)
+	}
+	if AppConfig.Tasks == nil {
+		AppConfig.Tasks = make([]SavedTask, 0)
+	}
+	if AppConfig.LoginLogs == nil {
+		AppConfig.LoginLogs = make([]SavedLoginLog, 0)
+	}
+	if AppConfig.EnabledImages == nil {
+		AppConfig.EnabledImages = make([]string, 0)
+	}
+}
+
+func migrateLoadedConfig() bool {
 	changed := ensureContainerUUIDs()
 	if ensureContainerVirtualization() {
 		changed = true
@@ -384,13 +426,7 @@ func InitConfig() (*ClicdConfig, error) {
 	if removeLegacyVNCMappings() {
 		changed = true
 	}
-	if changed {
-		if err := SaveConfig(); err != nil {
-			return nil, err
-		}
-	}
-
-	return AppConfig, nil
+	return changed
 }
 
 func ensureContainerVirtualization() bool {
@@ -541,11 +577,7 @@ func removeLegacyVNCMappings() bool {
 
 // SaveConfig saves configuration to disk
 func SaveConfig() error {
-	data, err := json.MarshalIndent(AppConfig, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %v", err)
-	}
-	return os.WriteFile(getConfigPath(), data, 0600)
+	return saveConfigToDB()
 }
 
 // AddContainer adds a container to the config

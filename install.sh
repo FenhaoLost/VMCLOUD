@@ -138,6 +138,157 @@ remove_lxc_container_dir() {
     log "Removed $container_dir"
 }
 
+remove_kvm_domain() {
+    domain="$1"
+    case "$domain" in
+        vm-[0-9]*)
+            ;;
+        *)
+            return
+            ;;
+    esac
+    suffix="${domain#vm-}"
+    case "$suffix" in
+        ""|*[!0-9]*)
+            return
+            ;;
+    esac
+    if [ ! -d "/var/lib/clicd/kvm/instances/$domain" ] &&
+        ! virsh dumpxml "$domain" 2>/dev/null | grep -q '/var/lib/clicd/kvm/'; then
+        return
+    fi
+
+    log "Removing KVM domain $domain..."
+    virsh destroy "$domain" >/dev/null 2>&1 || true
+    virsh undefine "$domain" --remove-all-storage --nvram >/dev/null 2>&1 ||
+        virsh undefine "$domain" --nvram >/dev/null 2>&1 ||
+        virsh undefine "$domain" >/dev/null 2>&1 ||
+        true
+}
+
+destroy_clicd_kvm_domains() {
+    if ! has_cmd virsh; then
+        return
+    fi
+
+    log "Destroying CLICD KVM domains..."
+    virsh list --all --name 2>/dev/null | while IFS= read -r domain; do
+        [ -n "$domain" ] || continue
+        remove_kvm_domain "$domain"
+    done
+}
+
+delete_iptables_lines() {
+    table="$1"
+    chain="$2"
+    pattern="$3"
+    if ! has_cmd iptables; then
+        return
+    fi
+
+    while :; do
+        line="$(iptables -t "$table" -L "$chain" -n --line-numbers 2>/dev/null | awk -v pat="$pattern" '$0 ~ pat {print $1; exit}')"
+        [ -n "$line" ] || break
+        iptables -t "$table" -D "$chain" "$line" >/dev/null 2>&1 || break
+    done
+}
+
+delete_iptables_rule() {
+    table="$1"
+    shift
+    if ! has_cmd iptables; then
+        return
+    fi
+
+    while iptables -t "$table" -D "$@" >/dev/null 2>&1; do
+        :
+    done
+}
+
+delete_filter_rule() {
+    if ! has_cmd iptables; then
+        return
+    fi
+
+    while iptables -D "$@" >/dev/null 2>&1; do
+        :
+    done
+}
+
+delete_ip6tables_bridge_rules() {
+    if ! has_cmd ip6tables; then
+        return
+    fi
+
+    for bridge in lxcbr0 virbr0; do
+        while :; do
+            rule="$(ip6tables -S FORWARD 2>/dev/null | grep -- "$bridge" | sed 's/^-A /-D /' | head -n 1)"
+            [ -n "$rule" ] || break
+            # shellcheck disable=SC2086
+            ip6tables $rule >/dev/null 2>&1 || break
+        done
+    done
+}
+
+cleanup_clicd_networking() {
+    log "Cleaning CLICD firewall and bridge rules..."
+    delete_iptables_lines nat PREROUTING 'clicd-'
+    delete_iptables_rule nat POSTROUTING -s 10.0.3.0/24 -o eth+ -j MASQUERADE
+    delete_iptables_rule nat POSTROUTING -s 192.168.122.0/24 -o eth+ -j MASQUERADE
+
+    for bridge in lxcbr0 virbr0; do
+        delete_filter_rule FORWARD -i "$bridge" -j ACCEPT
+        delete_filter_rule FORWARD -o "$bridge" -j ACCEPT
+        delete_filter_rule FORWARD -i "$bridge" -o "$bridge" -j ACCEPT
+    done
+    delete_ip6tables_bridge_rules
+}
+
+remove_clicd_host_hooks() {
+    if has_cmd systemctl; then
+        systemctl stop clicd-kvm-ipv6.service >/dev/null 2>&1 || true
+        systemctl disable clicd-kvm-ipv6.service >/dev/null 2>&1 || true
+    fi
+    if has_cmd rc-service; then
+        rc-service clicd-kvm-ipv6 stop >/dev/null 2>&1 || true
+    fi
+    if has_cmd rc-update; then
+        rc-update del clicd-kvm-ipv6 default >/dev/null 2>&1 || true
+    fi
+
+    remove_path /usr/local/sbin/clicd-kvm-ipv6-init
+    remove_path /etc/systemd/system/clicd-kvm-ipv6.service
+    remove_path /etc/local.d/clicd-kvm-ipv6.start
+    remove_path /etc/network/if-up.d/clicd-kvm-ipv6
+}
+
+remove_clicd_quota_records() {
+    for file in /etc/projects /etc/projid; do
+        [ -f "$file" ] || continue
+        tmp="${file}.clicd-clean.$$"
+        grep -v 'clicd-' "$file" > "$tmp" || true
+        cat "$tmp" > "$file"
+        rm -f "$tmp"
+        log "Cleaned CLICD quota records from $file"
+    done
+}
+
+remove_clicd_tmp_files() {
+    for path in /tmp/clicd-* /tmp/clicd.*; do
+        [ -e "$path" ] || [ -L "$path" ] || continue
+        rm -rf "$path"
+        log "Removed $path"
+    done
+}
+
+remove_clicd_swapfile() {
+    if [ ! -e /swapfile ]; then
+        return
+    fi
+    swapoff /swapfile >/dev/null 2>&1 || true
+    remove_path /swapfile
+}
+
 uninstall_clicd() {
     log "Uninstalling CLICD..."
 
@@ -158,6 +309,10 @@ uninstall_clicd() {
         [ -d "$container_dir" ] || continue
         remove_lxc_container_dir "$container_dir"
     done
+    destroy_clicd_kvm_domains
+    cleanup_clicd_networking
+    remove_clicd_host_hooks
+    remove_clicd_quota_records
 
     remove_path /etc/systemd/system/clicd.service
     remove_path /etc/init.d/clicd
@@ -168,7 +323,13 @@ uninstall_clicd() {
     remove_path /root/.clicd
     unmount_path_tree /var/lib/lxc
     remove_path /var/lib/lxc
+    unmount_path_tree /var/lib/clicd
+    remove_path /var/lib/clicd
     remove_path /var/cache/lxc
+    remove_path /var/cache/clicd
+    remove_path /root/clicd-backups
+    remove_clicd_tmp_files
+    remove_clicd_swapfile
 
     if has_cmd systemctl; then
         systemctl daemon-reload >/dev/null 2>&1 || true
@@ -182,7 +343,9 @@ uninstall_clicd() {
     echo "====================================="
     echo "  CLICD Uninstalled"
     echo "====================================="
-    echo "  Removed service, binary, config, containers, and LXC image cache."
+    echo "  Removed service, binary, SQLite/config data, LXC containers,"
+    echo "  CLICD KVM domains, VM images, image caches, firewall rules,"
+    echo "  host hooks, quota records, temp files, backups, and swapfile."
     echo "====================================="
 }
 
@@ -220,9 +383,16 @@ install_apk() {
         bridge-utils \
         iproute2 \
         iptables \
-        dnsmasq
+        dnsmasq \
+        dbus \
+        qemu-system-x86_64 \
+        qemu-img \
+        libvirt \
+        libvirt-daemon \
+        libvirt-client \
+        libvirt-qemu
 
-    for pkg in lxcfs shadow conntrack-tools quota-tools e2fsprogs xfsprogs; do
+    for pkg in lxcfs shadow conntrack-tools quota-tools e2fsprogs xfsprogs cloud-utils genisoimage xorriso; do
         apk add --no-cache "$pkg" >/dev/null 2>&1 || log "Optional package not installed: $pkg"
     done
 }
@@ -251,10 +421,14 @@ install_apt() {
         xfsprogs \
         dnsmasq-base \
         qemu-kvm \
+        qemu-utils \
         libvirt-daemon-system \
         libvirt-clients \
+        cloud-image-utils \
+        genisoimage \
+        xorriso \
         virtinst \
-        virt-manager
+        ovmf
 }
 
 enable_el_repos() {
@@ -290,9 +464,19 @@ install_dnf() {
         quota \
         e2fsprogs \
         xfsprogs \
-        dnsmasq
+        dnsmasq \
+        qemu-kvm \
+        qemu-img \
+        libvirt \
+        libvirt-daemon-kvm \
+        libvirt-client \
+        virt-install \
+        cloud-utils \
+        genisoimage
 
-    dnf install -y lxcfs >/dev/null 2>&1 || log "Optional package not installed: lxcfs"
+    for pkg in lxcfs xorriso edk2-ovmf; do
+        dnf install -y "$pkg" >/dev/null 2>&1 || log "Optional package not installed: $pkg"
+    done
 }
 
 install_yum() {
@@ -315,9 +499,19 @@ install_yum() {
         quota \
         e2fsprogs \
         xfsprogs \
-        dnsmasq
+        dnsmasq \
+        qemu-kvm \
+        qemu-img \
+        libvirt \
+        libvirt-daemon-kvm \
+        libvirt-client \
+        virt-install \
+        cloud-utils \
+        genisoimage
 
-    yum install -y lxcfs >/dev/null 2>&1 || log "Optional package not installed: lxcfs"
+    for pkg in lxcfs xorriso edk2-ovmf; do
+        yum install -y "$pkg" >/dev/null 2>&1 || log "Optional package not installed: $pkg"
+    done
 }
 
 install_dependencies() {
@@ -355,6 +549,15 @@ install_dependencies() {
     has_cmd lxc-create || die "lxc-create is still missing after dependency installation."
     has_cmd iptables || die "iptables is still missing after dependency installation."
     has_cmd ip || die "iproute2/ip command is still missing after dependency installation."
+    has_cmd virsh || die "virsh is still missing after dependency installation."
+    has_cmd qemu-img || die "qemu-img is still missing after dependency installation."
+    has_cmd cloud-localds || die "cloud-localds is still missing after dependency installation."
+    if ! has_cmd genisoimage && ! has_cmd mkisofs && ! has_cmd xorriso; then
+        die "one of genisoimage, mkisofs, or xorriso is required for Windows KVM setup."
+    fi
+    if [ ! -e /dev/kvm ]; then
+        log "Warning: /dev/kvm was not found. KVM VMs require hardware virtualization or nested virtualization."
+    fi
 }
 
 configure_kernel_networking() {
@@ -370,14 +573,17 @@ EOF
     sysctl --system >/dev/null 2>&1 || true
 }
 
-setup_lxc_services() {
-    log "Configuring LXC services..."
+setup_runtime_services() {
+    log "Configuring LXC and KVM services..."
 
     if is_systemd; then
         systemctl enable --now lxcfs >/dev/null 2>&1 || true
         systemctl enable --now lxc-net >/dev/null 2>&1 || true
         systemctl enable --now lxc >/dev/null 2>&1 || true
         systemctl enable --now libvirtd >/dev/null 2>&1 || true
+        systemctl enable --now virtqemud >/dev/null 2>&1 || true
+        systemctl enable --now virtqemud.socket >/dev/null 2>&1 || true
+        systemctl enable --now virtlogd.socket >/dev/null 2>&1 || true
         return
     fi
 
@@ -388,8 +594,12 @@ setup_lxc_services() {
         rc-service lxc start >/dev/null 2>&1 || true
         rc-update add lxcfs default >/dev/null 2>&1 || true
         rc-service lxcfs start >/dev/null 2>&1 || true
+        rc-update add dbus default >/dev/null 2>&1 || true
+        rc-service dbus start >/dev/null 2>&1 || true
         rc-update add libvirtd default >/dev/null 2>&1 || true
         rc-service libvirtd start >/dev/null 2>&1 || true
+        rc-update add virtlogd default >/dev/null 2>&1 || true
+        rc-service virtlogd start >/dev/null 2>&1 || true
         return
     fi
 
@@ -474,8 +684,9 @@ install_binary() {
 install_systemd_service() {
     cat > /etc/systemd/system/clicd.service << 'EOF'
 [Unit]
-Description=CLICD - LXC Container Manager
-After=network.target lxc.service
+Description=CLICD - LXC/KVM Container Manager
+After=network.target lxc.service libvirtd.service virtqemud.service
+Wants=libvirtd.service
 
 [Service]
 Type=simple
@@ -498,7 +709,7 @@ install_openrc_service() {
 #!/sbin/openrc-run
 
 name="CLICD"
-description="CLICD - LXC Container Manager"
+description="CLICD - LXC/KVM Container Manager"
 command="/usr/local/bin/clicd"
 command_args="server"
 command_background=true
@@ -508,7 +719,7 @@ error_log="/var/log/clicd.err"
 
 depend() {
     need net
-    after lxc
+    after lxc libvirtd
 }
 EOF
 
@@ -552,13 +763,13 @@ print_summary() {
         grep -E "Username:|Password:" /var/log/clicd.log /var/log/clicd.err 2>/dev/null || true
     fi
     echo ""
-    echo "If no password is shown, this server already had /root/.clicd/config.json."
+    echo "If no password is shown, this server already had /root/.clicd/config.db."
     echo "The existing admin password cannot be recovered from the bcrypt hash."
 }
 
 install_dependencies
 configure_kernel_networking
-setup_lxc_services
+setup_runtime_services
 setup_subids
 try_enable_project_quota
 download_release_if_needed
