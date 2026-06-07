@@ -15,8 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"clicd/internal/config"
 )
@@ -1004,7 +1005,7 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 	if err != nil {
 		return err
 	}
-	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
+	rootStat, ok := rootInfo.Sys().(*unix.Stat_t)
 	if !ok {
 		return fmt.Errorf("failed to read rootfs device for %s", rootfsPath)
 	}
@@ -1018,7 +1019,7 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 		if err != nil {
 			return err
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
+		stat, ok := info.Sys().(*unix.Stat_t)
 		if !ok {
 			return fmt.Errorf("failed to read uid/gid for %s", path)
 		}
@@ -1039,7 +1040,7 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 		if gid >= 0 && gid < 65536 {
 			gid += gidBase
 		}
-		return syscall.Lchown(path, uid, gid)
+		return unix.Lchown(path, uid, gid)
 	}); err != nil {
 		return fmt.Errorf("failed to shift rootfs ownership for unprivileged LXC: %v", err)
 	}
@@ -1047,7 +1048,7 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 	if err := os.WriteFile(marker, []byte("1\n"), 0644); err != nil {
 		return err
 	}
-	if err := syscall.Lchown(marker, uidBase, gidBase); err != nil {
+	if err := unix.Lchown(marker, uidBase, gidBase); err != nil {
 		return err
 	}
 

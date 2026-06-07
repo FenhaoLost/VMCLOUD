@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -557,10 +558,10 @@ func countPorts(totalCounts map[int]int, destCounts map[int]map[string]int, port
 
 func (ss *SecurityScanner) addAlert(name, alertType, severity, srcIP, dstIP string, port int, detail, logLine string) {
 	ss.mu.Lock()
-	defer ss.mu.Unlock()
 
 	now := time.Now()
 	cutoff := now.Add(-5 * time.Minute)
+	shouldShutdown := false
 
 	for i := range ss.alerts {
 		a := &ss.alerts[i]
@@ -578,6 +579,11 @@ func (ss *SecurityScanner) addAlert(name, alertType, severity, srcIP, dstIP stri
 		a.Timestamp = now.Format("2006-01-02 15:04:05")
 		if severityRank(severity) > severityRank(a.Severity) {
 			a.Severity = severity
+		}
+		shouldShutdown = config.AppConfig.SecurityAutoShutdown
+		ss.mu.Unlock()
+		if shouldShutdown {
+			autoShutdownAlertContainer(name, alertType, severity)
 		}
 		return
 	}
@@ -599,9 +605,15 @@ func (ss *SecurityScanner) addAlert(name, alertType, severity, srcIP, dstIP stri
 
 	ss.alerts = append(ss.alerts, alert)
 	config.AddAuditLog("security_"+alertType, name, fmt.Sprintf("[%s] %s", severity, detail), "system")
+	shouldShutdown = config.AppConfig.SecurityAutoShutdown
 
 	if len(ss.alerts) > 200 {
 		ss.alerts = ss.alerts[len(ss.alerts)-200:]
+	}
+	ss.mu.Unlock()
+
+	if shouldShutdown {
+		autoShutdownAlertContainer(name, alertType, severity)
 	}
 }
 
@@ -620,6 +632,22 @@ func severityRank(severity string) int {
 	}
 }
 
+func autoShutdownAlertContainer(containerName, alertType, severity string) {
+	c := config.FindContainerByName(containerName)
+	if c == nil || c.Status != "running" {
+		return
+	}
+	reason := fmt.Sprintf("%s 告警触发策略临时封禁", alertType)
+	if severity != "" {
+		reason = fmt.Sprintf("[%s] %s", severity, reason)
+	}
+	config.SetContainerPolicyBlock(c.ID, true, reason)
+	taskID, queued := globalQueue.EnqueueSecurityStop(c.ID, c.Name)
+	if queued {
+		config.AddAuditLog("security_auto_shutdown", c.Name, fmt.Sprintf("[%s] %s 告警触发自动关机任务 %s", severity, alertType, taskID), "system")
+	}
+}
+
 // HandleSecurityAlerts returns all security alerts.
 func HandleSecurityAlerts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -627,19 +655,35 @@ func HandleSecurityAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ss := ensureScanner()
-	ss.mu.Lock()
-	reversed := make([]SecurityAlert, len(ss.alerts))
-	for i, a := range ss.alerts {
-		reversed[len(ss.alerts)-1-i] = a
-	}
-	ss.mu.Unlock()
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: mergedSecurityAlerts()})
+}
 
-	if reversed == nil {
-		reversed = []SecurityAlert{}
+// HandleSecuritySettings returns or updates security automation settings.
+func HandleSecuritySettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{
+			"auto_shutdown": config.AppConfig.SecurityAutoShutdown,
+		}})
+	case http.MethodPut:
+		var req struct {
+			AutoShutdown bool `json:"auto_shutdown"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
+			return
+		}
+		config.AppConfig.SecurityAutoShutdown = req.AutoShutdown
+		if err := config.SaveConfig(); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{
+			"auto_shutdown": config.AppConfig.SecurityAutoShutdown,
+		}})
+	default:
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
 	}
-
-	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: reversed})
 }
 
 // HandleSecurityCheck triggers immediate security check for a container.
@@ -738,13 +782,12 @@ func HandleContainerSecuritySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ss := ensureScanner()
-	ss.mu.Lock()
 	critical := 0
 	high := 0
 	medium := 0
 	low := 0
-	for _, a := range ss.alerts {
+	alerts := mergedSecurityAlerts()
+	for _, a := range alerts {
 		switch a.Severity {
 		case "critical":
 			critical++
@@ -756,8 +799,7 @@ func HandleContainerSecuritySummary(w http.ResponseWriter, r *http.Request) {
 			low++
 		}
 	}
-	total := len(ss.alerts)
-	ss.mu.Unlock()
+	total := len(alerts)
 
 	summary := map[string]interface{}{
 		"total_alerts": total,
@@ -768,4 +810,118 @@ func HandleContainerSecuritySummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: summary})
+}
+
+func mergedSecurityAlerts() []SecurityAlert {
+	ss := ensureScanner()
+	ss.mu.Lock()
+	alerts := make([]SecurityAlert, len(ss.alerts))
+	copy(alerts, ss.alerts)
+	ss.mu.Unlock()
+
+	seen := make(map[string]bool)
+	for _, alert := range alerts {
+		seen[securityAlertKey(alert)] = true
+	}
+
+	for i, log := range config.AppConfig.AuditLogs {
+		alert, ok := alertFromSecurityAuditLog(log, i)
+		if !ok {
+			continue
+		}
+		key := securityAlertKey(alert)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		alerts = append(alerts, alert)
+	}
+
+	sort.SliceStable(alerts, func(i, j int) bool {
+		ti, errI := time.Parse("2006-01-02 15:04:05", alerts[i].Timestamp)
+		tj, errJ := time.Parse("2006-01-02 15:04:05", alerts[j].Timestamp)
+		if errI == nil && errJ == nil && !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return alerts[i].Timestamp > alerts[j].Timestamp
+	})
+
+	if len(alerts) > 200 {
+		alerts = alerts[:200]
+	}
+	if alerts == nil {
+		return []SecurityAlert{}
+	}
+	return alerts
+}
+
+func securityAlertKey(alert SecurityAlert) string {
+	return strings.Join([]string{
+		alert.Timestamp,
+		alert.ContainerName,
+		alert.Type,
+		alert.Detail,
+		strconv.Itoa(alert.TargetPort),
+	}, "\x1f")
+}
+
+func alertFromSecurityAuditLog(log config.AuditLog, index int) (SecurityAlert, bool) {
+	if !strings.HasPrefix(log.Action, "security_") || log.Action == "security_auto_shutdown" || log.Action == "security_policy_unblock" {
+		return SecurityAlert{}, false
+	}
+	alertType := strings.TrimPrefix(log.Action, "security_")
+	severity, detail := parseSecurityAuditDetail(log.Detail)
+	targetPort := parseDetailPort(detail)
+
+	targetIP := ""
+	if targetPort > 0 || alertType == "horizontal_scan" || alertType == "brute_force" {
+		targetIP = "*"
+	}
+
+	return SecurityAlert{
+		ID:            fmt.Sprintf("audit-security-%d", index),
+		ContainerName: log.Target,
+		Type:          alertType,
+		Severity:      severity,
+		SourceIP:      "",
+		TargetIP:      targetIP,
+		TargetPort:    targetPort,
+		Detail:        detail,
+		LogLine:       "",
+		Timestamp:     log.Time,
+		Count:         1,
+	}, true
+}
+
+func parseSecurityAuditDetail(detail string) (string, string) {
+	severity := "medium"
+	if strings.HasPrefix(detail, "[") {
+		if end := strings.Index(detail, "]"); end > 1 {
+			severity = detail[1:end]
+			detail = strings.TrimSpace(detail[end+1:])
+		}
+	}
+	return severity, detail
+}
+
+func parseDetailPort(detail string) int {
+	for _, marker := range []string{"端口 ", "端口"} {
+		idx := strings.Index(detail, marker)
+		if idx == -1 {
+			continue
+		}
+		start := idx + len(marker)
+		for start < len(detail) && (detail[start] == ' ' || detail[start] == ':' || detail[start] == '(') {
+			start++
+		}
+		end := start
+		for end < len(detail) && detail[end] >= '0' && detail[end] <= '9' {
+			end++
+		}
+		if end > start {
+			port, _ := strconv.Atoi(detail[start:end])
+			return port
+		}
+	}
+	return 0
 }

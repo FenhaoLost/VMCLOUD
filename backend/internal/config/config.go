@@ -108,6 +108,9 @@ type Container struct {
 	SnapshotScheduleLastRun       string        `json:"snapshot_schedule_last_run"`
 	SnapshotScheduleNextRun       string        `json:"snapshot_schedule_next_run"`
 	SnapshotScheduleCreatedBy     string        `json:"snapshot_schedule_created_by"`
+	PolicyBlocked                 bool          `json:"policy_blocked"`
+	PolicyBlockedReason           string        `json:"policy_blocked_reason,omitempty"`
+	PolicyBlockedAt               string        `json:"policy_blocked_at,omitempty"`
 }
 
 const (
@@ -198,23 +201,24 @@ type Snapshot struct {
 
 // ClicdConfig is the main configuration structure
 type ClicdConfig struct {
-	AdminUser       string          `json:"admin_user"`
-	AdminPassHash   string          `json:"admin_pass_hash"`
-	JWTSecret       string          `json:"jwt_secret"`
-	Port            int             `json:"port"`
-	DataDir         string          `json:"data_dir"`
-	Containers      []Container     `json:"containers"`
-	NextContainerID int             `json:"next_container_id"`
-	NextVNCPort     int             `json:"next_vnc_port"`
-	NextSSHPort     int             `json:"next_ssh_port"`
-	SetupComplete   bool            `json:"setup_complete"`
-	SubUsers        []SubUser       `json:"sub_users"`
-	ApiKeys         []ApiKeyConfig  `json:"api_keys"`
-	AuditLogs       []AuditLog      `json:"audit_logs"`
-	Tasks           []SavedTask     `json:"tasks"`
-	LoginLogs       []SavedLoginLog `json:"login_logs"`
-	EnabledImages   []string        `json:"enabled_images"`
-	Snapshots       []Snapshot      `json:"snapshots"`
+	AdminUser            string          `json:"admin_user"`
+	AdminPassHash        string          `json:"admin_pass_hash"`
+	JWTSecret            string          `json:"jwt_secret"`
+	Port                 int             `json:"port"`
+	DataDir              string          `json:"data_dir"`
+	Containers           []Container     `json:"containers"`
+	NextContainerID      int             `json:"next_container_id"`
+	NextVNCPort          int             `json:"next_vnc_port"`
+	NextSSHPort          int             `json:"next_ssh_port"`
+	SetupComplete        bool            `json:"setup_complete"`
+	SubUsers             []SubUser       `json:"sub_users"`
+	ApiKeys              []ApiKeyConfig  `json:"api_keys"`
+	AuditLogs            []AuditLog      `json:"audit_logs"`
+	Tasks                []SavedTask     `json:"tasks"`
+	LoginLogs            []SavedLoginLog `json:"login_logs"`
+	EnabledImages        []string        `json:"enabled_images"`
+	Snapshots            []Snapshot      `json:"snapshots"`
+	SecurityAutoShutdown bool            `json:"security_auto_shutdown"`
 }
 
 var configPath string
@@ -308,7 +312,7 @@ func InitConfig() (*ClicdConfig, error) {
 			AuditLogs:       []AuditLog{},
 			Tasks:           []SavedTask{},
 			LoginLogs:       []SavedLoginLog{},
-			Snapshots: []Snapshot{},
+			Snapshots:       []Snapshot{},
 		}
 
 		if err := SaveConfig(); err != nil {
@@ -715,6 +719,22 @@ func UpdateContainerStatus(id int, status string) {
 		c.Status = status
 		SaveConfig()
 	}
+}
+
+func SetContainerPolicyBlock(id int, blocked bool, reason string) {
+	c := FindContainer(id)
+	if c == nil {
+		return
+	}
+	c.PolicyBlocked = blocked
+	if blocked {
+		c.PolicyBlockedReason = reason
+		c.PolicyBlockedAt = time.Now().Format("2006-01-02 15:04:05")
+	} else {
+		c.PolicyBlockedReason = ""
+		c.PolicyBlockedAt = ""
+	}
+	SaveConfig()
 }
 
 // UpdateVNC refreshes all container statuses

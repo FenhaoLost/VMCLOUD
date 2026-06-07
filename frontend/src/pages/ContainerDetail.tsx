@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  AlertTriangle,
   Camera,
   Clock,
   Copy,
@@ -299,8 +300,17 @@ export default function ContainerDetail() {
     start: '开机中...', stop: '关机中...', restart: '重启中...', delete: '删除中...', reinstall: '重装中...',
   }
 
+  const ensureSubUserCanOperate = async () => {
+    if (isSubUser && container?.policy_blocked) {
+      await dialog.alert('策略临时封禁', container.policy_blocked_reason || '虚拟机被策略临时封禁，暂不能执行操作。')
+      return false
+    }
+    return true
+  }
+
   const handleAction = async (action: string) => {
     if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
     setActionLoading(action)
     try {
       switch (action) {
@@ -462,11 +472,13 @@ export default function ContainerDetail() {
   }
 
   const openAddMapping = () => {
+    if (isSubUser && container?.policy_blocked) return
     setDraft(emptyDraft)
     setShowNat(true)
   }
 
   const openEditMapping = (pm: PortMapping, index: number) => {
+    if (isSubUser && container?.policy_blocked) return
     if (isSubUser) {
       // Sub-user: only edit container_port in a simple modal
       setDraft({
@@ -489,6 +501,7 @@ export default function ContainerDetail() {
 
   const submitMapping = async (): Promise<boolean> => {
     if (!containerIdentifier) return false
+    if (!(await ensureSubUserCanOperate())) return false
     if (draft.index === null && container) {
       const currentCount = container.port_mappings?.length || 0
       const limit = container.port_mapping_limit || Math.max(currentCount, 2)
@@ -541,6 +554,7 @@ export default function ContainerDetail() {
 
   const removeMapping = async (index: number) => {
     if (!containerIdentifier || !(await dialog.confirm('删除映射', '确定要删除这条映射规则吗？'))) return
+    if (!(await ensureSubUserCanOperate())) return
     try {
       await deletePortMapping(containerIdentifier, index)
       await fetchContainer()
@@ -553,6 +567,7 @@ export default function ContainerDetail() {
 
   const handleCreateSnapshot = async () => {
     if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
     if (isSubUser && snapshots.length >= snapshotQuota) {
       await dialog.alert('快照配额已满', '已达到管理员设置的快照配额，请先删除旧快照。')
       return
@@ -577,6 +592,7 @@ export default function ContainerDetail() {
   }
 
   const openSnapshotSchedule = () => {
+    if (isSubUser && container?.policy_blocked) return
     setSnapshotScheduleDraft({
       intervalHours: Math.max(snapshotSchedule?.interval_hours || 24, 24),
       time: snapshotSchedule?.time || '03:00',
@@ -586,6 +602,7 @@ export default function ContainerDetail() {
 
   const saveSnapshotSchedule = async (enabled: boolean) => {
     if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
     const intervalHours = snapshotScheduleDraft.intervalHours
     const scheduleTime = snapshotScheduleDraft.time || '03:00'
     if (enabled && intervalHours < 24) {
@@ -625,6 +642,7 @@ export default function ContainerDetail() {
 
   const handleDeleteSnapshot = async (snapshot: Snapshot) => {
     if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
     if (!(await dialog.confirm('删除快照', `确定删除 ${snapshot.created_at} 的快照吗？`))) return
     setSnapshotBusy(snapshot.id)
     try {
@@ -640,6 +658,7 @@ export default function ContainerDetail() {
 
   const handleRestoreSnapshot = async (snapshot: Snapshot) => {
     if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
     if (!(await dialog.confirm('恢复快照', `确定恢复到 ${snapshot.created_at} 的快照吗？当前容器数据会被覆盖。`))) return
     setSnapshotBusy(snapshot.id)
     try {
@@ -681,6 +700,9 @@ export default function ContainerDetail() {
   const isWindows = container.template?.includes('windows')
   const canOpenVNC = isKVM && isRunning
   const isExpired = container.expires_at ? new Date(container.expires_at) < new Date() : false
+  const isPolicyBlocked = !!container.policy_blocked
+  const isSubUserPolicyBlocked = isSubUser && isPolicyBlocked
+  const policyBlockedText = container.policy_blocked_reason || '虚拟机被策略临时封禁'
   const publicHost = hostInfo?.network.public_ipv4 || PUBLIC_HOST
   const maxVCPU = hostInfo?.cpu.cores || 64
   const maxRAMMB = hostInfo?.ram.total_mb ? Number(hostInfo.ram.total_mb) : undefined
@@ -703,7 +725,7 @@ export default function ContainerDetail() {
   const diskIOBps = (usage?.disk_read_bps || 0) + (usage?.disk_write_bps || 0)
   const mappingCount = container.port_mappings?.length || 0
   const mappingLimit = container.port_mapping_limit || Math.max(mappingCount, 2)
-  const canAddMapping = isSubUser ? mappingCount < mappingLimit : true
+  const canAddMapping = isSubUser ? mappingCount < mappingLimit && !isSubUserPolicyBlocked : true
   const managementUrl = subUser?.access_code
     ? `${window.location.origin}/login?code=${encodeURIComponent(subUser.access_code)}`
     : ''
@@ -774,34 +796,35 @@ export default function ContainerDetail() {
                 <InfoTag color="emerald">内网 {container.ip || '-'}</InfoTag>
                 <InfoTag color="amber">NAT {mappingCount} 条</InfoTag>
                 <InfoTag color="violet">{isWindows ? 'RDP' : 'SSH'} {publicHost}:{container.ssh_port}</InfoTag>
+                {isPolicyBlocked && <InfoTag color="red">策略封禁</InfoTag>}
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 flex-wrap justify-end">
             {!isRunning ? (
-              <ActionButton dark disabled={!!taskStatus || isExpired} onClick={() => handleAction('start')}>
+              <ActionButton dark disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('start')}>
                 <Play className="w-3.5 h-3.5" />
-                {isExpired ? '已到期' : taskStatus === 'start' ? taskActionLabels['start'] : '开机'}
+                {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'start' ? taskActionLabels['start'] : '开机'}
               </ActionButton>
             ) : (
               <>
-                <ActionButton disabled={!!taskStatus || isExpired} onClick={() => handleAction('stop')}>
+                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('stop')}>
                   <Square className="w-3.5 h-3.5" />
-                  {isExpired ? '已到期' : taskStatus === 'stop' ? taskActionLabels['stop'] : '关机'}
+                  {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'stop' ? taskActionLabels['stop'] : '关机'}
                 </ActionButton>
-                <ActionButton disabled={!!taskStatus || isExpired} onClick={() => handleAction('restart')}>
+                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('restart')}>
                   <RefreshCw className="w-3.5 h-3.5" />
-                  {isExpired ? '已到期' : taskStatus === 'restart' ? taskActionLabels['restart'] : '重启'}
+                  {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'restart' ? taskActionLabels['restart'] : '重启'}
                 </ActionButton>
                 {!isWindows && (
-                  <ActionButton dark onClick={() => setShowSSH(true)}>
+                  <ActionButton dark disabled={isSubUserPolicyBlocked} onClick={() => setShowSSH(true)}>
                     <TerminalSquare className="w-3.5 h-3.5" />
                     WebSSH
                   </ActionButton>
                 )}
                 {isKVM && (
-                  <ActionButton dark disabled={!canOpenVNC} onClick={() => setShowVNC(true)}>
+                  <ActionButton dark disabled={!canOpenVNC || isSubUserPolicyBlocked} onClick={() => setShowVNC(true)}>
                     <Monitor className="w-3.5 h-3.5" />
                     WebVNC
                   </ActionButton>
@@ -815,12 +838,12 @@ export default function ContainerDetail() {
               </ActionButton>
             )}
             <>
-              <ActionButton onClick={() => setShowNat(true)}>
+              <ActionButton disabled={isSubUserPolicyBlocked} onClick={() => setShowNat(true)}>
                 <Settings className="w-3.5 h-3.5" />
                 NAT 管理
               </ActionButton>
             </>
-            <ActionButton onClick={() => setShowSnapshots(true)} disabled={!!taskStatus || !!snapshotBusy}>
+            <ActionButton onClick={() => setShowSnapshots(true)} disabled={!!taskStatus || !!snapshotBusy || isSubUserPolicyBlocked}>
               <Camera className="w-3.5 h-3.5" />
               快照
             </ActionButton>
@@ -840,9 +863,23 @@ export default function ContainerDetail() {
         </div>
       </div>
 
+      {isSubUserPolicyBlocked && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">虚拟机被策略临时封禁</div>
+            <div className="mt-1 text-xs text-red-600">{policyBlockedText}</div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Panel title="连接信息">
-          {isWindows ? (
+          {isSubUserPolicyBlocked ? (
+            <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+              虚拟机被策略临时封禁，连接信息暂不可用。
+            </div>
+          ) : isWindows ? (
             <>
               <PlainRow label="RDP 地址" value={`${publicHost}:${container.ssh_port}`} mono />
               <PlainRow label="用户名" value="Administrator" mono />
@@ -1507,13 +1544,14 @@ function StatusBadge({ running }: { running: boolean }) {
   )
 }
 
-function InfoTag({ color, children }: { color: 'blue' | 'emerald' | 'amber' | 'violet' | 'slate'; children: ReactNode }) {
+function InfoTag({ color, children }: { color: 'blue' | 'emerald' | 'amber' | 'violet' | 'slate' | 'red'; children: ReactNode }) {
   const classes = {
     blue: 'bg-blue-50 text-blue-700 border-blue-100',
     emerald: 'bg-emerald-50 text-emerald-700 border-emerald-100',
     amber: 'bg-amber-50 text-amber-700 border-amber-100',
     violet: 'bg-violet-50 text-violet-700 border-violet-100',
     slate: 'bg-slate-50 text-slate-700 border-slate-100',
+    red: 'bg-red-50 text-red-700 border-red-100',
   }
   return <span className={`px-1.5 py-0.5 border rounded text-[11px] whitespace-nowrap ${classes[color]}`}>{children}</span>
 }

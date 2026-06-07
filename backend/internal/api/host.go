@@ -8,10 +8,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"clicd/internal/lxc"
+
+	"golang.org/x/sys/unix"
 )
 
 type HostInfo struct {
@@ -135,8 +136,8 @@ func getMemoryInfo() MemoryInfo {
 }
 
 func getDiskInfo() DiskInfo {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs("/", &stat); err != nil {
+	var stat unix.Statfs_t
+	if err := unix.Statfs("/", &stat); err != nil {
 		// Try command-based fallback
 		cmd := exec.Command("df", "-BG", "/")
 		output, err := cmd.Output()

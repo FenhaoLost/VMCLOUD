@@ -196,6 +196,24 @@ func (q *TaskQueue) enqueueSingleWithAudit(containerID int, containerName string
 	return task.ID
 }
 
+func (q *TaskQueue) EnqueueSecurityStop(containerID int, containerName string) (string, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for _, task := range q.tasks {
+		if task.Type != TaskStop || task.ContainerID != containerID {
+			continue
+		}
+		if task.Status == "pending" || task.Status == "running" {
+			return task.ID, false
+		}
+	}
+
+	taskID := q.enqueueSingleWithAudit(containerID, containerName, TaskStop, "", "system:security", "", "")
+	q.persistTasks()
+	return taskID, true
+}
+
 // createWorker handles TaskCreate: lxc-create, resource setup, start, and SSH init.
 // If a restored task already has a same-name container in config, it resumes
 // initialization instead of creating another ct-{id}.
@@ -337,14 +355,29 @@ func (q *TaskQueue) opWorker() {
 			switch task.Type {
 			case TaskStart:
 				config.UpdateContainerStatus(task.ContainerID, "running")
+				clearPolicyBlockAfterAdminRecovery(task)
 			case TaskStop:
 				config.UpdateContainerStatus(task.ContainerID, "stopped")
 			case TaskRestart:
 				config.UpdateContainerStatus(task.ContainerID, "running")
+				clearPolicyBlockAfterAdminRecovery(task)
+			case TaskReinstall:
+				clearPolicyBlockAfterAdminRecovery(task)
 			}
 		}
 		q.persistTasks()
 		q.mu.Unlock()
+	}
+}
+
+func clearPolicyBlockAfterAdminRecovery(task *Task) {
+	if task == nil || strings.HasPrefix(task.User, "user:") || task.User == "system:security" {
+		return
+	}
+	c := config.FindContainer(task.ContainerID)
+	if c != nil && c.PolicyBlocked {
+		config.SetContainerPolicyBlock(c.ID, false, "")
+		config.AddAuditLog("security_policy_unblock", c.Name, "管理员操作后解除策略临时封禁", task.User)
 	}
 }
 
