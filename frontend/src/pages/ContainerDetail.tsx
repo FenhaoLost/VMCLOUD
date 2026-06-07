@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -8,7 +8,10 @@ import {
   Cpu,
   HardDrive,
   Key,
+  Maximize2,
   MemoryStick,
+  Minimize2,
+  Monitor,
   Network,
   Pencil,
   Play,
@@ -65,6 +68,7 @@ import {
 import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
 import WebSSHViewer from '../components/WebSSHViewer'
+import WebVNCViewer from '../components/WebVNCViewer'
 import { RingStat } from '../components/RingStats'
 import { copyToClipboard } from '../utils/clipboard'
 import ResourceStatsPanel, {
@@ -115,6 +119,9 @@ export default function ContainerDetail() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState('') // current task type for this container
   const [showSSH, setShowSSH] = useState(false)
+  const [showVNC, setShowVNC] = useState(false)
+  const vncFullscreenRef = useRef<HTMLDivElement>(null)
+  const [vncFullscreen, setVncFullscreen] = useState(false)
   const [showNat, setShowNat] = useState(false)
   const [showNatAdd, setShowNatAdd] = useState(false)
   const [showExpiryEdit, setShowExpiryEdit] = useState(false)
@@ -180,15 +187,18 @@ export default function ContainerDetail() {
   const appendUsagePoint = useCallback((nextUsage: ContainerUsage, currentContainer: Container | null) => {
     if (!containerIdentifier || !currentContainer) return
 
-    const memoryPct = currentContainer.ram_mb > 0
-      ? (nextUsage.memory_usage_bytes / (currentContainer.ram_mb * 1024 * 1024)) * 100
+    const memoryTotalBytes = nextUsage.memory_total_bytes && nextUsage.memory_total_bytes > 0
+      ? nextUsage.memory_total_bytes
+      : currentContainer.ram_mb * 1024 * 1024
+    const memoryPct = memoryTotalBytes > 0
+      ? (nextUsage.memory_usage_bytes / memoryTotalBytes) * 100
       : 0
     const networkBps = (nextUsage.network_rx_bps || 0) + (nextUsage.network_tx_bps || 0)
     const diskIOBps = (nextUsage.disk_read_bps || 0) + (nextUsage.disk_write_bps || 0)
 
     const point: MetricPoint = {
       ts: Date.now(),
-      cpu: clamp(nextUsage.cpu_usage_pct || 0),
+      cpu: clamp((nextUsage.cpu_usage_pct || 0) / (currentContainer.vcpu || 1)),
       memory: clamp(memoryPct),
       network: networkBps,
       diskIO: diskIOBps,
@@ -226,6 +236,28 @@ export default function ContainerDetail() {
     const timer = window.setInterval(fetchContainer, 5000)
     return () => window.clearInterval(timer)
   }, [fetchContainer])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setVncFullscreen(document.fullscreenElement === vncFullscreenRef.current)
+    }
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [])
+
+  const toggleVNCFullscreen = async () => {
+    const target = vncFullscreenRef.current
+    if (!target) return
+    try {
+      if (document.fullscreenElement === target) {
+        await document.exitFullscreen()
+      } else {
+        await target.requestFullscreen()
+      }
+    } catch {
+      setVncFullscreen((value) => !value)
+    }
+  }
 
   useEffect(() => {
     fetchUsage()
@@ -278,6 +310,7 @@ export default function ContainerDetail() {
         case 'stop':
           await stopContainer(containerIdentifier)
           setShowSSH(false)
+          setShowVNC(false)
           break
         case 'restart':
           await restartContainer(containerIdentifier)
@@ -390,6 +423,7 @@ export default function ContainerDetail() {
       await reinstallContainer(containerIdentifier, selectedTemplate)
       setShowReinstall(false)
       setShowSSH(false)
+      setShowVNC(false)
       await fetchContainer()
     } catch (err) {
       console.error('Reinstall failed:', err)
@@ -643,17 +677,24 @@ export default function ContainerDetail() {
   }
 
   const isRunning = container.status === 'running'
+  const isKVM = (container.virtualization || 'lxc') === 'kvm'
+  const isWindows = container.template?.includes('windows')
+  const canOpenVNC = isKVM && isRunning
   const isExpired = container.expires_at ? new Date(container.expires_at) < new Date() : false
   const publicHost = hostInfo?.network.public_ipv4 || PUBLIC_HOST
   const maxVCPU = hostInfo?.cpu.cores || 64
   const maxRAMMB = hostInfo?.ram.total_mb ? Number(hostInfo.ram.total_mb) : undefined
   const sshCommand = `ssh -p ${container.ssh_port} root@${publicHost}`
   const editingSSH = draft.index !== null && !!container.port_mappings?.[draft.index] && (
-    container.port_mappings[draft.index].description === 'SSH' || container.port_mappings[draft.index].container_port === 22
+    container.port_mappings[draft.index].description === 'SSH' || container.port_mappings[draft.index].container_port === 22 ||
+    container.port_mappings[draft.index].description === 'RDP' || container.port_mappings[draft.index].container_port === 3389
   )
   const filtered = filterHistory(history, range)
-  const cpuPct = clamp(usage?.cpu_usage_pct || 0)
-  const ramPct = container.ram_mb > 0 ? clamp(((usage?.memory_usage_bytes || 0) / (container.ram_mb * 1024 * 1024)) * 100) : 0
+  const cpuPct = clamp(((usage?.cpu_usage_pct || 0) / (container.vcpu || 1)))
+  const ramTotalBytes = usage?.memory_total_bytes && usage.memory_total_bytes > 0
+    ? usage.memory_total_bytes
+    : container.ram_mb * 1024 * 1024
+  const ramPct = ramTotalBytes > 0 ? clamp(((usage?.memory_usage_bytes || 0) / ramTotalBytes) * 100) : 0
   const loadPct = container.vcpu > 0 ? ((usage?.load1 || 0) / container.vcpu) * 100 : 0
   const diskPct = container.disk_gb > 0 ? clamp(((usage?.disk_usage_bytes || 0) / (container.disk_gb * 1024 * 1024 * 1024)) * 100) : 0
   const networkBps = (usage?.network_rx_bps || 0) + (usage?.network_tx_bps || 0)
@@ -670,7 +711,7 @@ export default function ContainerDetail() {
     {
       title: 'CPU 使用率',
       icon: <Cpu className="w-5 h-5" />,
-      current: usage?.cpu_usage_pct || 0,
+      current: clamp(((usage?.cpu_usage_pct || 0) / (container.vcpu || 1))),
       points: toChartPoints(filtered, 'cpu'),
       max: 100,
       formatValue: formatPercent,
@@ -683,7 +724,7 @@ export default function ContainerDetail() {
       points: toChartPoints(filtered, 'memory'),
       max: 100,
       formatValue: formatPercent,
-      detail: `${formatBytes(usage?.memory_usage_bytes || 0)} / ${container.ram_mb} MB`,
+      detail: `${formatBytes(usage?.memory_usage_bytes || 0)} / ${formatBytes(ramTotalBytes)}`,
     },
     {
       title: '网络流量',
@@ -732,7 +773,7 @@ export default function ContainerDetail() {
                 <InfoTag color="slate">类型 {(container.virtualization || 'lxc').toUpperCase()}</InfoTag>
                 <InfoTag color="emerald">内网 {container.ip || '-'}</InfoTag>
                 <InfoTag color="amber">NAT {mappingCount} 条</InfoTag>
-                <InfoTag color="violet">{publicHost}:{container.ssh_port}</InfoTag>
+                <InfoTag color="violet">{isWindows ? 'RDP' : 'SSH'} {publicHost}:{container.ssh_port}</InfoTag>
               </div>
             </div>
           </div>
@@ -753,10 +794,18 @@ export default function ContainerDetail() {
                   <RefreshCw className="w-3.5 h-3.5" />
                   {isExpired ? '已到期' : taskStatus === 'restart' ? taskActionLabels['restart'] : '重启'}
                 </ActionButton>
-                <ActionButton dark onClick={() => setShowSSH(true)}>
-                  <TerminalSquare className="w-3.5 h-3.5" />
-                  WebSSH
-                </ActionButton>
+                {!isWindows && (
+                  <ActionButton dark onClick={() => setShowSSH(true)}>
+                    <TerminalSquare className="w-3.5 h-3.5" />
+                    WebSSH
+                  </ActionButton>
+                )}
+                {isKVM && (
+                  <ActionButton dark disabled={!canOpenVNC} onClick={() => setShowVNC(true)}>
+                    <Monitor className="w-3.5 h-3.5" />
+                    WebVNC
+                  </ActionButton>
+                )}
               </>
             )}
             {!isSubUser && (
@@ -793,30 +842,59 @@ export default function ContainerDetail() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Panel title="连接信息">
-          <PlainRow label="SSH 地址" value={`${publicHost}:${container.ssh_port}`} mono copyValue={sshCommand} onCopy={copyText} />
-          <PlainRow label="用户名" value="root" mono />
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-gray-500">SSH 密码</span>
-            <div className="flex items-center gap-1 min-w-0">
-              <span
-                className={`font-mono text-xs cursor-pointer select-none ${showPassword ? 'text-black' : 'text-gray-400 tracking-[0.25em]'}`}
-                onClick={() => setShowPassword(!showPassword)}
-                title={showPassword ? '点击隐藏' : '点击显示'}
-              >
-                {showPassword ? (container.ssh_password || '-') : '••••••••'}
-              </span>
-              {container.ssh_password && (
-                <button onClick={() => copyText(container.ssh_password)} className="p-0.5 text-gray-400 hover:text-black rounded" title="复制">
-                  <Copy className="w-3 h-3" />
+          {isWindows ? (
+            <>
+              <PlainRow label="RDP 地址" value={`${publicHost}:${container.ssh_port}`} mono />
+              <PlainRow label="用户名" value="Administrator" mono />
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-gray-500">管理员密码</span>
+                <div className="flex items-center gap-1 min-w-0">
+                  <span
+                    className={`font-mono text-xs cursor-pointer select-none ${showPassword ? 'text-black' : 'text-gray-400 tracking-[0.25em]'}`}
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? '点击隐藏' : '点击显示'}
+                  >
+                    {container.ssh_password ? (showPassword ? container.ssh_password : '••••••••') : '-'}
+                  </span>
+                  {container.ssh_password && (
+                    <button onClick={() => copyText(container.ssh_password)} className="p-0.5 text-gray-400 hover:text-black rounded" title="复制">
+                      <Copy className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {container.vnc_port > 0 && (
+                <PlainRow label="VNC 端口" value={`127.0.0.1:${container.vnc_port}`} mono />
+              )}
+            </>
+          ) : (
+            <>
+              <PlainRow label="SSH 地址" value={`${publicHost}:${container.ssh_port}`} mono copyValue={sshCommand} onCopy={copyText} />
+              <PlainRow label="用户名" value="root" mono />
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-gray-500">SSH 密码</span>
+                <div className="flex items-center gap-1 min-w-0">
+                  <span
+                    className={`font-mono text-xs cursor-pointer select-none ${showPassword ? 'text-black' : 'text-gray-400 tracking-[0.25em]'}`}
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? '点击隐藏' : '点击显示'}
+                  >
+                    {container.ssh_password ? (showPassword ? container.ssh_password : '••••••••') : '-'}
+                  </span>
+                  {container.ssh_password && (
+                    <button onClick={() => copyText(container.ssh_password)} className="p-0.5 text-gray-400 hover:text-black rounded" title="复制">
+                      <Copy className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {!isSubUser && (
+                <button onClick={handleResetPassword} className="inline-flex items-center gap-1.5 text-xs text-gray-600 hover:text-black">
+                  <Key className="w-3 h-3" />
+                  重置 SSH 密码
                 </button>
               )}
-            </div>
-          </div>
-          {!isSubUser && (
-            <button onClick={handleResetPassword} className="inline-flex items-center gap-1.5 text-xs text-gray-600 hover:text-black">
-              <Key className="w-3 h-3" />
-              重置 SSH 密码
-            </button>
+            </>
           )}
         </Panel>
 
@@ -871,7 +949,7 @@ export default function ContainerDetail() {
             <RingStat
               value={ramPct}
               label="内存"
-              subLabel={`${formatMB(usage?.memory_usage_bytes || 0)} / ${formatMB(container.ram_mb * 1024 * 1024)}`}
+              subLabel={`${formatMB(usage?.memory_usage_bytes || 0)} / ${formatMB(ramTotalBytes)}`}
             />
             <RingStat
               value={loadPct}
@@ -976,6 +1054,38 @@ export default function ContainerDetail() {
             ) : (
               <div className="h-full flex items-center justify-center bg-gray-950 text-gray-400 rounded-md">容器未运行，请先开机</div>
             )}
+          </div>
+        </Modal>
+      )}
+
+      {showVNC && (
+        <Modal
+          title={`WebVNC - ${container.name}`}
+          onClose={() => setShowVNC(false)}
+          wide
+          flush
+          extra={
+            <button
+              onClick={toggleVNCFullscreen}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-gray-600 hover:text-black hover:bg-gray-100 rounded"
+              title={vncFullscreen ? '退出全屏' : '全屏显示'}
+            >
+              {vncFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              {vncFullscreen ? '退出全屏' : '全屏'}
+            </button>
+          }
+        >
+          <div
+            ref={vncFullscreenRef}
+            className={`bg-white ${vncFullscreen ? 'fixed inset-0 z-[70] p-3' : 'h-[calc(92vh-112px)] min-h-[420px] p-5'}`}
+          >
+            <div className="h-full">
+            {canOpenVNC ? (
+              <WebVNCViewer containerName={container.name} onClose={() => setShowVNC(false)} />
+            ) : (
+              <div className="h-full flex items-center justify-center bg-gray-950 text-gray-400 rounded-md">VNC 控制台暂不可用，请确认 KVM 虚拟机已开机并刷新页面</div>
+            )}
+            </div>
           </div>
         </Modal>
       )}
@@ -1573,7 +1683,7 @@ function MappingTable({ mappings, publicHost, onEdit, onDelete, compact = false,
         </thead>
         <tbody className="divide-y divide-gray-100">
           {mappings.map((pm, index) => {
-            const isSSH = pm.description === 'SSH' || pm.container_port === 22
+            const isSSH = pm.description === 'SSH' || pm.container_port === 22 || pm.description === 'RDP' || pm.container_port === 3389
             return (
               <tr key={`${pm.host_port}-${pm.container_port}-${index}`}>
                 <td className="px-3 py-2 text-sm">
@@ -1619,7 +1729,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function Modal({ title, children, onClose, wide = false, extra }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; extra?: ReactNode }) {
+function Modal({ title, children, onClose, wide = false, extra, flush = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; extra?: ReactNode; flush?: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className={`bg-white rounded-lg shadow-xl border border-gray-200 w-full ${wide ? 'max-w-5xl' : 'max-w-md'} max-h-[92vh] overflow-hidden flex flex-col`}>
@@ -1632,7 +1742,7 @@ function Modal({ title, children, onClose, wide = false, extra }: { title: strin
             </button>
           </div>
         </div>
-        <div className="p-5 overflow-y-auto">{children}</div>
+        <div className={flush ? "overflow-hidden" : "p-5 overflow-y-auto"}>{children}</div>
       </div>
     </div>
   )
@@ -1817,5 +1927,6 @@ function getTemplateIcon(id: string): ReactNode {
   if (id.startsWith('nixos')) return <svg className={size} viewBox="0 0 60 60"><g fillRule="evenodd"><path d="M23.58 20.214L8.964 45.528 5.55 39.743l3.94-6.78-7.823-.02L0 30.052l1.703-2.956 11.135.035 4.002-6.9zM24.7 40.45h29.23l-3.302 5.85-7.84-.022 3.894 6.785-1.67 2.9-3.412.004-5.537-9.66-7.976-.016zm17.014-11.092L27.1 4.043l6.716-.063 3.902 6.8 3.93-6.765 3.337.002 1.7 2.953-5.598 9.626 3.974 6.916z" fill="#7ebae4"/><path d="M35.28 19.486l-29.23-.002 3.303-5.848 7.84.022L13.3 6.873l1.67-2.9 3.412-.004 5.537 9.66 7.976.016zm1.14 20.294l14.616-25.313 3.413 5.785-3.94 6.78 7.823.02 1.668 2.9-1.703 2.956-11.135-.035-4.002 6.9z" fill="#5277c3"/></g><defs><path id="B" d="M18.305 30.642L32.92 55.956l-6.716.063-3.902-6.8-3.93 6.765-3.337-.002-1.71-2.953 5.598-9.626-3.974-6.916z"/></defs></svg>
   if (id.startsWith('kali')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M545.194667 253.568s-84.053333-5.546667-227.285334 39.253333c-145.92 45.653333-228.693333 110.378667-228.693333 110.378667s217.514667-121.472 463.018667-128.341333z m313.642666 132.053333l10.965334-0.725333s-62.634667-75.946667-182.528-112.981333c67.413333 27.392 126.037333 63.701333 171.562666 113.706666z m17.92 31.573334c1.664-2.901333 7.082667 9.258667 11.221334 14.378666 0.170667 1.024 0.426667 1.664-1.92 1.152-0.213333-1.066667-0.554667-1.365333-0.554667-1.365333s-5.76-3.413333-7.552-5.845333c-1.749333-2.432-2.090667-6.698667-1.194667-8.32z m147.114667 361.770666s13.312-152.661333-226.56-187.861333a779.818667 779.818667 0 0 0-107.690667-7.978667c-192.256 2.56-199.253333-221.738667-54.4-233.045333 60.032-4.949333 131.712 27.434667 201.813334 60.074667-0.298667 8.704 0.085333 16.426667 5.802666 23.552 5.717333 7.168 27.648 14.933333 34.688 18.986666 6.997333 4.010667 29.482667 18.346667 43.264 36.266667 2.986667-5.589333 27.904-21.845333 27.904-21.845333s-5.973333 0.128-19.84-5.077334c-13.909333-5.205333-30.421333-20.906667-30.805333-21.802666-0.426667-0.938667-0.64-2.346667 2.56-2.986667 2.517333-2.090667-3.072-8.832-5.546667-11.306667-2.474667-2.474667-18.986667-30.549333-19.370666-31.146666-0.384-0.682667-0.512-1.322667-1.706667-2.133334-3.626667-1.152-19.626667 1.706667-19.626667 1.706667s-24.533333-12.074667-33.024-38.101333c0.128 4.565333-4.224 9.557333 0 20.010666-12.8-5.418667-23.808-14.677333-32.512-37.546666-5.12 13.013333 0 21.290667 0 21.290666s-30.165333-8.448-34.986666-36.266666c-5.290667 12.501333 0 20.010667 0 20.010666s-49.194667-25.685333-130.944-26.026666c-54.741333-5.034667-66.133333-101.290667-61.013334-117.504 0 0-78.933333-41.6-234.368-59.989334-155.392-18.346667-282.794667-2.773333-282.794666-2.773333s275.2-13.226667 495.658666 76.074667c7.509333 33.493333 30.037333 89.344 42.197334 116.181333-34.773333 24.021333-73.941333 46.592-80.042667 126.72-6.101333 80.128 62.805333 150.613333 148.224 152.746667 81.066667 4.352 137.130667 4.949333 205.056 40.192 64.853333 35.84 118.016 145.066667 123.306667 243.328 5.632-72.917333-21.717333-229.674667-149.333334-277.248 178.389333 31.232 194.090667 163.498667 194.090667 163.498666zM541.013333 241.621333l-6.4-20.693333s-105.984-18.816-248.405333-8.704C143.786667 222.336 0 272.213333 0 272.213333s294.229333-74.026667 541.013333-30.592z" fill="#557C94"/></svg>
   if (id.startsWith('rockylinux')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M995.498667 680.362667c18.474667-52.778667 28.501333-109.568 28.501333-168.704C1024 229.077333 794.752 0 512 0S0 229.077333 0 511.658667c0 139.818667 56.106667 266.496 147.114667 358.826666L666.453333 351.530667l128.213334 128.170666 200.832 200.704z m-93.525334 162.816l-235.52-235.349334-368.896 368.597334A510.506667 510.506667 0 0 0 512 1023.274667c156.16 0 296.106667-69.888 389.973333-180.053334h0.042667z" fill="#10B981"/></svg>
+  if (id.startsWith('windows')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M56.888889 227.555556l398.222222-70.542223V512H56.888889V227.555556z m0 625.777777l398.222222 70.542223V568.888889H56.888889v284.444444zM512 147.342222L1024 56.888889v455.111111H512V147.342222z m0 786.204445L1024 1024v-455.111111H512v364.657778z" fill="#16C6FE"/></svg>
   return null
 }

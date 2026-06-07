@@ -393,10 +393,16 @@ export default function Containers() {
                   const task = (container.id > 0 ? taskStatusMap[container.id] : taskNameMap[container.name]) || container.createTask
                   const isPlaceholder = !!container.isPlaceholder
                   const usage = usageByName[container.name]
+                  const isKVM = (container.virtualization || 'lxc') === 'kvm'
 
-                  const cpuPct = isRunning ? clamp(usage?.cpu_usage_pct || 0) : 0
-                  const ramPct = isRunning && container.ram_mb > 0
-                    ? clamp(((usage?.memory_usage_bytes || 0) / (container.ram_mb * 1024 * 1024)) * 100)
+                  const cpuPct = isRunning
+                    ? clamp((usage?.cpu_usage_pct || 0) / (isKVM ? (container.vcpu || 1) : 1))
+                    : 0
+                  const ramTotalBytes = usage?.memory_total_bytes && usage.memory_total_bytes > 0
+                    ? usage.memory_total_bytes
+                    : container.ram_mb * 1024 * 1024
+                  const ramPct = isRunning && ramTotalBytes > 0
+                    ? clamp(((usage?.memory_usage_bytes || 0) / ramTotalBytes) * 100)
                     : 0
                   const diskPct = container.disk_gb > 0
                     ? clamp(((usage?.disk_usage_bytes || 0) / (container.disk_gb * 1024 * 1024 * 1024)) * 100)
@@ -803,6 +809,7 @@ function getSystemFilterValue(template: string) {
   if (normalized.startsWith('archlinux')) return 'archlinux'
   if (normalized.startsWith('fedora')) return 'fedora'
   if (normalized.startsWith('rockylinux')) return 'rockylinux'
+  if (normalized.startsWith('windows')) return 'windows'
   return normalized || 'unknown'
 }
 
@@ -815,6 +822,7 @@ function getSystemFilterLabel(system: string) {
     archlinux: 'Arch Linux',
     fedora: 'Fedora',
     rockylinux: 'Rocky Linux',
+    windows: 'Windows',
     unknown: '未知系统',
   }
   return labels[system] || system
@@ -944,6 +952,7 @@ function getTemplateName(id: string) {
     'kvm-debian-bookworm': 'Debian 12',
     'kvm-debian-bullseye': 'Debian 11',
     'kvm-rockylinux-9': 'Rocky 9',
+    'kvm-windows-10': 'Windows 10',
   }
   return map[id] || id
 }
@@ -958,6 +967,7 @@ function getTemplateIcon(id: string): ReactNode {
   if (id.startsWith('archlinux')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M504.149333 7.850667c-44.373333 108.544-70.997333 179.2-120.149333 284.330666 30.037333 32.085333 67.242667 69.290667 127.317333 111.274667-64.512-26.624-108.544-53.248-141.653333-80.896-63.146667 131.413333-161.792 318.464-361.813333 678.229333 157.696-90.794667 279.552-146.773333 393.216-168.277333-4.778667-21.162667-7.509333-43.690667-7.509334-67.584l0.341334-5.12c2.389333-100.693333 54.954667-178.517333 117.077333-173.056s110.592 91.477333 107.861333 192.170667c-0.341333 18.090667-2.389333 36.522667-6.485333 54.272 112.64 21.845333 233.130667 77.824 388.437333 167.594666l-83.968-155.648c-40.96-31.744-83.968-73.386667-171.349333-118.101333 60.074667 15.701333 103.082667 33.792 136.533333 53.930667-265.557333-493.909333-287.061333-559.786667-377.856-773.12z" fill="#1793D1"/></svg>
   if (id.startsWith('fedora')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M512 0C229.344 0 0.224 229.024 0 511.648V907.84a116.384 116.384 0 0 0 116.384 116.128h395.808c282.656-0.128 511.776-229.28 511.776-512 0-282.752-229.248-512-512-512z m196.064 237.952c-16.16 0-22.016-3.104-45.728-3.104a126.848 126.848 0 0 0-126.848 126.624v110.208c0 9.888 8.032 17.92 17.92 17.92h83.328c31.072 0 56.16 24.736 56.16 55.904 0 31.328-25.344 55.968-56.736 55.968h-100.608v127.36a240.32 240.32 0 0 1-240.288 240.288h-1.248a190.944 190.944 0 0 1-53.216-7.52l1.344 0.32c-27.168-7.072-49.376-29.408-49.376-55.296 0-31.328 22.752-54.112 56.736-54.112 16.128 0 22.016 3.072 45.696 3.072a126.848 126.848 0 0 0 126.848-126.624v-110.208a17.92 17.92 0 0 0-17.92-17.888h-83.328a55.808 55.808 0 0 1-56.096-55.904c0-31.328 25.344-55.968 56.736-55.968h100.576v-127.36a240.32 240.32 0 0 1 240.288-240.288c20.128 0 34.432 2.272 53.088 7.136 27.168 7.136 49.408 29.44 49.408 55.296 0 31.36-22.752 54.144-56.736 54.144z" fill="#294172"/></svg>
   if (id.startsWith('rockylinux')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M995.498667 680.362667c18.474667-52.778667 28.501333-109.568 28.501333-168.704C1024 229.077333 794.752 0 512 0S0 229.077333 0 511.658667c0 139.818667 56.106667 266.496 147.114667 358.826666L666.453333 351.530667l128.213334 128.170666 200.832 200.704z m-93.525334 162.816l-235.52-235.349334-368.896 368.597334A510.506667 510.506667 0 0 0 512 1023.274667c156.16 0 296.106667-69.888 389.973333-180.053334h0.042667z" fill="#10B981"/></svg>
+  if (id.startsWith('windows')) return <svg className={size} viewBox="0 0 1024 1024"><path d="M56.888889 227.555556l398.222222-70.542223V512H56.888889V227.555556z m0 625.777777l398.222222 70.542223V568.888889H56.888889v284.444444zM512 147.342222L1024 56.888889v455.111111H512V147.342222z m0 786.204445L1024 1024v-455.111111H512v364.657778z" fill="#16C6FE"/></svg>
   return null
 }
 

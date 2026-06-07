@@ -104,6 +104,8 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/security/summary", corsMiddleware(api.AdminMiddleware(api.HandleContainerSecuritySummary)))
 	mux.HandleFunc("/api/ssh-ticket", corsMiddleware(api.AuthMiddleware(api.HandleWebSSHTicket)))
 	mux.HandleFunc("/api/ssh", api.HandleWebSSH) // WebSocket
+	mux.HandleFunc("/api/vnc-ticket", corsMiddleware(api.AuthMiddleware(api.HandleVNCTicket)))
+	mux.HandleFunc("/api/vnc", api.HandleVNCProxy) // WebSocket
 
 	// API Key management
 	mux.HandleFunc("/api/api-keys", corsMiddleware(api.AdminMiddleware(api.HandleApiKeys)))
@@ -161,4 +163,3 @@ func Run() error {
 
 	return server.ListenAndServe()
 }
-

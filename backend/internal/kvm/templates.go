@@ -70,6 +70,12 @@ func GetImages() []Image {
 			Description: "Rocky Linux 9 GenericCloud image for KVM",
 			URL:         "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
 		},
+		{
+			ID: "kvm-windows-10", Name: "Windows 10 KVM",
+			Distro: "windows", Release: "10", Arch: "amd64",
+			Description: "Windows ISO for KVM (automatic unattended install from image index 1, network, Administrator password, RDP, firewall, and QEMU Guest Agent initialization)",
+			URL:         "https://go.microsoft.com/fwlink/?LinkID=2195404",
+		},
 	}
 }
 
@@ -87,5 +93,20 @@ func CacheDir() string {
 }
 
 func ImagePath(id string) string {
-	return filepath.Join(CacheDir(), id+".qcow2")
+	img := FindImage(id)
+	ext := ".qcow2"
+	if img != nil && img.Distro == "windows" {
+		ext = ".iso"
+	}
+	return filepath.Join(CacheDir(), id+ext)
+}
+
+// IsWindowsImage returns true if the image distro is "windows".
+func IsWindowsImage(id string) bool {
+	img := FindImage(id)
+	return img != nil && img.Distro == "windows"
+}
+
+func virtioWinISOPath() string {
+	return filepath.Join(CacheDir(), "virtio-win.iso")
 }

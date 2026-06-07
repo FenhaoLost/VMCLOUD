@@ -159,6 +159,7 @@ export interface HostInfo {
 
 export interface ContainerUsage {
   memory_usage_bytes: number
+  memory_total_bytes?: number
   cpu_usage_usec: number
   cpu_usage_pct: number
   disk_usage_bytes: number
@@ -173,6 +174,7 @@ export interface ContainerUsage {
   load1: number
   load5: number
   load15: number
+  guest_metrics?: boolean
 }
 
 export interface APIResponse<T = unknown> {
@@ -353,6 +355,7 @@ export interface ImageInfo {
   enabled: boolean
   downloading: boolean
   size_bytes: number
+  manual_path?: string
 }
 
 export const getImages = () =>
@@ -438,6 +441,13 @@ export const getWebSSHUrl = (containerName: string) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const params = new URLSearchParams({ container: containerName })
   return `${protocol}//${window.location.host}/api/ssh?${params.toString()}`
+}
+
+export const getWebVNCUrl = (containerName: string, ticket?: string) => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const params = new URLSearchParams({ container: containerName })
+  if (ticket) params.set('ticket', ticket)
+  return `${protocol}//${window.location.host}/api/vnc?${params.toString()}`
 }
 
 // Task Queue
@@ -528,6 +538,9 @@ export const getSecuritySummary = () =>
 
 export const createWebSSHTicket = (containerName: string) =>
   api.post<APIResponse<{ ticket: string }>>('/ssh-ticket', { container_name: containerName })
+
+export const createVNCTicket = (containerName: string) =>
+  api.post<APIResponse<{ ticket: string }>>('/vnc-ticket', { container_name: containerName })
 
 // Version
 export const getVersion = () =>

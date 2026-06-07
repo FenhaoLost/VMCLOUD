@@ -249,7 +249,12 @@ install_apt() {
         quota \
         e2fsprogs \
         xfsprogs \
-        dnsmasq-base
+        dnsmasq-base \
+        qemu-kvm \
+        libvirt-daemon-system \
+        libvirt-clients \
+        virtinst \
+        virt-manager
 }
 
 enable_el_repos() {
@@ -372,6 +377,7 @@ setup_lxc_services() {
         systemctl enable --now lxcfs >/dev/null 2>&1 || true
         systemctl enable --now lxc-net >/dev/null 2>&1 || true
         systemctl enable --now lxc >/dev/null 2>&1 || true
+        systemctl enable --now libvirtd >/dev/null 2>&1 || true
         return
     fi
 
@@ -382,6 +388,8 @@ setup_lxc_services() {
         rc-service lxc start >/dev/null 2>&1 || true
         rc-update add lxcfs default >/dev/null 2>&1 || true
         rc-service lxcfs start >/dev/null 2>&1 || true
+        rc-update add libvirtd default >/dev/null 2>&1 || true
+        rc-service libvirtd start >/dev/null 2>&1 || true
         return
     fi
 

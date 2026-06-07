@@ -27,6 +27,7 @@ type ImageInfo struct {
 	Enabled     bool   `json:"enabled"`
 	Downloading bool   `json:"downloading"`
 	SizeBytes   int64  `json:"size_bytes"`
+	ManualPath  string `json:"manual_path,omitempty"`
 }
 
 var imageDownloadsMu sync.Mutex
@@ -122,6 +123,10 @@ func HandleImages(w http.ResponseWriter, r *http.Request) {
 	for _, t := range kvm.GetImages() {
 		_, downloading := imageDownloads[t.ID]
 		downloaded, size := kvm.ImageDownloadedInfo(t.ID)
+		manualPath := ""
+		if t.Distro == "windows" {
+			manualPath = kvm.ImagePath(t.ID)
+		}
 		images = append(images, ImageInfo{
 			ID:          t.ID,
 			Name:        t.Name,
@@ -134,6 +139,7 @@ func HandleImages(w http.ResponseWriter, r *http.Request) {
 			Enabled:     enabledSet[t.ID],
 			Downloading: downloading,
 			SizeBytes:   size,
+			ManualPath:  manualPath,
 		})
 	}
 
@@ -182,7 +188,9 @@ func HandleImageDownload(w http.ResponseWriter, r *http.Request) {
 		}()
 		ensureImageEnabled(image.ID)
 		if err := kvm.DownloadImage(*image); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Download failed: " + err.Error()})
+			message := "Download failed: " + err.Error()
+
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: message})
 			return
 		}
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Downloaded successfully"})

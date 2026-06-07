@@ -54,6 +54,20 @@ type rateSnapshot struct {
 	UpdatedAt time.Time
 }
 
+type windowsGuestMetrics struct {
+	MemoryUsageBytes int64   `json:"memory_usage_bytes"`
+	MemoryTotalBytes int64   `json:"memory_total_bytes"`
+	CPULoadPct       float64 `json:"cpu_load_pct"`
+	Load1            float64 `json:"load1"`
+	Load5            float64 `json:"load5"`
+	Load15           float64 `json:"load15"`
+}
+
+type windowsGuestMetricsSnapshot struct {
+	Metrics   windowsGuestMetrics
+	UpdatedAt time.Time
+}
+
 type trafficSample struct {
 	RXBytes uint64
 	TXBytes uint64
@@ -67,6 +81,12 @@ var (
 	lastTrafficSnapshot = map[string]trafficSample{}
 	kvmSnapshotMu       sync.Mutex
 	kvmSSHEnsureLocks   sync.Map
+	portMapApplyMu      sync.Mutex
+	lastPortMapApply    = map[int]time.Time{}
+	windowsMetricsMu    sync.Mutex
+	windowsMetricsCache = map[string]windowsGuestMetricsSnapshot{}
+	ipv6WarnMu          sync.Mutex
+	lastIPv6GuestWarn   = map[int]time.Time{}
 )
 
 func BaseDir() string {
@@ -102,15 +122,41 @@ func DownloadImage(image Image) error {
 	if ok, _ := ImageDownloadedInfo(image.ID); ok {
 		return nil
 	}
+	// For images with no download URL (e.g. Windows ISO), the user must
+	// manually place the file at the expected path.
+	if image.URL == "" {
+		if _, err := os.Stat(target); err == nil {
+			_ = os.Chmod(target, 0644)
+			return nil
+		}
+		return fmt.Errorf("this image has no download URL. Please manually upload the ISO to: %s", target)
+	}
 	tmp := target + ".tmp"
 	_ = os.Remove(tmp)
-	if err := downloadFile(image.URL, tmp); err != nil {
+	if image.Distro == "windows" {
+		if err := downloadFileWithValidator(image.URL, tmp, validateWindowsISOResponse(target)); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	} else if err := downloadFile(image.URL, tmp); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := normalizeQCOW2(tmp, target); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	if image.Distro == "windows" {
+		if err := validateWindowsISO(tmp, target); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		// Keep Windows ISO as-is, don't convert to qcow2
+		if err := os.Rename(tmp, target); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	} else {
+		if err := normalizeQCOW2(tmp, target); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	_ = os.Chmod(target, 0644)
 	return nil
@@ -120,15 +166,44 @@ func DeleteImage(id string) error {
 	return os.RemoveAll(ImagePath(id))
 }
 
+type downloadResponseValidator func(*http.Response) error
+
 func downloadFile(url, target string) error {
-	client := http.Client{Timeout: 30 * time.Minute}
-	resp, err := client.Get(url)
+	return downloadFileWithValidator(url, target, nil)
+}
+
+func downloadFileWithValidator(url, target string, validate downloadResponseValidator) error {
+	client := http.Client{
+		Timeout: 30 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			// Copy User-Agent on redirect
+			if ua := via[0].Header.Get("User-Agent"); ua != "" {
+				req.Header.Set("User-Agent", ua)
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	// Windows UA needed for Microsoft download servers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+	if validate != nil {
+		if err := validate(resp); err != nil {
+			return err
+		}
 	}
 	out, err := os.Create(target)
 	if err != nil {
@@ -139,6 +214,56 @@ func downloadFile(url, target string) error {
 		return err
 	}
 	return out.Sync()
+}
+
+func validateWindowsISOResponse(target string) downloadResponseValidator {
+	return func(resp *http.Response) error {
+		contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+		if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "text/plain") {
+			return fmt.Errorf("downloaded Windows image response was %q instead of an ISO. Microsoft download links may be region/time limited; manually upload the ISO to: %s", contentType, target)
+		}
+		finalURL := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = resp.Request.URL.String()
+		}
+		path := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			path = strings.ToLower(resp.Request.URL.Path)
+		}
+		looksLikeISO := strings.HasSuffix(path, ".iso") ||
+			strings.Contains(contentType, "iso") ||
+			strings.Contains(contentType, "octet-stream") ||
+			contentType == ""
+		if !looksLikeISO {
+			return fmt.Errorf("Microsoft redirect did not appear to return an ISO (final URL: %s, Content-Type: %s). Please manually upload the ISO to: %s", finalURL, contentType, target)
+		}
+		return nil
+	}
+}
+
+func validateWindowsISO(path, target string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() < 1024*1024*1024 {
+		return fmt.Errorf("downloaded Windows ISO is unexpectedly small (%d bytes). Microsoft download links may be region/time limited; try again or manually upload the ISO to: %s", info.Size(), target)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	header := make([]byte, 512)
+	n, err := io.ReadFull(f, header)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return err
+	}
+	prefix := strings.ToLower(strings.TrimSpace(string(header[:n])))
+	if strings.HasPrefix(prefix, "<!doctype html") || strings.HasPrefix(prefix, "<html") || strings.Contains(prefix, "<html") {
+		return fmt.Errorf("downloaded Windows image is an HTML page instead of an ISO. Microsoft download links may be region/time limited; manually upload the ISO to: %s", target)
+	}
+	return nil
 }
 
 func normalizeQCOW2(src, target string) error {
@@ -160,7 +285,7 @@ func (m *Manager) CreateContainer(cfg lxc.ContainerConfig) error {
 	if ok, _ := ImageDownloadedInfo(image.ID); !ok {
 		return fmt.Errorf("KVM image is not downloaded: %s", cfg.TemplateID)
 	}
-	if err := m.validateHost(); err != nil {
+	if err := m.validateHost(IsWindowsImage(image.ID)); err != nil {
 		return err
 	}
 	if !config.IsValidContainerName(cfg.Name) {
@@ -224,14 +349,36 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		ipv6Interface = iface
 	}
 
-	if err := createOverlayDisk(ImagePath(image.ID), diskPath, cfg.DiskGB); err != nil {
-		return nil, err
+	var xml string
+	winAdminPassword := ""
+	if IsWindowsImage(image.ID) {
+		if cfg.RAMMB < 2048 {
+			cfg.RAMMB = 2048
+		}
+		if cfg.DiskGB < 30 {
+			cfg.DiskGB = 30
+		}
+		if err := createEmptyDisk(diskPath, cfg.DiskGB); err != nil {
+			return nil, err
+		}
+		if err := ensureVirtioWinISO(); err != nil {
+			return nil, err
+		}
+		winAdminPassword = generateWindowsPassword()
+		unattendPath := filepath.Join(m.instanceDir(vmName), "unattend.iso")
+		if err := createWindowsUnattendISO(unattendPath, cfg.Name, winAdminPassword, ipv6); err != nil {
+			return nil, err
+		}
+		xml = windowsDomainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, ImagePath(image.ID), unattendPath, mac, cfg.IOSpeedMBps, cfg.NetworkBWMbps)
+	} else {
+		if err := createOverlayDisk(ImagePath(image.ID), diskPath, cfg.DiskGB); err != nil {
+			return nil, err
+		}
+		if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, mac, ipv6); err != nil {
+			return nil, err
+		}
+		xml = domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, seedPath, mac, cfg.IOSpeedMBps, cfg.NetworkBWMbps)
 	}
-	if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, mac, ipv6); err != nil {
-		return nil, err
-	}
-
-	xml := domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, seedPath, mac, cfg.IOSpeedMBps, cfg.NetworkBWMbps)
 	xmlPath := filepath.Join(m.instanceDir(vmName), "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
 		return nil, err
@@ -245,7 +392,17 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 	portMappings := []config.PortMapping{}
 	if allocatePorts {
 		sshPort = config.AllocateSSHPort()
-		portMappings = lxc.SetupDefaultPortMappings(sshPort)
+		if IsWindowsImage(image.ID) {
+			// Windows: RDP (3389) instead of SSH (22)
+			portMappings = []config.PortMapping{{
+				ContainerPort: 3389,
+				HostPort:      sshPort,
+				Protocol:      "tcp",
+				Description:   "RDP",
+			}}
+		} else {
+			portMappings = lxc.SetupDefaultPortMappings(sshPort)
+		}
 		tempC := &config.Container{PortMappings: portMappings}
 		extraPorts := cfg.ExtraPorts
 		if len(extraPorts) == 0 && cfg.PortMappingCount > 1 {
@@ -294,7 +451,12 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		IPv6Interface:    ipv6Interface,
 		Status:           "stopped",
 		SSHPort:          sshPort,
-		SSHPassword:      sshPassword,
+		SSHPassword: func() string {
+			if winAdminPassword != "" {
+				return winAdminPassword
+			}
+			return sshPassword
+		}(),
 		PortMappings:     portMappings,
 		PortMappingLimit: cfg.PortMappingCount,
 		SnapshotLimit:    config.NormalizeSnapshotLimit(cfg.SnapshotLimit),
@@ -308,7 +470,7 @@ func (m *Manager) StartContainer(id int) error {
 	if c == nil {
 		return fmt.Errorf("container not found: %d", id)
 	}
-	if err := m.validateHost(); err != nil {
+	if err := m.validateHost(IsWindowsImage(c.Template)); err != nil {
 		return err
 	}
 	name := c.VirshName()
@@ -325,21 +487,41 @@ func (m *Manager) StartContainer(id int) error {
 		}
 	}
 	config.UpdateContainerStatus(id, "running")
+	// Detect VNC port
+	if _, err := m.RefreshVNCPort(id); err != nil {
+		fmt.Printf("Warning: failed to refresh VNC port for %s: %v\n", name, err)
+	}
 	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--live").Run()
 	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--config").Run()
-	for i := 0; i < 90; i++ {
-		if ip, err := m.GetContainerIP(name); err == nil && ip != "" {
-			c.IP = ip
-			config.SaveConfig()
-			break
+	// Windows VMs need manual install via VNC — don't require IP on first boot
+	isWindows := IsWindowsImage(c.Template)
+	if isWindows {
+		for i := 0; i < 15; i++ {
+			if ip, err := m.GetContainerIP(name); err == nil && ip != "" {
+				c.IP = ip
+				config.SaveConfig()
+				break
+			}
+			time.Sleep(2 * time.Second)
 		}
-		time.Sleep(2 * time.Second)
+	} else {
+		for i := 0; i < 90; i++ {
+			if ip, err := m.GetContainerIP(name); err == nil && ip != "" {
+				c.IP = ip
+				config.SaveConfig()
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if c.IP == "" {
+			return fmt.Errorf("KVM VM %s started but no IPv4 address was detected", c.Name)
+		}
 	}
-	if c.IP == "" {
-		return fmt.Errorf("KVM VM %s started but no IPv4 address was detected", c.Name)
-	}
-	if err := lxc.NewManager().ApplyPortMappings(id); err != nil {
-		return err
+	// Apply port mappings if IP is available (Linux: always; Windows: after installation)
+	if c.IP != "" {
+		if err := lxc.NewManager().ApplyPortMappings(id); err != nil {
+			return err
+		}
 	}
 	if c.IPv6 != "" {
 		if err := m.applyIPv6Runtime(c); err != nil {
@@ -447,8 +629,13 @@ func (m *Manager) ReinstallContainer(id int, templateID string) error {
 	c.SSHPassword = next.SSHPassword
 	c.SSHHostKey = ""
 	c.IP = ""
+	c.VNCPort = 0
+	normalizeKVMManagementPortMapping(c)
 	c.Status = "stopped"
 	config.SaveConfig()
+	if IsWindowsImage(templateID) {
+		return nil
+	}
 	return m.StartContainer(id)
 }
 
@@ -456,6 +643,9 @@ func (m *Manager) ResetSSHPassword(id int) (string, error) {
 	c := config.FindContainer(id)
 	if c == nil {
 		return "", fmt.Errorf("container not found: %d", id)
+	}
+	if IsWindowsImage(c.Template) {
+		return "", fmt.Errorf("Windows KVM administrator password cannot be reset from CLICD yet; change it inside Windows or reinstall to generate a new password")
 	}
 	if c.Status != "running" {
 		return "", fmt.Errorf("KVM VM must be running before password reset")
@@ -509,8 +699,15 @@ func (m *Manager) ApplyContainerLimits(c *config.Container) error {
 	if c.DiskImage == "" || c.MACAddress == "" {
 		return nil
 	}
-	seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
-	xml := domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	var xml string
+	if IsWindowsImage(c.Template) {
+		winISO := ImagePath(c.Template)
+		unattendISO := existingWindowsUnattendISO(m.instanceDir(c.VirshName()))
+		xml = windowsDomainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, winISO, unattendISO, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	} else {
+		seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
+		xml = domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	}
 	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
 		return err
@@ -526,9 +723,16 @@ func (m *Manager) ensureDomainDefinition(c *config.Container) error {
 	if c == nil || !c.IsKVM() || c.DiskImage == "" || c.MACAddress == "" {
 		return nil
 	}
-	seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
-	xml := domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	var xml string
 	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
+	if IsWindowsImage(c.Template) {
+		winISO := ImagePath(c.Template)
+		unattendISO := existingWindowsUnattendISO(m.instanceDir(c.VirshName()))
+		xml = windowsDomainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, winISO, unattendISO, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	} else {
+		seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
+		xml = domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOSpeedMBps, c.NetworkBWMbps)
+	}
 	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
 		return err
 	}
@@ -891,6 +1095,7 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 	cpuUsec, rxBytes, txBytes, readBytes, writeBytes := m.getUsageCounters(c)
 	usage := map[string]interface{}{
 		"memory_usage_bytes": int64(0),
+		"memory_total_bytes": int64(0),
 		"cpu_usage_usec":     cpuUsec,
 		"cpu_usage_pct":      0.0,
 		"disk_usage_bytes":   int64(0),
@@ -905,6 +1110,7 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 		"load1":              0.0,
 		"load5":              0.0,
 		"load15":             0.0,
+		"guest_metrics":      false,
 	}
 	if c.DiskImage != "" {
 		if info, err := os.Stat(c.DiskImage); err == nil {
@@ -926,7 +1132,103 @@ func (m *Manager) GetResourceUsage(id int) (map[string]interface{}, error) {
 		usage["disk_read_bps"] = rate.ReadBps
 		usage["disk_write_bps"] = rate.WriteBps
 	}
+	if c.Status == "running" && IsWindowsImage(c.Template) {
+		if metrics, err := m.windowsGuestResourceMetrics(c); err == nil {
+			vcpu := c.VCPU
+			if vcpu < 1 {
+				vcpu = 1
+			}
+			if metrics.MemoryUsageBytes > 0 {
+				usage["memory_usage_bytes"] = metrics.MemoryUsageBytes
+			}
+			if metrics.MemoryTotalBytes > 0 {
+				usage["memory_total_bytes"] = metrics.MemoryTotalBytes
+			}
+			usage["cpu_usage_pct"] = metrics.CPULoadPct * vcpu
+			usage["load1"] = metrics.Load1
+			usage["load5"] = metrics.Load5
+			usage["load15"] = metrics.Load15
+			usage["guest_metrics"] = true
+		}
+	}
 	return usage, nil
+}
+
+func (m *Manager) windowsGuestResourceMetrics(c *config.Container) (windowsGuestMetrics, error) {
+	if c == nil {
+		return windowsGuestMetrics{}, fmt.Errorf("container is nil")
+	}
+	name := c.VirshName()
+	windowsMetricsMu.Lock()
+	if cached, ok := windowsMetricsCache[name]; ok && time.Since(cached.UpdatedAt) < 10*time.Second {
+		windowsMetricsMu.Unlock()
+		return cached.Metrics, nil
+	}
+	windowsMetricsMu.Unlock()
+	if err := qemuGuestPing(name); err != nil {
+		return windowsGuestMetrics{}, err
+	}
+	script := windowsGuestMetricsPowerShell()
+	stdout, stderr, err := qemuGuestExecCommandOutput(name, "powershell.exe", []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script}, 20*time.Second)
+	if err != nil {
+		if strings.TrimSpace(stderr) != "" {
+			return windowsGuestMetrics{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr))
+		}
+		return windowsGuestMetrics{}, err
+	}
+	metrics, err := parseWindowsGuestMetrics(stdout)
+	if err != nil {
+		return windowsGuestMetrics{}, err
+	}
+	vcpu := c.VCPU
+	if vcpu < 1 {
+		vcpu = 1
+	}
+	loadEquivalent := (metrics.CPULoadPct / 100.0) * vcpu
+	metrics.Load1 = loadEquivalent
+	metrics.Load5 = loadEquivalent
+	metrics.Load15 = loadEquivalent
+
+	windowsMetricsMu.Lock()
+	windowsMetricsCache[name] = windowsGuestMetricsSnapshot{Metrics: metrics, UpdatedAt: time.Now()}
+	windowsMetricsMu.Unlock()
+	return metrics, nil
+}
+
+func windowsGuestMetricsPowerShell() string {
+	return `$ErrorActionPreference = 'Stop'
+$os = Get-CimInstance Win32_OperatingSystem
+$cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average
+$total = [int64]$os.TotalVisibleMemorySize * 1024
+$free = [int64]$os.FreePhysicalMemory * 1024
+$used = [Math]::Max([int64]0, $total - $free)
+$load = [double]0
+if ($null -ne $cpu.Average) { $load = [double]$cpu.Average }
+[pscustomobject]@{
+  memory_usage_bytes = $used
+  memory_total_bytes = $total
+  cpu_load_pct = $load
+} | ConvertTo-Json -Compress`
+}
+
+func parseWindowsGuestMetrics(stdout string) (windowsGuestMetrics, error) {
+	text := strings.TrimSpace(stdout)
+	start := strings.LastIndex(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return windowsGuestMetrics{}, fmt.Errorf("Windows guest metrics returned no JSON: %s", text)
+	}
+	var metrics windowsGuestMetrics
+	if err := json.Unmarshal([]byte(text[start:end+1]), &metrics); err != nil {
+		return windowsGuestMetrics{}, fmt.Errorf("invalid Windows guest metrics JSON: %w", err)
+	}
+	if metrics.CPULoadPct < 0 {
+		metrics.CPULoadPct = 0
+	}
+	if metrics.CPULoadPct > 100 {
+		metrics.CPULoadPct = 100
+	}
+	return metrics, nil
 }
 
 func (m *Manager) ListContainers(containers []config.Container) []config.Container {
@@ -939,12 +1241,55 @@ func (m *Manager) ListContainers(containers []config.Container) []config.Contain
 			containers[i].Status = status
 		}
 		if status == "running" {
-			if ip, err := m.GetContainerIP(containers[i].VirshName()); err == nil && ip != "" {
+			if _, err := m.RefreshVNCPort(containers[i].ID); err == nil {
+				if refreshed := config.FindContainer(containers[i].ID); refreshed != nil {
+					containers[i].VNCPort = refreshed.VNCPort
+				}
+			}
+			if ip, err := m.RefreshNetwork(containers[i].ID); err == nil && ip != "" {
 				containers[i].IP = ip
 			}
 		}
 	}
 	return containers
+}
+
+func (m *Manager) RefreshNetwork(id int) (string, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return "", fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return "", fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	ip, err := m.GetContainerIP(c.VirshName())
+	if err != nil || ip == "" {
+		return "", err
+	}
+	changed := c.IP != ip
+	c.IP = ip
+	if changed {
+		config.SaveConfig()
+	}
+	if c.Status == "running" && len(c.PortMappings) > 0 && shouldApplyPortMappings(id, changed) {
+		if err := lxc.NewManager().ApplyPortMappings(id); err != nil {
+			return ip, err
+		}
+	}
+	return ip, nil
+}
+
+func shouldApplyPortMappings(id int, force bool) bool {
+	portMapApplyMu.Lock()
+	defer portMapApplyMu.Unlock()
+	now := time.Now()
+	if !force {
+		if last, ok := lastPortMapApply[id]; ok && now.Sub(last) < time.Minute {
+			return false
+		}
+	}
+	lastPortMapApply[id] = now
+	return true
 }
 
 func (m *Manager) GetContainerStatus(name string) (string, error) {
@@ -982,9 +1327,18 @@ func (m *Manager) GetContainerIP(name string) (string, error) {
 	return "", fmt.Errorf("no IPv4 address found for %s", name)
 }
 
-func (m *Manager) validateHost() error {
-	for _, name := range []string{"virsh", "qemu-img", "cloud-localds"} {
+func (m *Manager) validateHost(skipCloudInit bool) error {
+	for _, name := range []string{"virsh", "qemu-img"} {
 		if err := requireCommand(name); err != nil {
+			return err
+		}
+	}
+	if skipCloudInit {
+		if err := requireAnyCommand("genisoimage", "mkisofs", "xorriso"); err != nil {
+			return fmt.Errorf("%w (needed to generate Windows unattended setup ISO)", err)
+		}
+	} else {
+		if err := requireCommand("cloud-localds"); err != nil {
 			return err
 		}
 	}
@@ -1004,16 +1358,55 @@ func requireCommand(name string) error {
 	return nil
 }
 
-func ensureDefaultNetwork() error {
-	if exec.Command("virsh", "net-info", "default").Run() != nil {
-		return fmt.Errorf("libvirt default network is required for KVM support")
-	}
-	if exec.Command("virsh", "net-info", "default").Run() == nil {
-		out, _ := exec.Command("virsh", "net-info", "default").Output()
-		if !strings.Contains(strings.ToLower(string(out)), "active:") || !strings.Contains(strings.ToLower(string(out)), "yes") {
-			_ = exec.Command("virsh", "net-start", "default").Run()
+func requireAnyCommand(names ...string) error {
+	for _, name := range names {
+		if _, err := exec.LookPath(name); err == nil {
+			return nil
 		}
-		_ = exec.Command("virsh", "net-autostart", "default").Run()
+	}
+	return fmt.Errorf("one of %s is required for KVM support", strings.Join(names, ", "))
+}
+
+func ensureDefaultNetwork() error {
+	// Ensure libvirtd is running
+	if err := exec.Command("systemctl", "start", "libvirtd").Run(); err != nil {
+		// Non-systemd systems may use a different init, try virsh connect
+		if exec.Command("virsh", "connect").Run() != nil {
+			return fmt.Errorf("libvirtd is not running and could not be started")
+		}
+	}
+	// Ensure default network is defined
+	if exec.Command("virsh", "net-info", "default").Run() != nil {
+		// Default network may not be defined; try to define it
+		netXML := `<network>
+  <name>default</name>
+  <bridge name='virbr0'/>
+  <forward mode='nat'/>
+  <ip address='192.168.122.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.122.2' end='192.168.122.254'/>
+    </dhcp>
+  </ip>
+</network>`
+		tmpFile := filepath.Join(os.TempDir(), "clicd-default-net.xml")
+		if err := os.WriteFile(tmpFile, []byte(netXML), 0644); err != nil {
+			return fmt.Errorf("failed to write default network XML: %v", err)
+		}
+		defer os.Remove(tmpFile)
+		if out, err := exec.Command("virsh", "net-define", tmpFile).CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to define libvirt default network: %v, output: %s", err, string(out))
+		}
+	}
+	// Start and autostart the default network
+	if out, err := exec.Command("virsh", "net-info", "default").Output(); err == nil {
+		if !strings.Contains(strings.ToLower(string(out)), "active:") || !strings.Contains(strings.ToLower(string(out)), "yes") {
+			if startOut, startErr := exec.Command("virsh", "net-start", "default").CombinedOutput(); startErr != nil {
+				return fmt.Errorf("failed to start libvirt default network: %v, output: %s", startErr, string(startOut))
+			}
+		}
+	}
+	if out, err := exec.Command("virsh", "net-autostart", "default").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to set autostart for libvirt default network: %v, output: %s", err, string(out))
 	}
 	return nil
 }
@@ -1032,6 +1425,247 @@ func createOverlayDisk(base, target string, diskGB int) error {
 	}
 	_ = os.Chmod(target, 0644)
 	return nil
+}
+
+func ensureVirtioWinISO() error {
+	virtioPath := virtioWinISOPath()
+	if _, err := os.Stat(virtioPath); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(CacheDir(), 0755); err != nil {
+		return err
+	}
+	virtioURL := "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+	tmp := virtioPath + ".tmp"
+	_ = os.Remove(tmp)
+	if err := downloadFile(virtioURL, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("failed to download virtio-win.iso: %v", err)
+	}
+	if err := os.Rename(tmp, virtioPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chmod(virtioPath, 0644)
+	return nil
+}
+
+func createEmptyDisk(target string, diskGB int) error {
+	if diskGB < 1 {
+		diskGB = 5
+	}
+	cmd := exec.Command("qemu-img", "create", "-f", "qcow2", target, fmt.Sprintf("%dG", diskGB))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create empty disk failed: %v, output: %s", err, string(output))
+	}
+	_ = os.Chmod(target, 0644)
+	return nil
+}
+
+func createWindowsUnattendISO(target, hostname, adminPassword, ipv6 string) error {
+	tool := firstAvailableCommand("genisoimage", "mkisofs", "xorriso")
+	if tool == "" {
+		return fmt.Errorf("one of genisoimage, mkisofs, xorriso is required for Windows unattended setup")
+	}
+	dir := filepath.Join(filepath.Dir(target), "unattend")
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	answerPath := filepath.Join(dir, "Autounattend.xml")
+	setupScriptsDir := filepath.Join(dir, "$OEM$", "$$", "Setup", "Scripts")
+	clicdDir := filepath.Join(dir, "$OEM$", "$1", "CLICD")
+	for _, path := range []string{setupScriptsDir, clicdDir} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(answerPath, []byte(windowsAutounattendXML(hostname, adminPassword)), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(setupScriptsDir, "SetupComplete.cmd"), []byte(windowsSetupCompleteCMD()), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(clicdDir, "FirstLogon.ps1"), []byte(windowsFirstLogonPowerShell(adminPassword, ipv6)), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SetupComplete.cmd"), []byte(windowsSetupCompleteCMD()), 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "FirstLogon.ps1"), []byte(windowsFirstLogonPowerShell(adminPassword, ipv6)), 0600); err != nil {
+		return err
+	}
+	_ = os.Remove(target)
+	var cmd *exec.Cmd
+	if tool == "xorriso" {
+		cmd = exec.Command(tool, "-as", "mkisofs", "-quiet", "-J", "-r", "-V", "CIDUNATTEND", "-o", target, dir)
+	} else {
+		cmd = exec.Command(tool, "-quiet", "-J", "-r", "-V", "CIDUNATTEND", "-o", target, dir)
+	}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s failed: %v, output: %s", tool, err, string(output))
+	}
+	_ = os.Chmod(target, 0644)
+	return nil
+}
+
+func firstAvailableCommand(names ...string) string {
+	for _, name := range names {
+		if _, err := exec.LookPath(name); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+func windowsAutounattendXML(hostname, adminPassword string) string {
+	if strings.TrimSpace(hostname) == "" {
+		hostname = "clicd-win"
+	}
+	hostname = sanitizeWindowsComputerName(hostname)
+	setupCommand := `cmd.exe /c if exist C:\CLICD\FirstLogon.ps1 (powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CLICD\FirstLogon.ps1) else (for %%d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %%d:\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File %%d:\FirstLogon.ps1)`
+	return fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+      <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <DiskConfiguration>
+        <Disk wcm:action="add"><DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk><CreatePartitions><CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Size>350</Size></CreatePartition><CreatePartition wcm:action="add"><Order>2</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition></CreatePartitions><ModifyPartitions><ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Label>System</Label><Format>NTFS</Format><Active>true</Active></ModifyPartition><ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID><Label>Windows</Label><Letter>C</Letter><Format>NTFS</Format></ModifyPartition></ModifyPartitions></Disk>
+        <WillShowUI>OnError</WillShowUI>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>1</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo><DiskID>0</DiskID><PartitionID>2</PartitionID></InstallTo>
+          <WillShowUI>OnError</WillShowUI>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>CLICD</FullName>
+        <Organization>CLICD</Organization>
+      </UserData>
+    </component>
+  </settings>
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <ComputerName>%s</ComputerName>
+      <TimeZone>UTC</TimeZone>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <AutoLogon><Password><Value>%s</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><Username>Administrator</Username><LogonCount>1</LogonCount></AutoLogon>
+      <UserAccounts><AdministratorPassword><Value>%s</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+      <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>CLICD Windows initialization</Description><CommandLine>%s</CommandLine></SynchronousCommand></FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>
+`, xmlEscape(hostname), xmlEscape(adminPassword), xmlEscape(adminPassword), xmlEscape(setupCommand))
+}
+
+func sanitizeWindowsComputerName(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
+		return "clicd-win"
+	}
+	if len(result) > 15 {
+		result = result[:15]
+	}
+	return result
+}
+
+func windowsSetupCompleteCMD() string {
+	return `@echo off
+if not exist C:\CLICD mkdir C:\CLICD
+if exist C:\CLICD\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CLICD\FirstLogon.ps1
+exit /b 0
+`
+}
+
+func windowsFirstLogonPowerShell(adminPassword, ipv6 string) string {
+	commands := []string{
+		"$ErrorActionPreference='Continue'",
+		"$ProgressPreference='SilentlyContinue'",
+		"New-Item -ItemType Directory -Force -Path 'C:\\CLICD' | Out-Null",
+		"Start-Transcript -Path 'C:\\CLICD\\init.log' -Append | Out-Null",
+		"try {",
+		"net user Administrator " + shellQuoteWindows(adminPassword) + " /active:yes",
+		"Set-LocalUser -Name 'Administrator' -PasswordNeverExpires $true -ErrorAction SilentlyContinue",
+		"Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force",
+		"$iface=$null",
+		"for ($i=0; $i -lt 60 -and -not $iface; $i++) { $iface=Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } | Sort-Object ifIndex | Select-Object -First 1; if (-not $iface) { Start-Sleep -Seconds 5 } }",
+		"$iface=Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } | Sort-Object ifIndex | Select-Object -First 1",
+		"if ($iface) { Set-NetIPInterface -InterfaceIndex $iface.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue }",
+		"if ($iface) { Set-DnsClientServerAddress -InterfaceIndex $iface.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue }",
+		"Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private -ErrorAction SilentlyContinue",
+		"Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name fDenyTSConnections -Value 0",
+		"Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name UserAuthentication -Value 1",
+		"Set-Service -Name TermService -StartupType Automatic",
+		"Start-Service -Name TermService",
+		"Enable-NetFirewallRule -Name 'RemoteDesktop*' -ErrorAction SilentlyContinue",
+		"Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue",
+		"netsh advfirewall firewall set rule group=\"remote desktop\" new enable=Yes | Out-Null",
+		"New-NetFirewallRule -DisplayName 'CLICD RDP TCP 3389' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
+		"New-NetFirewallRule -DisplayName 'CLICD RDP UDP 3389' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
+		"$virtio=Get-Volume | Where-Object DriveType -eq 'CD-ROM' | ForEach-Object { $d=$_.DriveLetter; if ($d) { Get-ChildItem ($d+':\\') -Recurse -Filter 'qemu-ga-*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1 } } | Select-Object -First 1",
+		"if ($virtio) { Start-Process msiexec.exe -ArgumentList '/i', $virtio.FullName, '/qn' -Wait }",
+		"Get-Service QEMU-GA,qemu-ga -ErrorAction SilentlyContinue | Set-Service -StartupType Automatic",
+		"Start-Service QEMU-GA,qemu-ga -ErrorAction SilentlyContinue",
+	}
+	if strings.TrimSpace(ipv6) != "" {
+		commands = append(commands,
+			windowsIPv6PowerShell(strings.TrimSpace(ipv6)),
+		)
+	}
+	commands = append(commands,
+		"New-Item -ItemType File -Force -Path 'C:\\CLICD\\init.done' | Out-Null",
+		"} finally { Stop-Transcript | Out-Null }",
+	)
+	return strings.Join(commands, "\r\n") + "\r\n"
+}
+
+func windowsIPv6PowerShell(ipv6 string) string {
+	ipv6 = strings.TrimSpace(ipv6)
+	if ipv6 == "" {
+		return ""
+	}
+	return strings.Join([]string{
+		"$iface=$null",
+		"for ($i=0; $i -lt 60 -and -not $iface; $i++) { $iface=Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.HardwareInterface } | Sort-Object ifIndex | Select-Object -First 1; if (-not $iface) { Start-Sleep -Seconds 5 } }",
+		"if ($iface) {",
+		"  Get-NetIPAddress -InterfaceIndex $iface.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq '" + ipv6 + "' } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue",
+		"  New-NetIPAddress -IPAddress '" + ipv6 + "' -PrefixLength 128 -InterfaceIndex $iface.ifIndex -SkipAsSource:$false -ErrorAction SilentlyContinue | Out-Null",
+		"  Get-NetRoute -InterfaceIndex $iface.ifIndex -DestinationPrefix '::/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue",
+		"  New-NetRoute -DestinationPrefix '::/0' -InterfaceIndex $iface.ifIndex -NextHop '" + ipv6GatewayLinkLocal + "' -RouteMetric 100 -ErrorAction SilentlyContinue | Out-Null",
+		"  Set-DnsClientServerAddress -InterfaceIndex $iface.ifIndex -ServerAddresses @('2001:4860:4860::8888','2606:4700:4700::1111') -ErrorAction SilentlyContinue",
+		"}",
+	}, "\r\n")
+}
+
+func shellQuoteWindows(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
 func createSeedISO(seedPath, instanceID, hostname, password, mac, ipv6 string) error {
@@ -1182,8 +1816,117 @@ func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string,
 </domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, xmlEscape(diskPath), iotune, xmlEscape(seedPath), xmlEscape(mac), bandwidth)
 }
 
+func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, winISOPath, unattendISOPath, mac string, ioSpeedMBps int, networkBWMbps int) string {
+	if vcpu < 1 {
+		vcpu = 1
+	}
+	if ramMB < 2048 {
+		ramMB = 2048
+	}
+	iotune := ""
+	if ioSpeedMBps > 0 {
+		bytesPerSecond := int64(ioSpeedMBps) * 1024 * 1024
+		iotune = fmt.Sprintf(`
+      <iotune>
+        <total_bytes_sec>%d</total_bytes_sec>
+      </iotune>`, bytesPerSecond)
+	}
+	bandwidth := ""
+	if networkBWMbps > 0 {
+		averageKiB := networkBWMbps * 128
+		bandwidth = fmt.Sprintf(`
+      <bandwidth>
+        <inbound average='%d'/>
+        <outbound average='%d'/>
+      </bandwidth>`, averageKiB, averageKiB)
+	}
+	virtioWinISO := virtioWinISOPath()
+	unattendDisk := ""
+	if strings.TrimSpace(unattendISOPath) != "" {
+		unattendDisk = fmt.Sprintf(`
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='hdd' bus='ide'/>
+      <readonly/>
+    </disk>`, xmlEscape(unattendISOPath))
+	}
+	return fmt.Sprintf(`<domain type='kvm'>
+  <name>%s</name>
+  %s
+  <memory unit='MiB'>%d</memory>
+  <currentMemory unit='MiB'>%d</currentMemory>
+  <vcpu placement='static' current='%d'>%d</vcpu>
+  <cputune><shares>2048</shares></cputune>
+  <os>
+    <type arch='x86_64' machine='pc'>hvm</type>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <hyperv mode='custom'>
+      <relaxed state='on'/>
+      <vapic state='on'/>
+      <spinlocks state='on' retries='8191'/>
+    </hyperv>
+  </features>
+  <cpu mode='host-passthrough' check='none'>
+    <topology sockets='1' cores='%d' threads='1'/>
+  </cpu>
+  <clock offset='localtime'>
+    <timer name='hypervclock' present='yes'/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none'/>
+      <source file='%s'/>
+      <target dev='sda' bus='sata'/>
+      <boot order='2'/>%s
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='hdb' bus='ide'/>
+      <readonly/>
+      <boot order='1'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='hdc' bus='ide'/>
+      <readonly/>
+    </disk>%s
+    <interface type='network'>
+      <mac address='%s'/>
+      <source network='default'/>
+      <model type='e1000e'/>%s
+    </interface>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <input type='tablet' bus='usb'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
+    <video><model type='qxl'/></video>
+  </devices>
+</domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, vcpu,
+		xmlEscape(diskPath), iotune,
+		xmlEscape(winISOPath), xmlEscape(virtioWinISO), unattendDisk, xmlEscape(mac), bandwidth)
+}
+
 func xmlEscape(value string) string {
 	return html.EscapeString(value)
+}
+
+func existingWindowsUnattendISO(instanceDir string) string {
+	path := filepath.Join(instanceDir, "unattend.iso")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
 }
 
 func domainUUIDXML(name string) string {
@@ -1209,6 +1952,81 @@ func undefineDomain(name string) error {
 		return nil
 	}
 	return exec.Command("virsh", "undefine", name).Run()
+}
+
+func (m *Manager) RefreshVNCPort(id int) (int, error) {
+	c := config.FindContainer(id)
+	if c == nil {
+		return 0, fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return 0, fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	port := getVNCPort(c.VirshName())
+	if port <= 0 {
+		return 0, fmt.Errorf("VNC display is not available for %s", c.VirshName())
+	}
+	if c.VNCPort != port {
+		c.VNCPort = port
+		config.SaveConfig()
+	}
+	return port, nil
+}
+
+func normalizeKVMManagementPortMapping(c *config.Container) {
+	if c == nil || !c.IsKVM() {
+		return
+	}
+	hostPort := c.SSHPort
+	if hostPort <= 0 {
+		hostPort = config.AllocateSSHPort()
+		c.SSHPort = hostPort
+	}
+	desiredPort := 22
+	description := "SSH"
+	if IsWindowsImage(c.Template) {
+		desiredPort = 3389
+		description = "RDP"
+	}
+	mapping := config.PortMapping{
+		ContainerPort: desiredPort,
+		HostPort:      hostPort,
+		Protocol:      "tcp",
+		Description:   description,
+	}
+	for i, pm := range c.PortMappings {
+		if strings.EqualFold(pm.Description, "SSH") || strings.EqualFold(pm.Description, "RDP") || pm.ContainerPort == 22 || pm.ContainerPort == 3389 || pm.HostPort == hostPort {
+			if pm.HostPort > 0 {
+				mapping.HostPort = pm.HostPort
+				c.SSHPort = pm.HostPort
+			}
+			c.PortMappings[i] = mapping
+			return
+		}
+	}
+	c.PortMappings = append([]config.PortMapping{mapping}, c.PortMappings...)
+}
+
+func getVNCPort(name string) int {
+	out, err := exec.Command("virsh", "domdisplay", name).Output()
+	if err != nil {
+		return 0
+	}
+	display := strings.TrimSpace(string(out))
+	// virsh domdisplay returns "vnc://127.0.0.1:0" or "vnc://127.0.0.1:5901"
+	if idx := strings.LastIndex(display, ":"); idx >= 0 {
+		portStr := display[idx+1:]
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return 0
+		}
+		// Port 0 means VNC display 0 → actual port 5900
+		if port < 5900 {
+			port += 5900
+		}
+		return port
+	}
+	return 0
 }
 
 func firstIPv4(output string) string {
@@ -1269,6 +2087,10 @@ func (m *Manager) EnsureSSH(id int) error {
 	}
 	if !c.IsKVM() {
 		return fmt.Errorf("container is not a KVM VM: %d", id)
+	}
+	// Windows VMs are managed via VNC, not SSH
+	if IsWindowsImage(c.Template) {
+		return nil
 	}
 	status, _ := m.GetContainerStatus(c.VirshName())
 	if status != "running" {
@@ -1418,16 +2240,26 @@ fi
 ssh-keygen -A >/dev/null 2>&1 || true
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true
+	systemctl enable --now getty@tty1.service >/dev/null 2>&1 || true
+	systemctl restart getty@tty1.service >/dev/null 2>&1 || true
 	systemctl restart ssh >/dev/null 2>&1 || systemctl restart sshd >/dev/null 2>&1 || systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
 fi
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add sshd default >/dev/null 2>&1 || true
 	rc-update add qemu-guest-agent default >/dev/null 2>&1 || rc-update add qemu-ga default >/dev/null 2>&1 || true
+	rc-update add agetty.tty1 default >/dev/null 2>&1 || true
 	rc-service qemu-guest-agent start >/dev/null 2>&1 || rc-service qemu-ga start >/dev/null 2>&1 || true
+	rc-service agetty.tty1 restart >/dev/null 2>&1 || true
 	rc-service sshd restart >/dev/null 2>&1 || /etc/init.d/sshd restart >/dev/null 2>&1 || true
 fi
 service qemu-guest-agent start >/dev/null 2>&1 || service qemu-ga start >/dev/null 2>&1 || true
 service ssh restart >/dev/null 2>&1 || service sshd restart >/dev/null 2>&1 || true
+if command -v chvt >/dev/null 2>&1; then
+	chvt 1 >/dev/null 2>&1 || true
+fi
+if [ -w /dev/tty1 ]; then
+	printf '\nCLICD VNC console is ready. Press Enter for login prompt.\n' >/dev/tty1 || true
+fi
 `
 }
 
@@ -1444,21 +2276,30 @@ func qemuGuestPing(name string) error {
 }
 
 func qemuGuestExec(name string, script string, timeout time.Duration) error {
+	return qemuGuestExecCommand(name, "/bin/sh", []string{"-lc", script}, timeout)
+}
+
+func qemuGuestExecCommand(name string, path string, args []string, timeout time.Duration) error {
+	_, _, err := qemuGuestExecCommandOutput(name, path, args, timeout)
+	return err
+}
+
+func qemuGuestExecCommandOutput(name string, path string, args []string, timeout time.Duration) (string, string, error) {
 	req := map[string]interface{}{
 		"execute": "guest-exec",
 		"arguments": map[string]interface{}{
-			"path":           "/bin/sh",
-			"arg":            []string{"-lc", script},
+			"path":           path,
+			"arg":            args,
 			"capture-output": true,
 		},
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	out, err := exec.Command("virsh", "qemu-agent-command", name, string(payload)).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("guest-exec failed: %v, output: %s", err, string(out))
+		return "", "", fmt.Errorf("guest-exec failed: %v, output: %s", err, string(out))
 	}
 	var started struct {
 		Return struct {
@@ -1466,14 +2307,14 @@ func qemuGuestExec(name string, script string, timeout time.Duration) error {
 		} `json:"return"`
 	}
 	if err := json.Unmarshal(out, &started); err != nil || started.Return.PID <= 0 {
-		return fmt.Errorf("guest-exec returned invalid response: %s", string(out))
+		return "", "", fmt.Errorf("guest-exec returned invalid response: %s", string(out))
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		statusReq := fmt.Sprintf(`{"execute":"guest-exec-status","arguments":{"pid":%d}}`, started.Return.PID)
 		statusOut, err := exec.Command("virsh", "qemu-agent-command", name, statusReq).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("guest-exec-status failed: %v, output: %s", err, string(statusOut))
+			return "", "", fmt.Errorf("guest-exec-status failed: %v, output: %s", err, string(statusOut))
 		}
 		var status struct {
 			Return struct {
@@ -1484,20 +2325,22 @@ func qemuGuestExec(name string, script string, timeout time.Duration) error {
 			} `json:"return"`
 		}
 		if err := json.Unmarshal(statusOut, &status); err != nil {
-			return fmt.Errorf("guest-exec-status returned invalid response: %s", string(statusOut))
+			return "", "", fmt.Errorf("guest-exec-status returned invalid response: %s", string(statusOut))
 		}
 		if !status.Return.Exited {
 			time.Sleep(3 * time.Second)
 			continue
 		}
+		stdoutBytes, _ := base64.StdEncoding.DecodeString(status.Return.OutData)
+		stderrBytes, _ := base64.StdEncoding.DecodeString(status.Return.ErrData)
+		stdout := string(stdoutBytes)
+		stderr := string(stderrBytes)
 		if status.Return.Exitcode == 0 {
-			return nil
+			return stdout, stderr, nil
 		}
-		stdout, _ := base64.StdEncoding.DecodeString(status.Return.OutData)
-		stderr, _ := base64.StdEncoding.DecodeString(status.Return.ErrData)
-		return fmt.Errorf("guest SSH setup exited with %d, stdout: %s, stderr: %s", status.Return.Exitcode, string(stdout), string(stderr))
+		return stdout, stderr, fmt.Errorf("guest command exited with %d, stdout: %s, stderr: %s", status.Return.Exitcode, stdout, stderr)
 	}
-	return fmt.Errorf("timed out waiting for guest SSH setup after %s", timeout)
+	return "", "", fmt.Errorf("timed out waiting for guest command after %s", timeout)
 }
 
 func (m *Manager) getUsageCounters(c *config.Container) (uint64, uint64, uint64, uint64, uint64) {
@@ -1528,6 +2371,47 @@ func (m *Manager) StartIPv6Guard() {
 			m.applyIPv6Guards()
 		}
 	}()
+}
+
+func (m *Manager) StartNetworkSyncMonitor() {
+	go func() {
+		m.syncRunningNetworks()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.syncRunningNetworks()
+		}
+	}()
+}
+
+func (m *Manager) syncRunningNetworks() {
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if !c.IsKVM() {
+			continue
+		}
+		status, err := m.GetContainerStatus(c.VirshName())
+		if err == nil && status != "" && c.Status != status {
+			c.Status = status
+			config.SaveConfig()
+		}
+		if status != "running" && c.Status != "running" {
+			continue
+		}
+		if _, err := m.RefreshVNCPort(c.ID); err != nil {
+			fmt.Printf("Warning: failed to sync VNC port for %s: %v\n", c.Name, err)
+		}
+		if ip, err := m.RefreshNetwork(c.ID); err == nil && ip != "" {
+			c.IP = ip
+		} else if err != nil {
+			fmt.Printf("Warning: failed to sync KVM network for %s: %v\n", c.Name, err)
+		}
+		if c.IPv6 != "" {
+			if err := m.applyIPv6Runtime(c); err != nil {
+				fmt.Printf("Warning: failed to sync KVM IPv6 for %s: %v\n", c.Name, err)
+			}
+		}
+	}
 }
 
 func (m *Manager) applyIPv6Guards() {
@@ -1906,11 +2790,24 @@ func (m *Manager) applyIPv6Runtime(c *config.Container) error {
 	}
 	if c.Status == "running" {
 		if err := m.applyGuestIPv6Runtime(c); err != nil {
-			fmt.Printf("Warning: failed to apply KVM guest IPv6 for %s: %v\n", c.Name, err)
+			if shouldLogIPv6GuestWarning(c.ID) {
+				fmt.Printf("Warning: failed to apply KVM guest IPv6 for %s: %v\n", c.Name, err)
+			}
 		}
 	}
 	ensureKVMIPv6NAT66(c.IPv6, c.IPv6Interface)
 	return nil
+}
+
+func shouldLogIPv6GuestWarning(id int) bool {
+	ipv6WarnMu.Lock()
+	defer ipv6WarnMu.Unlock()
+	now := time.Now()
+	if last, ok := lastIPv6GuestWarn[id]; ok && now.Sub(last) < 5*time.Minute {
+		return false
+	}
+	lastIPv6GuestWarn[id] = now
+	return true
 }
 
 func (m *Manager) applyIPv6HostRuntime(c *config.Container) error {
@@ -1931,7 +2828,10 @@ func (m *Manager) applyIPv6HostRuntime(c *config.Container) error {
 	runQuiet("sysctl", "-w", "net.ipv6.conf."+c.IPv6Interface+".proxy_ndp=1")
 	bridge := "virbr0"
 	runQuiet("sysctl", "-w", "net.ipv6.conf."+bridge+".disable_ipv6=0")
-	runQuiet("ip", "-6", "addr", "add", ipv6GatewayLinkLocal+"/64", "dev", bridge)
+	runQuiet("sysctl", "-w", "net.ipv6.conf."+bridge+".forwarding=1")
+	runQuiet("sysctl", "-w", "net.ipv6.conf."+bridge+".proxy_ndp=1")
+	runQuiet("ip", "link", "set", bridge, "up")
+	runQuiet("ip", "-6", "addr", "replace", ipv6GatewayLinkLocal+"/64", "dev", bridge)
 	if out, err := exec.Command("ip", "-6", "route", "replace", c.IPv6+"/128", "dev", bridge).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to add IPv6 VM route: %v, output: %s", err, string(out))
 	}
@@ -2081,11 +2981,25 @@ func (m *Manager) applyGuestIPv6(c *config.Container) error {
 	if c == nil || c.IPv6 == "" {
 		return nil
 	}
+	if IsWindowsImage(c.Template) {
+		return m.applyWindowsGuestIPv6(c)
+	}
 	script := kvmIPv6SetupScript(c.IPv6)
 	if err := qemuGuestPing(c.VirshName()); err != nil {
 		return err
 	}
 	return qemuGuestExec(c.VirshName(), script, 60*time.Second)
+}
+
+func (m *Manager) applyWindowsGuestIPv6(c *config.Container) error {
+	if c == nil || c.IPv6 == "" {
+		return nil
+	}
+	if err := qemuGuestPing(c.VirshName()); err != nil {
+		return err
+	}
+	script := windowsIPv6PowerShell(c.IPv6)
+	return qemuGuestExecCommand(c.VirshName(), "powershell.exe", []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script}, 60*time.Second)
 }
 
 func (m *Manager) applyGuestIPv6Runtime(c *config.Container) error {
@@ -2106,6 +3020,9 @@ func (m *Manager) applyGuestIPv6Runtime(c *config.Container) error {
 func (m *Manager) applyGuestIPv6OverSSH(c *config.Container) error {
 	if c == nil || c.IPv6 == "" {
 		return nil
+	}
+	if IsWindowsImage(c.Template) {
+		return fmt.Errorf("SSH IPv6 fallback is not supported for Windows guests")
 	}
 	if c.IP == "" || c.SSHPassword == "" {
 		return fmt.Errorf("missing guest IPv4 or SSH password")
@@ -2257,6 +3174,43 @@ func generateRandomString(length int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())[:length]
 	}
 	return hex.EncodeToString(b)[:length]
+}
+
+func generateWindowsPassword() string {
+	upper := "ABCDEFGHJKLMNPQRSTUVWXYZ"
+	lower := "abcdefghijkmnopqrstuvwxyz"
+	digits := "23456789"
+	symbols := "!@#$%*-_+="
+	all := upper + lower + digits + symbols
+	chars := []byte{
+		randomChar(upper),
+		randomChar(lower),
+		randomChar(digits),
+		randomChar(symbols),
+	}
+	for len(chars) < 20 {
+		chars = append(chars, randomChar(all))
+	}
+	for i := range chars {
+		j := secureRandomInt(len(chars))
+		chars[i], chars[j] = chars[j], chars[i]
+	}
+	return string(chars)
+}
+
+func randomChar(chars string) byte {
+	return chars[secureRandomInt(len(chars))]
+}
+
+func secureRandomInt(max int) int {
+	if max <= 1 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return int(time.Now().UnixNano() % int64(max))
+	}
+	return int(n.Int64())
 }
 
 func shellQuote(value string) string {

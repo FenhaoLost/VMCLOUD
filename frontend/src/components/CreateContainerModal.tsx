@@ -48,7 +48,10 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
       .then((res) => {
         const data = res.data.data || []
         setTemplates(data)
-        setForm((prev) => ({ ...prev, template_id: data.some((item) => item.id === prev.template_id) ? prev.template_id : (data[0]?.id || '') }))
+        setForm((prev) => {
+          const templateID = data.some((item) => item.id === prev.template_id) ? prev.template_id : (data[0]?.id || '')
+          return applyTemplateDefaults({ ...prev, template_id: templateID })
+        })
       })
       .catch(console.error)
 
@@ -190,14 +193,14 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => setForm((prev) => ({ ...prev, virtualization: 'lxc', template_id: '' }))}
+                onClick={() => setForm((prev) => applyTemplateDefaults({ ...prev, virtualization: 'lxc', template_id: '' }))}
                 className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${form.virtualization === 'lxc' ? 'border-black bg-black text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
               >
                 LXC 容器
               </button>
               <button
                 type="button"
-                onClick={() => setForm((prev) => ({ ...prev, virtualization: 'kvm', template_id: '' }))}
+                onClick={() => setForm((prev) => applyTemplateDefaults({ ...prev, virtualization: 'kvm', template_id: '' }))}
                 className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${form.virtualization === 'kvm' ? 'border-black bg-black text-white' : 'border-gray-300 text-gray-700 hover:bg-gray-50'}`}
               >
                 KVM 虚拟机
@@ -213,7 +216,7 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
             ) : (
             <select
               value={form.template_id}
-              onChange={(event) => setForm({ ...form, template_id: event.target.value })}
+              onChange={(event) => setForm(applyTemplateDefaults({ ...form, template_id: event.target.value }))}
               className={inputClass}
             >
               {templates.map((template) => (
@@ -223,6 +226,7 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
               ))}
             </select>
             )}
+
           </Field>
 
           <label className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${ipv6Available ? 'border-gray-200 bg-white' : 'border-gray-200 bg-gray-50 text-gray-400'}`}>
@@ -324,7 +328,7 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
             />
             <div className="mt-2 flex flex-wrap gap-1.5">
               <span className="inline-flex px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-mono">
-                SSH: {sshPortPreview} -&gt; 22
+                {isWindowsTemplate(form.template_id) ? 'RDP' : 'SSH'}: {sshPortPreview} -&gt; {isWindowsTemplate(form.template_id) ? 3389 : 22}
               </span>
               {autoPorts.map((port) => (
                 <span key={port} className="inline-flex px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs font-mono">
@@ -435,7 +439,10 @@ function NumberInput({
 
 function validateResourceInputs(form: CreateContainerRequest, maxVCPU: number, maxRAMMB?: number, maxDiskGB?: number) {
   const errors: Partial<Record<'vcpu' | 'ram_mb' | 'disk_gb', string>> = {}
-  const minVCPU = form.virtualization === 'kvm' ? 1 : 0.25
+  const windows = isWindowsTemplate(form.template_id)
+  const minVCPU = windows ? 2 : (form.virtualization === 'kvm' ? 1 : 0.25)
+  const minRAMMB = windows ? 2048 : 128
+  const minDiskGB = windows ? 30 : 1
 
   if (!Number.isFinite(form.vcpu)) {
     errors.vcpu = '请输入 vCPU'
@@ -449,16 +456,16 @@ function validateResourceInputs(form: CreateContainerRequest, maxVCPU: number, m
 
   if (!Number.isFinite(form.ram_mb)) {
     errors.ram_mb = '请输入内存'
-  } else if (form.ram_mb < 128) {
-    errors.ram_mb = '不能小于 128 MB'
+  } else if (form.ram_mb < minRAMMB) {
+    errors.ram_mb = `不能小于 ${minRAMMB} MB`
   } else if (maxRAMMB && form.ram_mb > maxRAMMB) {
     errors.ram_mb = `不能大于 ${maxRAMMB} MB`
   }
 
   if (!Number.isFinite(form.disk_gb)) {
     errors.disk_gb = '请输入磁盘'
-  } else if (form.disk_gb < 1) {
-    errors.disk_gb = '不能小于 1 GB'
+  } else if (form.disk_gb < minDiskGB) {
+    errors.disk_gb = `不能小于 ${minDiskGB} GB`
   } else if (maxDiskGB && form.disk_gb > maxDiskGB) {
     errors.disk_gb = `不能大于 ${maxDiskGB} GB`
   }
@@ -467,13 +474,29 @@ function validateResourceInputs(form: CreateContainerRequest, maxVCPU: number, m
 }
 
 function normalizeCreateForm(form: CreateContainerRequest): CreateContainerRequest {
+  const normalized = applyTemplateDefaults(form)
+  return {
+    ...normalized,
+    vcpu: normalized.virtualization === 'kvm' ? Math.round(normalized.vcpu) : normalizeLXCvCPU(normalized.vcpu),
+    ram_mb: Math.round(normalized.ram_mb),
+    disk_gb: Math.round(normalized.disk_gb),
+    snapshot_limit: clampInt(normalized.snapshot_limit, 1, undefined, 3),
+  }
+}
+
+function applyTemplateDefaults(form: CreateContainerRequest): CreateContainerRequest {
+  if (!isWindowsTemplate(form.template_id)) return form
   return {
     ...form,
-    vcpu: form.virtualization === 'kvm' ? Math.round(form.vcpu) : normalizeLXCvCPU(form.vcpu),
-    ram_mb: Math.round(form.ram_mb),
-    disk_gb: Math.round(form.disk_gb),
-    snapshot_limit: clampInt(form.snapshot_limit, 1, undefined, 3),
+    virtualization: 'kvm',
+    vcpu: Math.max(2, Math.round(Number.isFinite(form.vcpu) ? form.vcpu : 2)),
+    ram_mb: Math.max(2048, Math.round(Number.isFinite(form.ram_mb) ? form.ram_mb : 2048)),
+    disk_gb: Math.max(30, Math.round(Number.isFinite(form.disk_gb) ? form.disk_gb : 30)),
   }
+}
+
+function isWindowsTemplate(templateID: string) {
+  return templateID.toLowerCase().includes('windows')
 }
 
 function normalizeLXCvCPU(value: number) {

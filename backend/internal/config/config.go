@@ -58,6 +58,13 @@ type AuditLog struct {
 	Error     string `json:"error,omitempty"`
 }
 
+type VMReadinessCheck struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
 // Container represents an LXC container configuration
 type Container struct {
 	ID                            int           `json:"id"`

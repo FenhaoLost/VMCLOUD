@@ -177,6 +177,10 @@ func getContainer(w http.ResponseWriter, r *http.Request, id int) {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
 		return
 	}
+	if c.IsKVM() && c.Status == "running" {
+		_, _ = kvmManager.RefreshVNCPort(c.ID)
+		_, _ = kvmManager.RefreshNetwork(c.ID)
+	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: c})
 }
 
