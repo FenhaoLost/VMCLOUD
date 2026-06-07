@@ -53,6 +53,28 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
 ![alt text](/img/image-1.png)
 ![alt text](/img/image-2.png)
 
+
+## Disclaimer/免责声明
+
+This open-source software does not distribute Windows system images, nor does it provide any means to bypass or circumvent Windows activation mechanisms.
+
+All download links provided within the software point to resources officially supplied by Microsoft. Users of this software are responsible for obtaining the appropriate licenses from Microsoft before using any Windows operating system downloaded through these links. This project does not bypass activation requirements for installed systems, nor does it assume any responsibility for the consequences of users' actions when using this software.
+
+This open-source software is intended solely for educational purposes, specifically for learning the principles of LXC and KVM. The copyright for the Windows logo and related icons belongs to Microsoft/Windows.
+
+本开源软件不提供任何 Windows 操作系统镜像的分发服务，也不包含任何绕过、破解或免除 Windows 激活机制的功能。
+
+软件内涉及的 Windows 系统下载链接均由微软官方提供。使用者在下载、安装和使用相关 Windows 系统时，应自行向微软或其授权渠道购买并获得相应的软件许可。本项目不会对安装后的 Windows 系统进行任何形式的激活绕过、破解或免激活处理。
+
+对于使用者因使用本软件而产生的任何行为及其后果，包括但不限于软件许可、系统使用、数据丢失、法律责任或其他相关问题，本项目及其开发者不承担任何责任。
+
+本开源软件仅供学习和研究 LXC、KVM 等虚拟化技术原理之目的使用，不得用于任何违反适用法律法规、软件许可协议或第三方权益的行为。
+
+本软件中涉及的 Windows 名称、标识、图标及相关知识产权均归 Microsoft Corporation 及其权利人所有。本项目与微软公司不存在任何关联、授权或合作关系。
+## Thanks/鸣谢
+
+- [Linux.do](https://linux.do) — 一个充满灵感的科技社区
+
 ## Star History
 
 <a href="https://www.star-history.com/?repos=MengMengCode%2FCLICD&type=date&legend=top-left">
@@ -62,7 +84,3 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=MengMengCode/CLICD&type=date&legend=top-left" />
  </picture>
 </a>
-
-## 鸣谢
-
-- [Linux.do](https://linux.do) — 一个充满灵感的科技社区

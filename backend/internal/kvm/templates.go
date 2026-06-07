@@ -73,7 +73,7 @@ func GetImages() []Image {
 		{
 			ID: "kvm-windows-10", Name: "Windows 10 KVM",
 			Distro: "windows", Release: "10", Arch: "amd64",
-			Description: "Windows ISO for KVM (automatic unattended install from image index 1, network, Administrator password, RDP, firewall, and QEMU Guest Agent initialization)",
+			Description: "Windows 10 Enterprise LTSC Evaluation",
 			URL:         "https://go.microsoft.com/fwlink/?LinkID=2195404",
 		},
 	}
