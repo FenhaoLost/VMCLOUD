@@ -248,10 +248,7 @@ export default function ApiIntegration() {
             </section>
 
             <section>
-              <h3 className="font-semibold text-black mb-2">超售 & 批量</h3>
-              <Endpoint method="POST" path="/api/oversell" desc="获取/更新超售配置" body='{"cpu_overcommit": 4, "ram_overcommit": 2, "disk_overcommit": 1, "ksm_enabled": true, "swappiness": 10}' />
-              <Endpoint method="POST" path="/api/oversell/reclaim" desc="触发一次内存回收" />
-              <Endpoint method="POST" path="/api/oversell/status" desc="超售状态" />
+              <h3 className="font-semibold text-black mb-2">批量操作</h3>
               <Endpoint method="POST" path="/api/batch-create" desc="批量创建" body='{"containers": [{...}]}' />
               <Endpoint method="POST" path="/api/batch-action" desc="批量操作" body='{"action": "start", "containers": [1, 2, 3]}' />
             </section>

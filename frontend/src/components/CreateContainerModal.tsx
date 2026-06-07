@@ -26,7 +26,7 @@ const defaultForm: CreateContainerRequest = {
   io_speed_mbps: 0,
   extra_ports: [],
   port_mapping_count: 2,
-  snapshot_limit: 3,
+  snapshot_limit: 1,
   assign_ipv6: false,
   expires_at: '',
 }

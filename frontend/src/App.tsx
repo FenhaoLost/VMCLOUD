@@ -4,7 +4,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Containers from './pages/Containers'
 import ContainerDetail from './pages/ContainerDetail'
-import Oversell from './pages/Oversell'
+
 import Security from './pages/Security'
 import AuditLogs from './pages/AuditLogs'
 import ApiIntegration from './pages/ApiIntegration'
@@ -58,7 +58,7 @@ function App() {
         <Route path="containers" element={<Containers />} />
         <Route path="images" element={<ImageManagement />} />
         <Route path="container/:id" element={<ContainerDetail />} />
-        <Route path="oversell" element={<Oversell />} />
+
         <Route path="security" element={<Security />} />
         <Route path="snapshots" element={<Snapshots />} />
         <Route path="routing" element={<Routing />} />

@@ -12,7 +12,7 @@ import {
   Route,
   ScrollText,
   Server,
-  Settings2,
+
   ShieldAlert,
   Sun,
   UserCog,
@@ -49,7 +49,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
     location.pathname.startsWith('/container')
 
   const isImagesPage = location.pathname.startsWith('/images')
-  const isOversellPage = location.pathname.startsWith('/oversell')
+
   const isSnapshotsPage = location.pathname.startsWith('/snapshots')
   const isRoutingPage = location.pathname.startsWith('/routing')
   const isAuditLogsPage = location.pathname.startsWith('/audit-logs')
@@ -133,18 +133,6 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
         {!isSubUser && (
           <>
-            <button
-              onClick={() => navigate('/oversell')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
-                isOversellPage
-                  ? 'bg-black text-white dark:bg-white dark:text-black'
-                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
-              }`}
-            >
-              <Settings2 className="w-4 h-4" />
-              {!collapsed && <span>宿主机控制</span>}
-            </button>
-
             <button
               onClick={() => navigate('/security')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${

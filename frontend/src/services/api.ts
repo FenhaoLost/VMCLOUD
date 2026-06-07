@@ -374,45 +374,6 @@ export const getDashboard = () =>
 export const getHostInfo = () =>
   api.get<APIResponse<HostInfo>>('/host-info')
 
-// Oversell
-export interface OversellConfig {
-  cpu_overcommit: number
-  ram_overcommit: number
-  disk_overcommit: number
-  ksm_enabled: boolean
-  swappiness: number
-}
-
-export interface OversellStatus {
-  ksm_active: boolean
-  ksm_pages: number
-  ksm_supported: boolean
-  swappiness: number
-  reclaim_supported: boolean
-  allocated_cpu: number
-  allocated_ram_mb: number
-  allocated_disk_gb: number
-}
-
-export interface ReclaimResult {
-  attempted: number
-  reclaimed: number
-  unsupported: number
-  errors: string[]
-}
-
-export const getOversell = () =>
-  api.get<APIResponse<OversellConfig>>('/oversell')
-
-export const updateOversell = (data: OversellConfig) =>
-  api.post<APIResponse<OversellConfig>>('/oversell', data)
-
-export const getOversellStatus = () =>
-  api.get<APIResponse<OversellStatus>>('/oversell/status')
-
-export const reclaimMemory = () =>
-  api.post<APIResponse<ReclaimResult>>('/oversell/reclaim')
-
 // Snapshots
 export interface Snapshot {
   id: string

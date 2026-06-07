@@ -41,10 +41,10 @@ func GetImages() []Image {
 			URL:         "https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2",
 		},
 		{
-			ID: "kvm-rockylinux-9", Name: "Rocky Linux 9 KVM",
-			Distro: "rockylinux", Release: "9", Arch: "amd64",
-			Description: "Rocky Linux 9 GenericCloud image for KVM",
-			URL:         "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
+			ID: "kvm-alpine-3.23", Name: "Alpine 3.23 KVM",
+			Distro: "alpine", Release: "3.23", Arch: "amd64",
+			Description: "Alpine Linux 3.23 NoCloud cloud-init image for KVM",
+			URL:         "https://dev.alpinelinux.org/~tomalok/alpine-cloud-images/v3.23/nocloud/x86_64/nocloud_alpine-3.23.4-x86_64-bios-cloudinit-r0.qcow2",
 		},
 		{
 			ID: "kvm-centos-9-stream", Name: "CentOS Stream 9 KVM",
@@ -53,10 +53,22 @@ func GetImages() []Image {
 			URL:         "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2",
 		},
 		{
-			ID: "kvm-alpine-3.23", Name: "Alpine 3.23 KVM",
-			Distro: "alpine", Release: "3.23", Arch: "amd64",
-			Description: "Alpine Linux 3.23 NoCloud cloud-init image for KVM",
-			URL:         "https://dev.alpinelinux.org/~tomalok/alpine-cloud-images/v3.23/nocloud/x86_64/nocloud_alpine-3.23.4-x86_64-bios-cloudinit-r0.qcow2",
+			ID: "kvm-archlinux-current", Name: "Arch Linux KVM",
+			Distro: "archlinux", Release: "current", Arch: "amd64",
+			Description: "Arch Linux (Rolling) cloud image for KVM",
+			URL:         "https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2",
+		},
+		{
+			ID: "kvm-fedora-44", Name: "Fedora 44 KVM",
+			Distro: "fedora", Release: "44", Arch: "amd64",
+			Description: "Fedora 44 GenericCloud image for KVM",
+			URL:         "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+		},
+		{
+			ID: "kvm-rockylinux-9", Name: "Rocky Linux 9 KVM",
+			Distro: "rockylinux", Release: "9", Arch: "amd64",
+			Description: "Rocky Linux 9 GenericCloud image for KVM",
+			URL:         "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2",
 		},
 	}
 }

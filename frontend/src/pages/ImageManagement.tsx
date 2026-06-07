@@ -17,7 +17,6 @@ export default function ImageManagement() {
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const [typeFilter, setTypeFilter] = useState('all')
 
   const fetchImages = useCallback(async () => {
     try {
@@ -81,7 +80,8 @@ export default function ImageManagement() {
   }
 
   const downloadedCount = images.filter((img) => img.downloaded).length
-  const visibleImages = images.filter((img) => typeFilter === 'all' || img.type === typeFilter)
+  const lxcImages = images.filter((img) => img.type === 'lxc')
+  const kvmImages = images.filter((img) => img.type === 'kvm')
 
   if (loading) {
     return (
@@ -97,28 +97,17 @@ export default function ImageManagement() {
         <div>
           <h1 className="text-2xl font-bold text-black">镜像管理</h1>
           <p className="text-sm text-gray-500 mt-1">
-            管理 LXC 系统镜像模板，下载后的镜像才能用于创建容器。
+            管理 LXC / KVM 系统镜像，下载后的镜像才能用于创建容器/虚拟机。
             已下载 {downloadedCount}/{images.length}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={typeFilter}
-            onChange={(event) => setTypeFilter(event.target.value)}
-            className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
-          >
-            <option value="all">全部类型</option>
-            <option value="lxc">LXC</option>
-            <option value="kvm">KVM</option>
-          </select>
-          <button
-            onClick={fetchImages}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors text-xs font-medium"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            刷新
-          </button>
-        </div>
+        <button
+          onClick={fetchImages}
+          className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors text-xs font-medium"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          刷新
+        </button>
       </div>
 
       {error && (
@@ -128,6 +117,58 @@ export default function ImageManagement() {
         </div>
       )}
 
+      <ImageTable
+        title="LXC 容器镜像"
+        images={lxcImages}
+        actionLoading={actionLoading}
+        downloadedCount={lxcImages.filter((img) => img.downloaded).length}
+        totalCount={lxcImages.length}
+        onDownload={handleDownload}
+        onDelete={handleDelete}
+        onToggle={handleToggle}
+      />
+
+      <ImageTable
+        title="KVM 虚拟机镜像"
+        images={kvmImages}
+        actionLoading={actionLoading}
+        downloadedCount={kvmImages.filter((img) => img.downloaded).length}
+        totalCount={kvmImages.length}
+        onDownload={handleDownload}
+        onDelete={handleDelete}
+        onToggle={handleToggle}
+      />
+    </div>
+  )
+}
+
+function ImageTable({
+  title,
+  images,
+  actionLoading,
+  downloadedCount,
+  totalCount,
+  onDownload,
+  onDelete,
+  onToggle,
+}: {
+  title: string
+  images: ImageInfo[]
+  actionLoading: string | null
+  downloadedCount: number
+  totalCount: number
+  onDownload: (id: string) => void
+  onDelete: (id: string) => void
+  onToggle: (id: string, enabled: boolean) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold text-gray-800">{title}</h2>
+        <span className="text-xs text-gray-400">
+          已下载 {downloadedCount}/{totalCount}
+        </span>
+      </div>
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -138,9 +179,6 @@ export default function ImageManagement() {
                 </th>
                 <th className="text-left px-4 py-3 text-[11px] font-medium text-gray-500 uppercase whitespace-nowrap">
                   发行版
-                </th>
-                <th className="text-left px-4 py-3 text-[11px] font-medium text-gray-500 uppercase whitespace-nowrap">
-                  类型
                 </th>
                 <th className="text-left px-4 py-3 text-[11px] font-medium text-gray-500 uppercase whitespace-nowrap">
                   架构
@@ -157,7 +195,7 @@ export default function ImageManagement() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {visibleImages.map((img) => {
+              {images.map((img) => {
                 const isBusy = actionLoading === img.id
                 return (
                   <tr key={img.id} className="hover:bg-gray-50 transition-colors">
@@ -175,11 +213,6 @@ export default function ImageManagement() {
                     <td className="px-4 py-3 text-xs text-gray-600 font-mono">
                       {img.distro} {img.release}
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${img.type === 'kvm' ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-100 text-gray-700'}`}>
-                        {(img.type || 'lxc').toUpperCase()}
-                      </span>
-                    </td>
                     <td className="px-4 py-3 text-xs text-gray-500 font-mono">
                       {img.arch}
                     </td>
@@ -193,7 +226,7 @@ export default function ImageManagement() {
                       <div className="flex items-center justify-end gap-2">
                         {!img.downloaded && !img.downloading && (
                           <button
-                            onClick={() => handleDownload(img.id)}
+                            onClick={() => onDownload(img.id)}
                             disabled={isBusy}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-black text-white rounded-md hover:bg-gray-800 transition-colors text-xs font-medium disabled:opacity-50"
                           >
@@ -216,7 +249,7 @@ export default function ImageManagement() {
                         {img.downloaded && (
                           <>
                             <button
-                              onClick={() => handleToggle(img.id, img.enabled)}
+                              onClick={() => onToggle(img.id, img.enabled)}
                               disabled={isBusy}
                               className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-50 ${
                                 img.enabled
@@ -228,7 +261,7 @@ export default function ImageManagement() {
                               {img.enabled ? '启用' : '禁用'}
                             </button>
                             <button
-                              onClick={() => handleDelete(img.id)}
+                              onClick={() => onDelete(img.id)}
                               disabled={isBusy}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 transition-colors text-xs font-medium disabled:opacity-50"
                               title="删除镜像缓存"

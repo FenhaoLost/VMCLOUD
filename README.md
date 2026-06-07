@@ -19,14 +19,13 @@ CLICD 是一个面向 LXC 的轻量容器管理面板，提供 Web 控制台、C
 
 1. 支持 Ubuntu、Debian、Alpine、CentOS、Arch Linux、Fedora、Rocky Linux 等系统镜像。镜像可以在镜像管理中按需下载；如果宿主机资源比较小，建议优先选择 Alpine 这类轻量镜像。
 2. 支持 WebSSH 管理，可以在浏览器里一键进入容器终端，不需要手动复制 SSH 密码。
-3. 支持子用户管理链接，管理员可以把指定容器分发给拼车用户，子用户只能管理自己被授权的容器。
-4. 支持设置 NAT4 端口数量、NAT 端口映射和协议限制，并支持分配公网 IPv6。IPv6 分配要求宿主机本身拥有可路由的 IPv6 地址段。
-5. 支持超售容量估算。宿主机控制页提供 KSM 合并、Swap 倾向和 cgroup v2 `memory.reclaim` 一次性回收能力；不会展示 LXC 下无实际通用效果的内存气球回收开关。
-6. 支持 API 接入，可以通过 API 完成容器、任务、镜像、端口、流量、安全告警等功能的自动化控制。
-7. 支持仅使用 CLI 管理。需要关闭 Web 控制台时，可以停止并禁用 systemd 服务，然后使用 `clicd cli --no-web` 进入命令行模式。
-8. 支持设置容器有效期。到期后容器会自动关机，子用户无法继续操作，只有管理员重新设置延期日期后才能恢复使用。
-9. 支持单向和双向网络流量限制。达到限制后容器会自动关机，避免流量超额。
-10. 内置基于 conntrack 的轻量安全告警。系统不会保存完整正常连接日志，但会对端口扫描、横向扫描、爆破倾向、SMTP 滥用、UDP 反射、挖矿端口、代理/VPN/Tor 等可疑行为生成告警并写入审计日志。
+3. 支持设置 NAT4 端口数量、NAT 端口映射和协议限制，并支持分配公网 IPv6。IPv6 分配要求宿主机本身拥有可路由的 IPv6 地址段。
+4. 支持单向和双向网络流量限制。达到限制后容器会自动关机，避免流量超额。
+5. 支持设置容器有效期。到期后容器会自动关机，子用户无法继续操作，只有管理员重新设置延期日期后才能恢复使用。
+6. 内置基于 conntrack 的轻量安全告警。系统不会保存完整正常连接日志，但会对端口扫描、横向扫描、爆破倾向、SMTP 滥用、UDP 反射、挖矿端口、代理/VPN/Tor 等可疑行为生成告警并写入审计日志。
+7. 支持子用户管理链接，管理员可以把指定容器分发给拼车用户，子用户只能管理自己被授权的容器。
+8. 支持 API 接入，可以通过 API 完成容器、任务、镜像、端口、流量、安全告警等功能的自动化控制。
+9. 支持仅使用 CLI 管理。需要关闭 Web 控制台时，可以停止并禁用 systemd 服务，然后使用 `clicd cli --no-web` 进入命令行模式。
 
 ## 技术栈
 
@@ -62,3 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=MengMengCode/CLICD&type=date&legend=top-left" />
  </picture>
 </a>
+
+## 鸣谢
+
+- [Linux.do](https://linux.do) — 一个充满灵感的科技社区

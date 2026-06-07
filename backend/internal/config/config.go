@@ -58,16 +58,6 @@ type AuditLog struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// OversellConfig controls host-level overselling behavior
-type OversellConfig struct {
-	CPUOvercommit        int  `json:"cpu_overcommit"`          // multiplier, e.g. 4 means 4x oversell
-	RAMOvercommit        int  `json:"ram_overcommit"`          // multiplier
-	DiskOvercommit       int  `json:"disk_overcommit"`         // multiplier
-	KSMEnabled           bool `json:"ksm_enabled"`             // kernel same-page merging
-	Swappiness           int  `json:"swappiness"`              // 0-100, lower = less swap
-	SubUserSnapshotLimit int  `json:"sub_user_snapshot_limit"` // legacy default for migrating old containers
-}
-
 // Container represents an LXC container configuration
 type Container struct {
 	ID                            int           `json:"id"`
@@ -211,7 +201,6 @@ type ClicdConfig struct {
 	NextVNCPort     int             `json:"next_vnc_port"`
 	NextSSHPort     int             `json:"next_ssh_port"`
 	SetupComplete   bool            `json:"setup_complete"`
-	Oversell        OversellConfig  `json:"oversell"`
 	SubUsers        []SubUser       `json:"sub_users"`
 	ApiKeys         []ApiKeyConfig  `json:"api_keys"`
 	AuditLogs       []AuditLog      `json:"audit_logs"`
@@ -312,14 +301,6 @@ func InitConfig() (*ClicdConfig, error) {
 			AuditLogs:       []AuditLog{},
 			Tasks:           []SavedTask{},
 			LoginLogs:       []SavedLoginLog{},
-			Oversell: OversellConfig{
-				CPUOvercommit:        4,
-				RAMOvercommit:        1,
-				DiskOvercommit:       2,
-				KSMEnabled:           true,
-				Swappiness:           10,
-				SubUserSnapshotLimit: 3,
-			},
 			Snapshots: []Snapshot{},
 		}
 
@@ -372,9 +353,6 @@ func InitConfig() (*ClicdConfig, error) {
 	}
 	if AppConfig.Snapshots == nil {
 		AppConfig.Snapshots = make([]Snapshot, 0)
-	}
-	if AppConfig.Oversell.SubUserSnapshotLimit <= 0 {
-		AppConfig.Oversell.SubUserSnapshotLimit = 3
 	}
 	changed := ensureContainerUUIDs()
 	if ensureContainerVirtualization() {
@@ -468,13 +446,9 @@ func ensureContainerPortMappingLimits() bool {
 
 func ensureContainerSnapshotLimits() bool {
 	changed := false
-	legacyLimit := AppConfig.Oversell.SubUserSnapshotLimit
-	if legacyLimit <= 0 {
-		legacyLimit = DefaultSnapshotLimit
-	}
 	for i := range AppConfig.Containers {
 		if AppConfig.Containers[i].SnapshotLimit <= 0 {
-			AppConfig.Containers[i].SnapshotLimit = legacyLimit
+			AppConfig.Containers[i].SnapshotLimit = DefaultSnapshotLimit
 			changed = true
 		}
 	}
