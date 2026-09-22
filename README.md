@@ -28,7 +28,7 @@
 </p>
 
 EyvesCloud is a lightweight virtualization management panel for LXC and KVM, forked from CLICD. It combines a web console, CLI tools, REST API, NAT/IPv6 networking, WebSSH/WebVNC access, resource quotas, traffic limits, snapshots, delegated sub-user access, and security alerts into a single deployable service.
-
+<
 EyvesCloud 是一个面向 LXC/KVM 的轻量虚拟化管理面板（源自 CLICD 深度魔改），集成 Web 控制台、CLI、REST API、NAT/IPv6 网络、WebSSH/WebVNC、资源配额、流量限制、快照、子用户授权和安全告警能力，适合 VPS 商家、实验室、开发者自建虚拟化节点以及需要批量开通容器的场景。
 
 ![alt text](/img/image-1.png)
@@ -38,13 +38,13 @@ EyvesCloud 是一个面向 LXC/KVM 的轻量虚拟化管理面板（源自 CLICD
 One-click Install / 一键安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo sh
 ```
 
 One-click Uninstall / 一键卸载：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo sh -s -- uninstall
 ```
 
 
@@ -81,6 +81,55 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
 | 安全告警 | 基于 conntrack 做轻量安全检测，可识别端口扫描、横向扫描、爆破倾向、SMTP 滥用、UDP 反射、挖矿端口、代理/VPN/Tor 等风险，并提供安全日志、汇总和设置项。 |
 | 账号与审计 | 支持子用户管理链接、子用户密码轮换、按容器授权、操作日志、登录日志和 API Key 管理，适合分发给下游用户或拼车用户。 |
 | 自动化接入 | 全量接口统一使用 `/api/v1`，覆盖任务队列、容器、镜像、网络、流量、安全、批量创建和批量操作；同时提供魔方财务对接模块，并由 GitHub Actions 自动打包发布。 |
+| 运维入口 | 提供总览统计、主机资源、路由概览、Swap 管理、CLI-only 模式和 GitHub Actions 自动发布产物，便于在小型节点上长期维护。 |
+
+## Technology Stack / 技术栈
+
+- Backend: Go, net/http, LXC, KVM/libvirt, cgroup v2, iptables, conntrack
+- Frontend: React, TypeScript, Vite, Tailwind CSS, lucide-react, xterm.js
+- Runtime: Linux, systemd, LXC, KVM/QEMU
+- Build: GitHub Actions, Node.js 20, Go 1.24
+
+## Preview / 预览
+![alt text](/img/image-2.png)
+![alt text](/img/image-3.png)
+![alt text](/img/image-4.png)
+![alt text](/img/image-5.png)
+
+
+## Disclaimer/免责声明
+
+This open-source software does not distribute Windows system images, nor does it provide any means to bypass or circumvent Windows activation mechanisms.
+
+All download links provided within the software point to resources officially supplied by Microsoft. Users of this software are responsible for obtaining the appropriate licenses from Microsoft before using any Windows operating system downloaded through these links. This project does not bypass activation requirements for installed systems, nor does it assume any responsibility for the consequences of users' actions when using this software.
+
+This open-source software is intended solely for educational purposes, specifically for learning the principles of LXC and KVM. The copyright for the Windows logo and related icons belongs to Microsoft/Windows.
+
+本开源软件不提供任何 Windows 操作系统镜像的分发服务，也不包含任何绕过、破解或免除 Windows 激活机制的功能。
+
+软件内涉及的 Windows 系统下载链接均由微软官方提供。使用者在下载、安装和使用相关 Windows 系统时，应自行向微软或其授权渠道购买并获得相应的软件许可。本项目不会对安装后的 Windows 系统进行任何形式的激活绕过、破解或免激活处理。
+
+对于使用者因使用本软件而产生的任何行为及其后果，包括但不限于软件许可、系统使用、数据丢失、法律责任或其他相关问题，本项目及其开发者不承担任何责任。
+
+本开源软件仅供学习和研究 LXC、KVM 等虚拟化技术原理之目的使用，不得用于任何违反适用法律法规、软件许可协议或第三方权益的行为。
+
+本软件中涉及的 Windows 名称、标识、图标及相关知识产权均归 Microsoft Corporation 及其权利人所有。本项目与微软公司不存在任何关联、授权或合作关系。
+## Thanks / 鸣谢
+- [Nodeseek.com](https://www.nodeseek.com) — 一个专注于服务器的社区
+- [Linux.do](https://linux.do) — 一个充满灵感的科技社区
+
+
+## Star History
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=mengmengcode%2Fclicd&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=mengmengcode/clicd&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=mengmengcode/clicd&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=mengmengcode/clicd&type=date&legend=top-left" />
+ </picture>
+</a>| 自动化接入 | 全量接口统一使用 `/api/v1`，覆盖任务队列、容器、镜像、网络、流量、安全、批量创建和批量操作；同时提供魔方财务对接模块，并由 GitHub Actions 自动打包发布。 |
 | 运维入口 | 提供总览统计、主机资源、路由概览、Swap 管理、CLI-only 模式和 GitHub Actions 自动发布产物，便于在小型节点上长期维护。 |
 
 ## Technology Stack / 技术栈
