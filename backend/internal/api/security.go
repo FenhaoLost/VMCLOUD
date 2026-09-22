@@ -191,12 +191,64 @@ func (ss *SecurityScanner) alertCount() int {
 }
 
 func (ss *SecurityScanner) checkAllContainers() {
-	for _, c := range config.AppConfig.Containers {
+	config.AppConfigMu.RLock()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	arpEnabled := config.AppConfig.ARPProtectionEnabled
+	config.AppConfigMu.RUnlock()
+	for _, c := range containers {
 		if c.Status != "running" || c.IP == "" {
 			continue
 		}
 		ss.checkContainer(c.Name, c.IP)
+		if arpEnabled {
+			ss.checkARPConflicts(c)
+		}
 	}
+}
+
+// checkARPConflicts detects IP-MAC mismatches for public/独立 IP containers
+// (ARP 欺骗 / 地址冲突检测). Requires the container's recorded MAC address.
+func (ss *SecurityScanner) checkARPConflicts(c config.Container) {
+	check := func(address, iface string) {
+		if strings.TrimSpace(address) == "" || strings.TrimSpace(c.MACAddress) == "" {
+			return
+		}
+		lines := readNeighLines(address, iface)
+		for _, line := range lines {
+			lladdr := extractField(line, "lladdr=")
+			if lladdr == "" {
+				continue
+			}
+			if !strings.EqualFold(lladdr, c.MACAddress) {
+				ss.addAlert(c.Name, "arp_spoof", "high", address, c.IP, 0,
+					fmt.Sprintf("ARP 地址冲突/欺骗: IP %s 邻居表 MAC %s 与容器绑定 MAC %s 不一致", address, lladdr, c.MACAddress),
+					strings.TrimSpace(line))
+			}
+		}
+	}
+
+	for _, ip := range c.PublicIPv4s {
+		check(ip.Address, ip.Interface)
+	}
+	if c.UsesLANIPv4() {
+		check(c.IP, c.LANInterface)
+	}
+}
+
+// readNeighLines returns `ip neigh show` output lines for an address.
+func readNeighLines(address, iface string) []string {
+	args := []string{"neigh", "show", address}
+	if iface != "" {
+		args = append(args, "dev", iface)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ip", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return splitNonEmptyLines(string(out))
 }
 
 func (ss *SecurityScanner) checkContainer(name, ip string) {
@@ -674,6 +726,9 @@ func (ss *SecurityScanner) addAlert(name, alertType, severity, srcIP, dstIP stri
 	}
 	ss.mu.Unlock()
 
+	// 新告警推送到外部通道（webhook / 邮件）
+	NotifySecurityAlert(alert)
+
 	if shouldShutdown {
 		autoShutdownAlertContainer(name, alertType, severity)
 	}
@@ -752,33 +807,42 @@ func HandleSecuritySettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{
-			"auto_shutdown": config.AppConfig.SecurityAutoShutdown,
+			"auto_shutdown":  config.AppConfig.SecurityAutoShutdown,
+			"arp_protection": config.AppConfig.ARPProtectionEnabled,
 		}})
 	case http.MethodPut:
 		if !requireScope(w, r, "security:settings") {
 			return
 		}
 		var req struct {
-			AutoShutdown bool `json:"auto_shutdown"`
+			AutoShutdown  *bool `json:"auto_shutdown"`
+			ARPProtection *bool `json:"arp_protection"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
 			return
 		}
-		config.AppConfig.SecurityAutoShutdown = req.AutoShutdown
+		if req.AutoShutdown != nil {
+			config.AppConfig.SecurityAutoShutdown = *req.AutoShutdown
+		}
+		if req.ARPProtection != nil {
+			config.AppConfig.ARPProtectionEnabled = *req.ARPProtection
+		}
 		if err := config.SaveConfig(); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return
 		}
 		cancelledTasks := 0
 		clearedBlocks := 0
-		if !req.AutoShutdown {
+		if req.AutoShutdown != nil && !*req.AutoShutdown {
 			cancelledTasks = globalQueue.CancelPendingSecurityStops()
 			clearedBlocks = clearSecurityPolicyBlocks()
 		}
-		auditRequest(r, "security.settings", "auto_shutdown", fmt.Sprintf("auto_shutdown=%v", req.AutoShutdown), true, "")
+		auditRequest(r, "security.settings", "auto_shutdown",
+			fmt.Sprintf("auto_shutdown=%v arp_protection=%v", config.AppConfig.SecurityAutoShutdown, config.AppConfig.ARPProtectionEnabled), true, "")
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
 			"auto_shutdown":   config.AppConfig.SecurityAutoShutdown,
+			"arp_protection":  config.AppConfig.ARPProtectionEnabled,
 			"cancelled_tasks": cancelledTasks,
 			"cleared_blocks":  clearedBlocks,
 		}})

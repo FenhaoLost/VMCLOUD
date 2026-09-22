@@ -69,8 +69,8 @@ export default function Login() {
               <div className="w-16 h-16 flex items-center justify-center mb-4">
                 <AppIcon className="w-10 h-10" />
               </div>
-              <h1 className="text-2xl font-bold text-gray-950">CLICD</h1>
-              <p className="text-gray-500 mt-1 text-sm">{isAccessCodeLogin ? '容器管理登录' : 'Container Manager'}</p>
+              <h1 className="text-2xl font-bold text-brand-600">EyvesCloud</h1>
+              <p className="text-gray-500 mt-1 text-sm">{isAccessCodeLogin ? '容器管理登录' : '云容器管理平台'}</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
@@ -132,7 +132,7 @@ export default function Login() {
           </form>
         </div>
 
-        <p className="text-center text-xs text-gray-400 mt-6">CLICD v1.1.29</p>
+        <p className="text-center text-xs text-gray-400 mt-6">EyvesCloud v1.1.29</p>
       </div>
     </div>
   )

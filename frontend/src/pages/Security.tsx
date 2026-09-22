@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Power, RefreshCw, X } from 'lucide-react'
+import { FileText, Power, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { getSecurityAlerts, getSecurityLogs, getSecuritySettings, SecurityAlert, SecurityLog, updateSecuritySettings } from '../services/api'
 
 const typeLabels: Record<string, string> = {
@@ -12,6 +12,7 @@ const typeLabels: Record<string, string> = {
   mining: '挖矿连接',
   proxy: '代理/VPN/Tor',
   reflection: 'UDP反射放大',
+  arp_spoof: 'ARP欺骗/地址冲突',
 }
 
 const severityLabels: Record<string, string> = {
@@ -24,6 +25,7 @@ const severityLabels: Record<string, string> = {
 export default function Security() {
   const [alerts, setAlerts] = useState<SecurityAlert[]>([])
   const [autoShutdown, setAutoShutdown] = useState(false)
+  const [arpProtection, setArpProtection] = useState(false)
   const [loading, setLoading] = useState(true)
   const [savingSettings, setSavingSettings] = useState(false)
   const [logAlert, setLogAlert] = useState<SecurityAlert | null>(null)
@@ -34,7 +36,10 @@ export default function Security() {
     try {
       const [alertRes, settingsRes] = await Promise.all([getSecurityAlerts(), getSecuritySettings()])
       if (alertRes.data.data) setAlerts(alertRes.data.data)
-      if (settingsRes.data.data) setAutoShutdown(settingsRes.data.data.auto_shutdown)
+      if (settingsRes.data.data) {
+        setAutoShutdown(settingsRes.data.data.auto_shutdown ?? false)
+        setArpProtection(settingsRes.data.data.arp_protection ?? false)
+      }
     } catch (err) {
       console.error(err)
     } finally {
@@ -54,10 +59,25 @@ export default function Security() {
     setSavingSettings(true)
     try {
       const res = await updateSecuritySettings({ auto_shutdown: next })
-      if (res.data.data) setAutoShutdown(res.data.data.auto_shutdown)
+      if (res.data.data) setAutoShutdown(res.data.data.auto_shutdown ?? next)
     } catch (err) {
       console.error(err)
       setAutoShutdown(!next)
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+
+  const handleArpProtectionChange = async () => {
+    const next = !arpProtection
+    setArpProtection(next)
+    setSavingSettings(true)
+    try {
+      const res = await updateSecuritySettings({ arp_protection: next })
+      if (res.data.data) setArpProtection(res.data.data.arp_protection ?? next)
+    } catch (err) {
+      console.error(err)
+      setArpProtection(!next)
     } finally {
       setSavingSettings(false)
     }
@@ -106,6 +126,22 @@ export default function Security() {
           >
             <Power className="w-4 h-4" />
             <span>{autoShutdown ? '自动关机已开' : '自动关机已关'}</span>
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={arpProtection}
+            onClick={handleArpProtectionChange}
+            disabled={savingSettings}
+            title="公网 IP-MAC 绑定防护（检测 ARP 地址冲突/欺骗）"
+            className={`inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm transition-colors disabled:opacity-60 ${
+              arpProtection
+                ? 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>{arpProtection ? 'ARP防护已开' : 'ARP防护已关'}</span>
           </button>
           <button
             onClick={fetchData}

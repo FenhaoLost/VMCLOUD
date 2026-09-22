@@ -8,6 +8,8 @@ import { copyToClipboard } from '../utils/clipboard'
 interface SubUserItem {
   id: string
   username: string
+  role?: string
+  tenant?: string
   container_names: string[]
   container_uuids: string[]
   allowed_image_ids?: string[]
@@ -85,6 +87,34 @@ export default function SubUserManagement() {
       dialog.alert('轮换失败', error.response?.data?.message || '请稍后重试')
     } finally {
       setRotatingPassword(false)
+    }
+  }
+
+  const toggleRole = async (user: SubUserItem) => {
+    const nextRole = user.role === 'viewer' ? 'operator' : 'viewer'
+    try {
+      const res = await api.put(`/sub-users/${user.id}/role`, { role: nextRole })
+      const role = res.data.data?.role || nextRole
+      setUsers((prev) => prev.map((item) => (item.id === user.id ? { ...item, role } : item)))
+      dialog.alert('完成', nextRole === 'viewer' ? '已设为只读角色：该子用户只能查看，不能执行开机/关机/删除等操作' : '已设为操作角色：该子用户可以执行全部容器操作')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      dialog.alert('切换失败', error.response?.data?.message || '请稍后重试')
+    }
+  }
+
+  const editTenant = async (user: SubUserItem) => {
+    const next = window.prompt('输入租户名称（留空表示按容器单独授权）：\n绑定租户后，该子用户可访问该租户下全部容器', user.tenant || '')
+    if (next === null) return
+    const tenant = next.trim()
+    try {
+      const res = await api.put(`/sub-users/${user.id}/tenant`, { tenant })
+      const saved = res.data.data?.tenant ?? tenant
+      setUsers((prev) => prev.map((item) => (item.id === user.id ? { ...item, tenant: saved } : item)))
+      dialog.alert('完成', tenant ? `已绑定租户「${tenant}」，重新登录后生效` : '已清除租户绑定')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      dialog.alert('设置失败', error.response?.data?.message || '请稍后重试')
     }
   }
 
@@ -196,6 +226,8 @@ export default function SubUserManagement() {
                 <th className="px-4 py-3 text-left font-medium w-12">#</th>
                 <th className="px-4 py-3 text-left font-medium">容器名称</th>
                 <th className="px-4 py-3 text-left font-medium">UUID</th>
+                <th className="px-4 py-3 text-left font-medium">角色</th>
+                <th className="px-4 py-3 text-left font-medium">租户</th>
                 <th className="px-4 py-3 text-left font-medium">最后登录</th>
                 <th className="px-4 py-3 text-center font-medium">操作</th>
               </tr>
@@ -206,6 +238,18 @@ export default function SubUserManagement() {
                   <td className="px-4 py-3 text-gray-400 dark:text-gray-500">{index + 1}</td>
                   <td className="px-4 py-3 font-medium text-black dark:text-white">{user.container_name || '-'}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-600 dark:text-gray-400">{user.container_uuid || '-'}</td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${user.role === 'viewer' ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'}`}>
+                      {user.role === 'viewer' ? '只读' : '操作'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {user.tenant ? (
+                      <span className="inline-flex items-center rounded bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">{user.tenant}</span>
+                    ) : (
+                      <span className="text-gray-400">按容器授权</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
                     {user.last_login ? (
                       <div>
@@ -249,6 +293,22 @@ export default function SubUserManagement() {
                       >
                         <HardDrive className="w-3.5 h-3.5" />
                         可用镜像
+                      </button>
+                      <button
+                        onClick={() => toggleRole(user)}
+                        className="inline-flex items-center gap-1 px-2 py-1.5 rounded text-xs text-teal-600 hover:bg-teal-50 dark:hover:bg-teal-900/30 transition-colors"
+                        title={user.role === 'viewer' ? '切换为操作角色' : '切换为只读角色'}
+                      >
+                        <UserCog className="w-3.5 h-3.5" />
+                        {user.role === 'viewer' ? '设为操作' : '设为只读'}
+                      </button>
+                      <button
+                        onClick={() => editTenant(user)}
+                        className="inline-flex items-center gap-1 px-2 py-1.5 rounded text-xs text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors"
+                        title="设置租户"
+                      >
+                        <HardDrive className="w-3.5 h-3.5" />
+                        租户
                       </button>
                     </div>
                   </td>

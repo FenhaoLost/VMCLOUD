@@ -14,7 +14,7 @@ import (
 // webFS holds embedded frontend files
 var webFS http.FileSystem
 
-// corsMiddleware adds CORS headers
+// corsMiddleware adds CORS and security headers
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" && config.IsOriginAllowed(origin, r.Host) {
@@ -24,6 +24,16 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+
+		// Security headers (XSS / clickjacking / MIME-sniffing / referrer leakage)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "+
+				"font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'")
+		// Browsers only honor HSTS on HTTPS responses; the header is harmless on HTTP.
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
 		if r.Method == http.MethodOptions {
 			if origin := r.Header.Get("Origin"); origin != "" && !config.IsOriginAllowed(origin, r.Host) {
@@ -86,6 +96,8 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/security/logs", corsMiddleware(api.AdminMiddleware(api.HandleSecurityLogs)))
 	mux.HandleFunc("/api/security/summary", corsMiddleware(api.AdminMiddleware(api.HandleContainerSecuritySummary)))
 	mux.HandleFunc("/api/security/settings", corsMiddleware(api.AdminMiddleware(api.HandleSecuritySettings)))
+	mux.HandleFunc("/api/notifications", corsMiddleware(api.AdminMiddleware(api.HandleNotificationSettings)))
+	mux.HandleFunc("/api/notifications/test", corsMiddleware(api.AdminMiddleware(api.HandleNotificationTest)))
 	mux.HandleFunc("/api/ssh-ticket", corsMiddleware(api.AuthMiddleware(api.HandleWebSSHTicket)))
 	mux.HandleFunc("/api/ssh", api.HandleWebSSH) // WebSocket
 	mux.HandleFunc("/api/vnc-ticket", corsMiddleware(api.AuthMiddleware(api.HandleVNCTicket)))
@@ -94,6 +106,19 @@ func setupRoutes(mux *http.ServeMux) {
 	// API Key management
 	mux.HandleFunc("/api/api-keys", corsMiddleware(api.AdminMiddleware(api.HandleApiKeys)))
 	mux.HandleFunc("/api/api-keys/", corsMiddleware(api.AdminMiddleware(api.HandleApiKeyDelete)))
+	mux.HandleFunc("/api/policies", corsMiddleware(api.AdminMiddleware(api.HandlePolicies)))
+	mux.HandleFunc("/api/policies/", corsMiddleware(api.AdminMiddleware(api.HandlePolicyItem)))
+	mux.HandleFunc("/api/migrate/import", corsMiddleware(api.AdminMiddleware(api.HandleMigrateImport)))
+
+	// 主控（Controller）节点管理
+	mux.HandleFunc("/api/nodes", corsMiddleware(api.AdminMiddleware(api.HandleNodes)))
+	mux.HandleFunc("/api/nodes/", corsMiddleware(api.HandleNodeSubRoutes))
+	mux.HandleFunc("/api/nodes/binary", corsMiddleware(api.HandleNodeBinary))
+
+	// 被控（Agent）专用 API：仅主控通过节点 token 调用
+	mux.HandleFunc("/api/agent/containers", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentContainers)))
+	mux.HandleFunc("/api/agent/containers/", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentContainerAction)))
+	mux.HandleFunc("/api/agent/action", corsMiddleware(api.AgentTokenMiddleware(api.AgentContainerActionFromQuery)))
 
 	// Versioned external API routes
 	mux.HandleFunc("/api/v1/dashboard", corsMiddleware(api.AuthMiddleware(api.HandleDashboard)))
@@ -135,10 +160,15 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/security/logs", corsMiddleware(api.AuthMiddleware(api.ScopeMiddleware("security:read", api.HandleSecurityLogs))))
 	mux.HandleFunc("/api/v1/security/summary", corsMiddleware(api.AuthMiddleware(api.ScopeMiddleware("security:read", api.HandleContainerSecuritySummary))))
 	mux.HandleFunc("/api/v1/security/settings", corsMiddleware(api.AuthMiddleware(api.HandleSecuritySettings)))
+	mux.HandleFunc("/api/v1/notifications", corsMiddleware(api.AuthMiddleware(api.HandleNotificationSettings)))
+	mux.HandleFunc("/api/v1/notifications/test", corsMiddleware(api.AuthMiddleware(api.HandleNotificationTest)))
 	mux.HandleFunc("/api/v1/ssh-ticket", corsMiddleware(api.AuthMiddleware(api.HandleWebSSHTicket)))
 	mux.HandleFunc("/api/v1/vnc-ticket", corsMiddleware(api.AuthMiddleware(api.HandleVNCTicket)))
 	mux.HandleFunc("/api/v1/api-keys", corsMiddleware(api.AuthMiddleware(api.HandleApiKeys)))
 	mux.HandleFunc("/api/v1/api-keys/", corsMiddleware(api.AuthMiddleware(api.HandleApiKeyDelete)))
+	mux.HandleFunc("/api/v1/policies", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandlePolicies))))
+	mux.HandleFunc("/api/v1/policies/", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandlePolicyItem))))
+	mux.HandleFunc("/api/v1/migrate/import", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleMigrateImport))))
 	mux.HandleFunc("/api/v1/swap", corsMiddleware(api.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			api.HandleSwapInfo(w, r)
@@ -186,12 +216,13 @@ func Run() error {
 	webFS = GetEmbeddedFS()
 	api.StartHostMetricSampler()
 	api.StartContainerMetricSampler()
+	api.StartPolicyEngine()
 
 	mux := http.NewServeMux()
 	setupRoutes(mux)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", config.AppConfig.Port)
-	log.Printf("CLICD Web Server starting on http://0.0.0.0:%d", config.AppConfig.Port)
+	log.Printf("EyvesCloud Web Server starting on http://0.0.0.0:%d", config.AppConfig.Port)
 	log.Printf("Admin user: %s", config.AppConfig.AdminUser)
 
 	server := &http.Server{
@@ -222,7 +253,7 @@ func Run() error {
 				return &cert, nil
 			},
 		}
-		log.Printf("CLICD Web Server SSL enabled on https://0.0.0.0:%d", config.AppConfig.Port)
+		log.Printf("EyvesCloud Web Server SSL enabled on https://0.0.0.0:%d", config.AppConfig.Port)
 		return server.ListenAndServeTLS("", "")
 	}
 

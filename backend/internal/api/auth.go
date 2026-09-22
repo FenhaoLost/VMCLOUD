@@ -74,7 +74,8 @@ func requestActor(r *http.Request) string {
 func hasScope(r *http.Request, scope string) bool {
 	ctx, ok := authContextFromRequest(r)
 	if !ok {
-		return true
+		// Fail closed: an unauthenticated request must never be granted a scope.
+		return false
 	}
 	switch ctx.Type {
 	case authTypeAdmin:
@@ -166,12 +167,6 @@ func tokenFromRequest(r *http.Request) string {
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
-
-	cookie, err := r.Cookie("clicd_token")
-	if err == nil {
-		return cookie.Value
-	}
-
 	return ""
 }
 
@@ -203,6 +198,7 @@ func claimsFromToken(tokenString string) (jwt.MapClaims, bool) {
 		tokenVersionFloat, hasVersion := claims["token_version"].(float64)
 		tokenVersion := int(tokenVersionFloat)
 		foundSubUser := false
+		config.AppConfigMu.RLock()
 		for i := range config.AppConfig.SubUsers {
 			if config.AppConfig.SubUsers[i].Username == subUser {
 				foundSubUser = true
@@ -210,12 +206,28 @@ func claimsFromToken(tokenString string) (jwt.MapClaims, bool) {
 				// If stored version > 0, require token_version to match exactly.
 				// This also rejects legacy tokens that lack token_version entirely.
 				if stored > 0 && (!hasVersion || tokenVersion != stored) {
+					config.AppConfigMu.RUnlock()
 					return nil, false
 				}
 				break
 			}
 		}
+		config.AppConfigMu.RUnlock()
 		if !foundSubUser {
+			return nil, false
+		}
+		return claims, ok
+	}
+
+	// Admin tokens carry token_version so they can be revoked by rotating the
+	// admin password or username. Once the stored version becomes non-zero,
+	// every existing token (including legacy ones without the claim) is invalid.
+	config.AppConfigMu.RLock()
+	adminTokenVersion := config.AppConfig.AdminTokenVersion
+	config.AppConfigMu.RUnlock()
+	if adminTokenVersion > 0 {
+		tokenVersionFloat, hasVersion := claims["token_version"].(float64)
+		if !hasVersion || int(tokenVersionFloat) != adminTokenVersion {
 			return nil, false
 		}
 	}
@@ -258,29 +270,46 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	ip := clientIP(r)
 	ua := r.Header.Get("User-Agent")
+	rateKey := ip + "|admin:" + req.Username
+	if loginRateLimited(w, rateKey) {
+		return
+	}
 
-	if req.Username != config.AppConfig.AdminUser {
+	// Snapshot admin credentials under the read lock so concurrent password /
+	// username changes cannot tear the values being compared and signed.
+	config.AppConfigMu.RLock()
+	adminUser := config.AppConfig.AdminUser
+	adminPassHash := config.AppConfig.AdminPassHash
+	adminTokenVersion := config.AppConfig.AdminTokenVersion
+	jwtSecret := config.AppConfig.JWTSecret
+	config.AppConfigMu.RUnlock()
+
+	if req.Username != adminUser {
+		loginLimiter.recordFail(rateKey)
 		RecordLoginLog(req.Username, ip, ua, false)
 		jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid credentials"})
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(config.AppConfig.AdminPassHash), []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(adminPassHash), []byte(req.Password)); err != nil {
+		loginLimiter.recordFail(rateKey)
 		RecordLoginLog(req.Username, ip, ua, false)
 		jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid credentials"})
 		return
 	}
 
+	loginLimiter.reset(rateKey)
 	RecordLoginLog(req.Username, ip, ua, true)
 
 	// Generate JWT token
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": req.Username,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-		"iat":      time.Now().Unix(),
+		"username":      req.Username,
+		"token_version": adminTokenVersion,
+		"exp":           time.Now().Add(24 * time.Hour).Unix(),
+		"iat":           time.Now().Unix(),
 	})
 
-	tokenString, err := token.SignedString([]byte(config.AppConfig.JWTSecret))
+	tokenString, err := token.SignedString([]byte(jwtSecret))
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate token"})
 		return
@@ -327,12 +356,10 @@ func HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.AppConfig.AdminPassHash = string(hash)
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save configuration"})
-		return
-	}
-
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.AdminPassHash = string(hash)
+		cfg.AdminTokenVersion++ // invalidate all previously issued admin tokens
+	})
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Password changed successfully"})
 }
 

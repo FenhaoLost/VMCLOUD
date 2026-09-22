@@ -11,7 +11,7 @@ import (
 func panelAccessMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		decision := config.EvaluatePanelAccess(
-			config.AppConfig.PanelAccessPolicy,
+			config.SnapshotPanelAccessPolicy(),
 			r.RemoteAddr,
 			config.ForwardedClientHeaders{
 				ForwardedFor:   r.Header.Get("X-Forwarded-For"),

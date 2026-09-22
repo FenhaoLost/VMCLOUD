@@ -64,7 +64,12 @@ func IsOriginAllowed(origin string, requestHost string) bool {
 	if AppConfig == nil {
 		return false
 	}
-	for _, allowed := range AppConfig.WebSSHAllowedOrigins {
+	// Snapshot the allowlist under the read lock; the setting handler can
+	// rewrite the slice concurrently on every request path (CORS, WebSocket).
+	AppConfigMu.RLock()
+	allowedOrigins := append([]string(nil), AppConfig.WebSSHAllowedOrigins...)
+	AppConfigMu.RUnlock()
+	for _, allowed := range allowedOrigins {
 		allowed, err := NormalizeAllowedOrigin(allowed)
 		if err == nil && normalized == allowed {
 			return true

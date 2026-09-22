@@ -888,6 +888,9 @@ func HandleBatchAction(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Insufficient API key scope"})
 		return
 	}
+	if !requireSubUserWrite(w, r) {
+		return
+	}
 	var req struct {
 		Action       string `json:"action"`
 		Containers   []int  `json:"containers"`

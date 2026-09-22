@@ -14,9 +14,12 @@ npm run build
 
 ```bash
 cd backend
-go test ./...
+go vet ./...
+go test -race ./...
 go build -o ../build/clicd .
 ```
+
+`go test -race` 会并行运行全部单元测试（含 LXC/KVM 各模块与 API 层），推荐每次改动后执行。
 
 如果要打包嵌入式 Web 面板，需要先把前端构建产物同步到后端嵌入目录。
 

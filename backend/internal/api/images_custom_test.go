@@ -11,6 +11,12 @@ import (
 	"testing"
 )
 
+// asAdminRequest stamps an admin auth context onto a request so handlers that
+// enforce scopes can be exercised directly without going through middleware.
+func asAdminRequest(r *http.Request) *http.Request {
+	return withAuthContext(r, AuthContext{Type: authTypeAdmin, Username: "admin", Actor: "admin"})
+}
+
 func TestCustomKVMImageCreateRejectsInvalidSource(t *testing.T) {
 	payload := map[string]string{
 		"name":        "Invalid Source",
@@ -24,7 +30,7 @@ func TestCustomKVMImageCreateRejectsInvalidSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body))
+	request := asAdminRequest(httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body)))
 	response := httptest.NewRecorder()
 
 	HandleCustomKVMImages(response, request)
@@ -51,7 +57,7 @@ func TestCustomKVMImageCreateRejectsArchitectureMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body))
+	request := asAdminRequest(httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body)))
 	response := httptest.NewRecorder()
 
 	HandleCustomKVMImages(response, request)
@@ -74,7 +80,7 @@ func TestCustomLXCImageCreateRejectsInvalidSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body))
+	request := asAdminRequest(httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body)))
 	response := httptest.NewRecorder()
 
 	HandleCustomKVMImages(response, request)
@@ -100,7 +106,7 @@ func TestCustomImageCreateRejectsMetadataSource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body))
+			request := asAdminRequest(httptest.NewRequest(http.MethodPost, "/api/images/custom", bytes.NewReader(body)))
 			response := httptest.NewRecorder()
 
 			HandleCustomKVMImages(response, request)

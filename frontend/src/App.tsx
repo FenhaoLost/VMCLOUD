@@ -15,6 +15,9 @@ import Snapshots from './pages/Snapshots'
 import Routing from './pages/Routing'
 import Storage from './pages/Storage'
 import SubUserManagement from './pages/SubUserManagement'
+import NodeMigration from './pages/NodeMigration'
+import PolicyManagement from './pages/PolicyManagement'
+import NodeManagement from './pages/NodeManagement'
 import Layout from './components/Layout'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -64,6 +67,9 @@ function App() {
         <Route path="security" element={<Security />} />
         <Route path="snapshots" element={<Snapshots />} />
         <Route path="routing" element={<Routing />} />
+        <Route path="migration" element={<NodeMigration />} />
+        <Route path="nodes" element={<NodeManagement />} />
+        <Route path="policies" element={<PolicyManagement />} />
         <Route path="storage" element={<Storage />} />
         <Route path="audit-logs" element={<AuditLogs />} />
         <Route path="api-integration" element={<ApiIntegration />} />

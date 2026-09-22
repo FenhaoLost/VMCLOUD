@@ -269,6 +269,7 @@ type ContainerConfig struct {
 	SSHAuthMode          string                     `json:"ssh_auth_mode,omitempty"`
 	SSHPassword          string                     `json:"ssh_password,omitempty"`
 	SSHPublicKey         string                     `json:"ssh_public_key,omitempty"`
+	CloudInitUserData    string                     `json:"cloud_init_user_data,omitempty"`
 	ExpiresAt            string                     `json:"expires_at"`
 	Progress             func(stage, detail string) `json:"-"`
 }
@@ -733,6 +734,7 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		SnapshotLimit:        config.NormalizeSnapshotLimit(cfg.SnapshotLimit),
 		CreatedAt:            now,
 		ExpiresAt:            cfg.ExpiresAt,
+		CloudInitUserData:    cfg.CloudInitUserData,
 	}
 	container.NormalizeNetworkAssignments()
 	cfg.ReportProgress("metadata", "保存容器配置")
@@ -773,6 +775,17 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 	cfg.ReportProgress("credentials", "设置容器登录凭据")
 	if err := m.setRootfsPassword(rootfsPath, sshPassword); err != nil {
 		fmt.Printf("Warning: failed to set root password in %s: %v\n", lxcName, err)
+	}
+
+	// Inject a NoCloud cloud-init seed when custom user-data is provided.
+	// The container's cloud-init reads this directory on first boot.
+	if strings.TrimSpace(cfg.CloudInitUserData) != "" {
+		cfg.ReportProgress("cloud_init", "写入 cloud-init 初始化配置")
+		if err := installCloudInitSeed(rootfsPath, lxcName, cfg.CloudInitUserData); err != nil {
+			_ = m.cleanupContainerStorage(lxcName)
+			config.RemoveContainer(id)
+			return fmt.Errorf("failed to install cloud-init seed: %v", err)
+		}
 	}
 
 	fmt.Printf("Container %d (%s) created successfully\n", id, cfg.Name)
@@ -3040,6 +3053,27 @@ func (m *Manager) setRootfsPassword(rootfsPath, password string) error {
 	return nil
 }
 
+// installCloudInitSeed writes a NoCloud seed directory into the container
+// rootfs so that cloud-init configures the guest on first boot.
+func installCloudInitSeed(rootfsPath, lxcName, userData string) error {
+	seedDir := filepath.Join(rootfsPath, "var", "lib", "cloud", "seed", "nocloud-net")
+	if err := os.MkdirAll(seedDir, 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(seedDir, "user-data"), []byte(userData), 0600); err != nil {
+		return err
+	}
+	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", lxcName, lxcName)
+	if err := os.WriteFile(filepath.Join(seedDir, "meta-data"), []byte(metaData), 0600); err != nil {
+		return err
+	}
+	// Reset ownership so an unprivileged container can still read the seed.
+	if out, err := exec.Command("chown", "-R", "0:0", seedDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("chown cloud-init seed: %v, output: %s", err, string(out))
+	}
+	return nil
+}
+
 func (m *Manager) installRootAuthorizedKey(rootfsPath, publicKey string) error {
 	key, err := NormalizeSSHPublicKey(publicKey)
 	if err != nil {
@@ -3408,8 +3442,11 @@ func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
 	existingIDs := make(map[int]bool)
 	existingNames := make(map[string]bool)
 	existingLXCNames := make(map[string]bool)
+	config.AppConfigMu.RLock()
 	maxID := config.AppConfig.NextContainerID - 1
-	for _, c := range config.AppConfig.Containers {
+	containersSnapshot := append([]config.Container(nil), config.AppConfig.Containers...)
+	config.AppConfigMu.RUnlock()
+	for _, c := range containersSnapshot {
 		existingIDs[c.ID] = true
 		existingNames[c.Name] = true
 		existingLXCNames[c.LxcName()] = true
@@ -3479,7 +3516,6 @@ func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
 			}
 		}
 
-		config.AppConfig.Containers = append(config.AppConfig.Containers, c)
 		imported = append(imported, c)
 		existingIDs[id] = true
 		existingNames[name] = true
@@ -3490,7 +3526,10 @@ func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
 	}
 
 	if len(imported) > 0 {
+		config.AppConfigMu.Lock()
+		config.AppConfig.Containers = append(config.AppConfig.Containers, imported...)
 		config.AppConfig.NextContainerID = maxID + 1
+		config.AppConfigMu.Unlock()
 		if err := config.SaveConfig(); err != nil {
 			return nil, err
 		}
@@ -4087,9 +4126,12 @@ func (m *Manager) AccumulateTraffic() {
 	lastTrafficSnapshotMu.Lock()
 	defer lastTrafficSnapshotMu.Unlock()
 
+	config.AppConfigMu.RLock()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	config.AppConfigMu.RUnlock()
+
 	changed := false
-	for i := range config.AppConfig.Containers {
-		c := &config.AppConfig.Containers[i]
+	for _, c := range containers {
 		if c.Status != "running" {
 			// Remove snapshot for stopped containers
 			delete(lastTrafficSnapshot, c.LxcName())
@@ -4098,27 +4140,33 @@ func (m *Manager) AccumulateTraffic() {
 		if c.IsKVM() {
 			continue
 		}
-		// Reset if new month
-		if c.TrafficResetDate != currentMonth {
-			c.TrafficUsedRX = 0
-			c.TrafficUsedTX = 0
-			c.TrafficResetDate = currentMonth
-			delete(lastTrafficSnapshot, c.LxcName())
-			changed = true
-		}
 		rx, tx := m.getContainerNetworkBytes(c.LxcName())
 		prev, exists := lastTrafficSnapshot[c.LxcName()]
+		deltaRX, deltaTX := int64(0), int64(0)
 		// Only add the DELTA (increment since last snapshot)
 		if exists && rx >= prev.RXBytes && tx >= prev.TXBytes {
-			deltaRX := int64(rx - prev.RXBytes)
-			deltaTX := int64(tx - prev.TXBytes)
-			if deltaRX > 0 || deltaTX > 0 {
-				c.TrafficUsedRX += deltaRX
-				c.TrafficUsedTX += deltaTX
-				changed = true
-			}
+			deltaRX = int64(rx - prev.RXBytes)
+			deltaTX = int64(tx - prev.TXBytes)
 		}
 		lastTrafficSnapshot[c.LxcName()] = trafficSample{RXBytes: rx, TXBytes: tx}
+
+		if c.TrafficResetDate == currentMonth && deltaRX <= 0 && deltaTX <= 0 {
+			continue
+		}
+		// Apply the counter update under the config write lock so it cannot
+		// race with handlers or other background writers.
+		if config.MutateContainerNoSave(c.ID, func(l *config.Container) {
+			// Reset if new month
+			if l.TrafficResetDate != currentMonth {
+				l.TrafficUsedRX = 0
+				l.TrafficUsedTX = 0
+				l.TrafficResetDate = currentMonth
+			}
+			l.TrafficUsedRX += deltaRX
+			l.TrafficUsedTX += deltaTX
+		}) {
+			changed = true
+		}
 	}
 	if changed {
 		config.SaveConfig()
@@ -4133,9 +4181,13 @@ func (m *Manager) GetTrafficInfo(id int) map[string]interface{} {
 	}
 	currentMonth := time.Now().Format("2006-01")
 	if c.TrafficResetDate != currentMonth {
-		c.TrafficUsedRX = 0
-		c.TrafficUsedTX = 0
-		c.TrafficResetDate = currentMonth
+		config.MutateContainerNoSave(id, func(l *config.Container) {
+			if l.TrafficResetDate != currentMonth {
+				l.TrafficUsedRX = 0
+				l.TrafficUsedTX = 0
+				l.TrafficResetDate = currentMonth
+			}
+		})
 		config.SaveConfig()
 	}
 
@@ -4145,8 +4197,10 @@ func (m *Manager) GetTrafficInfo(id int) map[string]interface{} {
 		rx, tx := m.getContainerNetworkBytes(c.LxcName())
 		prev, exists := lastTrafficSnapshot[c.LxcName()]
 		if exists && rx >= prev.RXBytes && tx >= prev.TXBytes {
-			c.TrafficUsedRX += int64(rx - prev.RXBytes)
-			c.TrafficUsedTX += int64(tx - prev.TXBytes)
+			config.MutateContainerNoSave(id, func(l *config.Container) {
+				l.TrafficUsedRX += int64(rx - prev.RXBytes)
+				l.TrafficUsedTX += int64(tx - prev.TXBytes)
+			})
 			config.SaveConfig()
 		}
 		lastTrafficSnapshot[c.LxcName()] = trafficSample{RXBytes: rx, TXBytes: tx}

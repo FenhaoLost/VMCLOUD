@@ -284,7 +284,7 @@ POST /api/v1/ssh-ticket
 
 ```text
 wss://0.0.0.0:8999/api/ssh?container=example-vm
-Sec-WebSocket-Protocol: clicd-ticket.xxxxx
+Sec-WebSocket-Protocol: eyvescloud-ticket.xxxxx
 ```
 
 注意：WebSSH 受浏览器安全策略和 CLICD 后端 Origin 校验影响。魔方客户区通常是 HTTPS，因此 CLICD 面板也必须启用 HTTPS/WSS。请把魔方服务器配置里的 `主机名` 改为 `https://0.0.0.0:8999`，或把 `secure` 设为 `开启`。

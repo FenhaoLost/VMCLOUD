@@ -20,6 +20,9 @@ func CaptureRuntimeRestoreState() {
 	kvmManager := kvm.NewManager()
 	changed := false
 
+	// Mutate the in-memory graph under the write lock; the container statuses
+	// are also read by HTTP handlers and background scanners.
+	config.AppConfigMu.Lock()
 	for i := range config.AppConfig.Containers {
 		c := &config.AppConfig.Containers[i]
 		status, err := runtimeStatus(*c, lxcManager, kvmManager)
@@ -37,6 +40,7 @@ func CaptureRuntimeRestoreState() {
 			changed = true
 		}
 	}
+	config.AppConfigMu.Unlock()
 	if changed {
 		if err := config.SaveConfig(); err != nil {
 			fmt.Printf("Warning: failed to save host boot restore state: %v\n", err)

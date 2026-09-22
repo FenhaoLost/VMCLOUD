@@ -56,6 +56,9 @@ func HandleWebSSHTicket(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Access denied to this container"})
 		return
 	}
+	if !requireSubUserWrite(w, r) {
+		return
+	}
 	c := config.FindContainerByName(req.ContainerName)
 	if c == nil {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
@@ -124,13 +127,12 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 			ip, err = lxcManager.GetContainerIP(c.LxcName())
 		}
 		if err == nil {
-			c.IP = ip
-			config.SaveConfig()
+			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
 		}
 	}
 	if c.IP == "" && !c.IsKVM() {
 		if ip, err := lxcManager.EnsureContainerIPv4(c.ID); err == nil && ip != "" {
-			c.IP = ip
+			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
 		}
 	}
 	if c.IP == "" && c.IsKVM() {
@@ -197,9 +199,8 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 				c = refreshed
 			}
 			if ip, ipErr := kvmManager.GetContainerIP(c.VirshName()); ipErr == nil && ip != "" {
-				c.IP = ip
-				config.SaveConfig()
-				addr = net.JoinHostPort(c.IP, "22")
+				config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+				addr = net.JoinHostPort(ip, "22")
 			}
 			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
 			sshConfig.Timeout = 10 * time.Second
@@ -218,9 +219,8 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 				c = refreshed
 			}
 			if ip, ipErr := lxcManager.GetContainerIP(c.LxcName()); ipErr == nil && ip != "" {
-				c.IP = ip
-				config.SaveConfig()
-				addr = net.JoinHostPort(c.IP, "22")
+				config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+				addr = net.JoinHostPort(ip, "22")
 			}
 			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
 			sshConfig.Timeout = 10 * time.Second
@@ -319,8 +319,11 @@ func containerHostKeyCallback(c *config.Container) ssh.HostKeyCallback {
 			return fmt.Errorf("container SSH host key mismatch")
 		}
 		if c.SSHHostKey == "" {
-			c.SSHHostKey = fingerprint
-			config.SaveConfig()
+			config.MutateContainerByID(c.ID, func(l *config.Container) {
+				if l.SSHHostKey == "" {
+					l.SSHHostKey = fingerprint
+				}
+			})
 		}
 		return nil
 	}
@@ -328,7 +331,7 @@ func containerHostKeyCallback(c *config.Container) ssh.HostKeyCallback {
 
 func webSSHTicketFromRequest(r *http.Request) string {
 	for _, protocol := range websocket.Subprotocols(r) {
-		const prefix = "clicd-ticket."
+		const prefix = "eyvescloud-ticket."
 		if len(protocol) > len(prefix) && protocol[:len(prefix)] == prefix {
 			return protocol[len(prefix):]
 		}
@@ -338,7 +341,7 @@ func webSSHTicketFromRequest(r *http.Request) string {
 
 func webSSHTicketProtocol(r *http.Request) string {
 	for _, protocol := range websocket.Subprotocols(r) {
-		const prefix = "clicd-ticket."
+		const prefix = "eyvescloud-ticket."
 		if len(protocol) > len(prefix) && protocol[:len(prefix)] == prefix {
 			return protocol
 		}

@@ -8,48 +8,51 @@ npm install
 npm run build
 ```
 
-Build output is written to `frontend/dist`.
+The build output is in `frontend/dist`.
 
 ## Backend Build
 
 ```bash
 cd backend
-go test ./...
+go vet ./...
+go test -race ./...
 go build -o ../build/clicd .
 ```
 
-To package the embedded web panel, sync the frontend build output into the backend embed directory first.
+`go test -race` runs all unit tests in parallel (including the LXC/KVM modules and the API layer); it is recommended to run it after every change.
 
-## One-command Build
+To package the embedded web panel, first sync the frontend build output to the backend embed directory.
 
-The project root provides a build script:
+## One-shot Build
+
+A build script is provided at the project root:
 
 ```bash
 bash build.sh
 ```
 
-The script chains frontend build, static asset sync, and Go binary build.
+It chains the frontend build, static asset sync, and Go binary build.
 
-The default target is Linux amd64. To build an ARM64 package, set:
+The default target is Linux amd64. To build an ARM64 package, specify:
 
 ```bash
 CLICD_GOARCH=arm64 bash build.sh
 ```
 
-To build both amd64 and arm64 release assets at once:
+To build both amd64 and arm64 release packages:
 
 ```bash
 CLICD_GOARCH=all bash build.sh
 ```
 
-The build writes:
+After the build finishes, the following artifacts are generated:
 
 - `dist/clicd-linux-amd64`
 - `dist/clicd-linux-amd64.tar.gz`
 - `dist/clicd-linux-arm64`
 - `dist/clicd-linux-arm64.tar.gz`
 
-## Docs Build
+## Docs Site Build
 
 ```bash
 cd docs
@@ -58,4 +61,4 @@ npm run dev
 npm run build
 ```
 
-`npm run dev` starts a local preview, and `npm run build` generates static documentation.
+`npm run dev` previews the docs locally; `npm run build` generates the static documentation.

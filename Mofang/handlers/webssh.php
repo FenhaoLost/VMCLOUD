@@ -5,7 +5,7 @@ $container = isset($_GET['container']) ? (string)$_GET['container'] : (isset($_G
 $ticket = isset($_GET['ticket']) ? (string)$_GET['ticket'] : (isset($_GET['amp;ticket']) ? (string)$_GET['amp;ticket'] : '');
 
 if ($protocol === '' && $ticket !== '') {
-    $protocol = 'clicd-ticket.' . $ticket;
+    $protocol = 'eyvescloud-ticket.' . $ticket;
 }
 
 if ($ws === '') {

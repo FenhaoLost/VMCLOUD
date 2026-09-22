@@ -376,7 +376,7 @@ function clicd_webssh_url($params, $ticket, $containerName)
 
     return $handler
         . '?ws=' . rawurlencode($wsUrl)
-        . '&protocol=' . rawurlencode('clicd-ticket.' . (string)$ticket)
+        . '&protocol=' . rawurlencode('eyvescloud-ticket.' . (string)$ticket)
         . '&ticket=' . rawurlencode((string)$ticket)
         . '&container=' . rawurlencode((string)$containerName);
 }

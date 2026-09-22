@@ -1,10 +1,10 @@
 # API Integration
 
-CLICD remains compatible with legacy `/api` endpoints, so existing integrations do not need to change. New integrations should use `/api/v1`; the list below is all v1, and the recommended container list endpoint is `GET /api/v1/containers`.
+CLICD remains compatible with the legacy `/api` endpoints, so existing integrations do not need changes. For new integrations, use the `/api/v1` endpoints; the list below covers v1. `GET /api/v1/containers` is recommended for listing containers.
 
 ## Authentication
 
-API keys can be created and managed from the API Integration page. Requests support either of these headers:
+API keys can be created and managed on the "API Integration" page. Two header styles are supported when making requests:
 
 ```bash
 curl -H "X-API-Key: YOUR_API_KEY" https://panel.example.com/api/v1/containers
@@ -14,9 +14,9 @@ curl -H "X-API-Key: YOUR_API_KEY" https://panel.example.com/api/v1/containers
 curl -H "Authorization: Bearer YOUR_API_KEY" https://panel.example.com/api/v1/dashboard
 ```
 
-## Response Shape
+## Response Structure
 
-All APIs use the same response envelope:
+All endpoints return a uniform response wrapper:
 
 ```json
 {
@@ -26,13 +26,13 @@ All APIs use the same response envelope:
 }
 ```
 
-Integrations should read only the business fields they need. New capabilities are added as optional fields where possible, without requiring existing plugins to rename current fields.
+When integrating, only read the fields your business needs. New capabilities are added as optional fields first, so existing plugins never have to rename their current fields.
 
-## Creation and Reinstall
+## Creating and Reinstalling
 
-Container creation, batch creation, reinstall, and batch reinstall support mixed NAT, public IPv4, IPv6 networking, plus Linux SSH login configuration. Public IPv4/IPv6 pools can be viewed with `GET /api/v1/routing` and updated with `PUT /api/v1/routing`.
+Creating containers, batch creation, reinstalling, and batch reinstalling now support mixed NAT/public IPv4/IPv6 networking and Linux SSH login configuration. The public IPv4/IPv6 address pools can be viewed via `GET /api/v1/routing` and updated via `PUT /api/v1/routing`.
 
-Create container example:
+Example: create a container
 
 ```json
 {
@@ -61,28 +61,28 @@ Create container example:
 }
 ```
 
-Field notes:
+Field reference:
 
 | Field | Description |
 | --- | --- |
-| `assign_nat` | Whether to allocate NAT port mappings. If omitted, default NAT behavior is preserved. |
-| `assign_ipv4` | Whether to allocate public IPv4. |
-| `ipv4_count` | Number of public IPv4 addresses to allocate automatically. |
-| `public_ipv4s` | Explicit public IPv4 address list. |
-| `assign_ipv6` | Whether to allocate IPv6. |
-| `ipv6_count` | Number of IPv6 addresses to allocate automatically. |
-| `ipv6_addresses` | Explicit IPv6 address list. |
-| `ssh_auth_mode` | Linux creation supports `auto_password`, `password`, and `key`; reinstall also supports `keep`. |
-| `ssh_password` | Custom password for `password` mode. It must be 8-64 characters, include letters and digits, and contain no whitespace. |
-| `ssh_public_key` | One-line SSH public key for `key` mode. |
-| `network_down_mbps` | Optional container download/downlink bandwidth limit in Mbps. `0` means unlimited. |
-| `network_up_mbps` | Optional container upload/uplink bandwidth limit in Mbps. `0` means unlimited. |
-| `io_read_mbps` | Optional disk read limit in MB/s. `0` means unlimited. |
-| `io_write_mbps` | Optional disk write limit in MB/s. `0` means unlimited. |
-| `network_bw_mbps` | Legacy-compatible field. Sets symmetric downlink/uplink bandwidth; new integrations should prefer the split fields. |
-| `io_speed_mbps` | Legacy-compatible field. Sets symmetric read/write I/O limits; new integrations should prefer the split fields. |
+| `assign_nat` | Whether to allocate NAT port mappings; when omitted, the default NAT behavior is kept. |
+| `assign_ipv4` | Whether to assign public IPv4. |
+| `ipv4_count` | Number of public IPv4 addresses to auto-assign. |
+| `public_ipv4s` | Explicit list of public IPv4 addresses. |
+| `assign_ipv6` | Whether to assign IPv6. |
+| `ipv6_count` | Number of IPv6 addresses to auto-assign. |
+| `ipv6_addresses` | Explicit list of IPv6 addresses. |
+| `ssh_auth_mode` | Linux creation supports `auto_password`, `password`, `key`; reinstall additionally supports `keep`. |
+| `ssh_password` | Custom password in `password` mode; 8-64 characters, must contain both letters and digits, and no whitespace. |
+| `ssh_public_key` | A single-line SSH public key in `key` mode. |
+| `network_down_mbps` | Optional; container download/ingress bandwidth limit in Mbps, `0` means unlimited. |
+| `network_up_mbps` | Optional; container upload/egress bandwidth limit in Mbps, `0` means unlimited. |
+| `io_read_mbps` | Optional; disk read rate limit in MB/s, `0` means unlimited. |
+| `io_write_mbps` | Optional; disk write rate limit in MB/s, `0` means unlimited. |
+| `network_bw_mbps` | Legacy field; sets symmetric download/upload bandwidth at once. New integrations should use the split fields. |
+| `io_speed_mbps` | Legacy field; sets symmetric read/write I/O limits at once. New integrations should use the split fields. |
 
-Reinstall example:
+Example: reinstall
 
 ```json
 {
@@ -93,11 +93,11 @@ Reinstall example:
 }
 ```
 
-`keep` is only for reinstall and keeps the current SSH password. Windows KVM images ignore Linux SSH public key fields.
+`keep` is only for reinstall and means to reuse the current SSH password. Windows KVM images ignore the Linux SSH public key fields.
 
 ## Resource and Traffic Limits
 
-`PUT /api/v1/containers/{id}/resource-limit` supports partial updates. Fields omitted from the request remain unchanged.
+`PUT /api/v1/containers/{id}/resource-limit` supports partial updates per field; omitted fields are left unchanged.
 
 ```json
 {
@@ -110,9 +110,9 @@ Reinstall example:
 }
 ```
 
-Legacy `network_bw_mbps` and `io_speed_mbps` are still accepted. They mean symmetric downlink/uplink bandwidth and symmetric read/write I/O limits. New integrations should use the split fields to control download/upload and read/write independently.
+The legacy `network_bw_mbps` and `io_speed_mbps` fields remain available, meaning symmetric download/upload bandwidth and symmetric read/write I/O limits respectively. For new integrations, use the split fields to control download/upload and read/write independently.
 
-`PUT /api/v1/containers/{id}/traffic-limit` request body:
+Request body for `PUT /api/v1/containers/{id}/traffic-limit`:
 
 ```json
 {
@@ -125,16 +125,16 @@ Legacy `network_bw_mbps` and `io_speed_mbps` are still accepted. They mean symme
 
 | Field | Description |
 | --- | --- |
-| `traffic_mode` | Traffic limit mode. Common values are `total` for a shared total limit and `split` for separate inbound/outbound limits. |
-| `monthly_traffic_gb` | Monthly total traffic quota for `total` mode, in GB. `0` means unlimited. |
-| `traffic_in_gb` | Monthly inbound quota for `split` mode, in GB. `0` means unlimited. |
-| `traffic_out_gb` | Monthly outbound quota for `split` mode, in GB. `0` means unlimited. |
+| `traffic_mode` | Traffic limit mode; `total` applies a combined limit, `split` limits inbound/outbound separately. |
+| `monthly_traffic_gb` | Monthly total traffic quota in `total` mode, in GB; `0` means unlimited. |
+| `traffic_in_gb` | Monthly inbound quota in `split` mode, in GB; `0` means unlimited. |
+| `traffic_out_gb` | Monthly outbound quota in `split` mode, in GB; `0` means unlimited. |
 
 ## Container Firewall
 
-Read container firewall settings with `GET /api/v1/containers/{id}/firewall` and update them with `PUT /api/v1/containers/{id}/firewall`. Updates are applied immediately when the container is running.
+The container firewall is read via `GET /api/v1/containers/{id}/firewall` and updated via `PUT /api/v1/containers/{id}/firewall`. Updates are applied to running containers immediately.
 
-Update example:
+Example update:
 
 ```json
 {
@@ -158,18 +158,18 @@ Update example:
 | --- | --- |
 | `enabled` | Whether the container firewall is enabled. |
 | `default_action` | Default action: `ACCEPT` or `DROP`. |
-| `rules[].id` | Optional. Omit for new rules and the backend will generate one. |
+| `rules[].id` | Optional; may be omitted for new rules, the backend generates it automatically. |
 | `rules[].direction` | Direction: `in` or `out`. |
 | `rules[].protocol` | Protocol: `tcp`, `udp`, `icmp`, or `all`. |
 | `rules[].action` | Action: `ACCEPT` or `DROP`. |
 | `rules[].network` | Network type: `ipv4`, `ipv6`, or `all`. |
-| `rules[].source_ip` | Optional source IP, CIDR, or address range. |
-| `rules[].port` | Optional. Supported only for `tcp`/`udp`; examples: `22`, `80,443`, or `8000-9000`. |
-| `rules[].description` | Optional note. |
+| `rules[].source_ip` | Optional; source IP, CIDR, or address range. |
+| `rules[].port` | Optional; only for `tcp`/`udp`; accepts `22`, `80,443`, or `8000-9000`. |
+| `rules[].description` | Optional remark. |
 
-## API Key Create and Update
+## API Key Creation and Update
 
-`POST /api/v1/api-keys` and `PATCH /api/v1/api-keys/{id}` use the same field shape. `name` is required when creating a key; updates overwrite the fields you send.
+`POST /api/v1/api-keys` and `PATCH /api/v1/api-keys/{id}` use the same field structure. `name` is required on create; override fields as needed on update.
 
 ```json
 {
@@ -184,16 +184,16 @@ Update example:
 
 | Field | Description |
 | --- | --- |
-| `name` | API key name. Required when creating a key. |
-| `ip_whitelist` | Optional allowed source IPs/CIDRs, comma-separated. Empty means no IP restriction. |
-| `scopes` | Optional permission scopes. If omitted, the default read-only scopes are used. `*` grants all permissions. |
-| `expires_at` | Optional expiration time. Empty means no expiration. |
-| `disabled` | Whether this key is disabled. |
-| `container_uuids` | Optional container allowlist that limits the key to specific containers. |
+| `name` | API key name; required on create. |
+| `ip_whitelist` | Optional; allowed source IP/CIDR, comma-separated; empty means no restriction. |
+| `scopes` | Optional; permission scopes. Omitted to use the default read-only scopes, pass `*` for all permissions. |
+| `expires_at` | Optional; expiration time, empty means no expiry. |
+| `disabled` | Whether the key is disabled. |
+| `container_uuids` | Optional; restricts the key to the specified containers only. |
 
 ## Panel Access Source Policy
 
-Use `GET /api/v1/access-policy` to read the panel source allowlist and `PUT /api/v1/access-policy` to update it. Both endpoints require `admin:access`. The policy covers panel pages, login endpoints, and every API.
+`GET /api/v1/access-policy` reads the panel access allowlist, and `PUT /api/v1/access-policy` updates the policy. Both require the `admin:access` scope. The policy covers the panel pages, the login endpoint, and all APIs.
 
 ```json
 {
@@ -209,11 +209,11 @@ Use `GET /api/v1/access-policy` to read the panel source allowlist and `PUT /api
 }
 ```
 
-Both lists accept IPv4, IPv6, and CIDR values. The backend only uses `X-Forwarded-For`, `X-Real-IP`, or `CF-Connecting-IP` when the direct peer matches `trusted_proxies`, so untrusted clients cannot bypass the policy by spoofing those headers. An enabled policy requires at least one allowed source, and the API rejects changes that exclude the current administrator source. Direct loopback access remains available as a CLI/SSH recovery path.
+Both `allowed_sources` and `trusted_proxies` support IPv4, IPv6, and CIDR. The backend only honors `X-Forwarded-For`, `X-Real-IP`, or `CF-Connecting-IP` when the direct connection source matches `trusted_proxies`; spoofed headers from other clients cannot bypass the allowlist. At least one allowed source must be configured when the policy is enabled, and the endpoint rejects configurations that would exclude the current admin's source. Local loopback direct access remains as a recovery channel for CLI/SSH troubleshooting.
 
-## Python Example
+## Python Examples
 
-Fetch containers:
+Get the container list:
 
 ```python
 import requests
@@ -258,7 +258,7 @@ resp.raise_for_status()
 print(resp.json())
 ```
 
-## Endpoint List
+## Endpoint Reference
 
 ### Overview
 
@@ -269,7 +269,7 @@ print(resp.json())
 | GET | `/api/v1/host-report` | Host inspection report |
 | GET | `/api/v1/routing` | NAT/IPv4/IPv6 routing |
 | PUT | `/api/v1/routing` | Update public IPv4/IPv6 pools |
-| POST | `/api/v1/routing/ipv4-scan` | Scan a public IPv4 segment |
+| POST | `/api/v1/routing/ipv4-scan` | Scan public IPv4 ranges |
 | GET | `/api/v1/ipv6/status` | IPv6 status |
 | GET | `/api/v1/tasks` | Task queue |
 | DELETE | `/api/v1/tasks/{task_id}` | Delete a task |
@@ -279,9 +279,9 @@ print(resp.json())
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/v1/containers` | Container list (recommended) |
-| GET | `/api/v1/containers/list` | Compatible GET form for container list |
-| POST | `/api/v1/containers/list` | Compatible POST form for container list |
-| POST | `/api/v1/containers` | Create container |
+| GET | `/api/v1/containers/list` | Container list (GET form) |
+| POST | `/api/v1/containers/list` | Container list (POST form) |
+| POST | `/api/v1/containers` | Create a container |
 | GET | `/api/v1/containers/{id\|uuid\|name}` | Container details |
 | POST | `/api/v1/containers/{id}/start` | Start |
 | POST | `/api/v1/containers/{id}/stop` | Stop |
@@ -301,18 +301,18 @@ print(resp.json())
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/v1/containers/{id}/random-port` | Random available port; accepts `host_ip` to check a specific host IP |
-| POST | `/api/v1/containers/{id}/port-mappings` | Add port mapping |
-| PUT | `/api/v1/containers/{id}/port-mappings/{index}` | Update port mapping |
-| DELETE | `/api/v1/containers/{id}/port-mappings/{index}` | Delete port mapping |
+| GET | `/api/v1/containers/{id}/random-port` | Random available port; pass `host_ip` to query a specific host IP |
+| POST | `/api/v1/containers/{id}/port-mappings` | Add a port mapping |
+| PUT | `/api/v1/containers/{id}/port-mappings/{index}` | Update a port mapping |
+| DELETE | `/api/v1/containers/{id}/port-mappings/{index}` | Delete a port mapping |
 | GET | `/api/v1/containers/{id}/firewall` | Get container firewall settings |
 | PUT | `/api/v1/containers/{id}/firewall` | Update container firewall settings |
 | GET | `/api/v1/snapshots` | Snapshot overview |
 | GET | `/api/v1/containers/{id}/snapshots` | Container snapshots |
-| POST | `/api/v1/containers/{id}/snapshots` | Create snapshot |
-| DELETE | `/api/v1/containers/{id}/snapshots/{snapshot_id}` | Delete snapshot |
-| POST | `/api/v1/containers/{id}/snapshots/{snapshot_id}/restore` | Restore snapshot |
-| POST | `/api/v1/containers/{id}/snapshots/schedule` | Schedule snapshots |
+| POST | `/api/v1/containers/{id}/snapshots` | Create a snapshot |
+| DELETE | `/api/v1/containers/{id}/snapshots/{snapshot_id}` | Delete a snapshot |
+| POST | `/api/v1/containers/{id}/snapshots/{snapshot_id}/restore` | Restore a snapshot |
+| POST | `/api/v1/containers/{id}/snapshots/schedule` | Scheduled snapshots |
 | PUT | `/api/v1/containers/{id}/snapshots/quota` | Snapshot quota |
 
 ### Platform Management
@@ -323,49 +323,107 @@ print(resp.json())
 | GET | `/api/v1/images` | Image management list |
 | GET | `/api/v1/images/enabled` | Enabled and downloaded images; supports `type=lxc\|kvm` |
 | POST | `/api/v1/images/custom` | Add a third-party LXC/KVM image source |
-| DELETE | `/api/v1/images/custom` | Remove a third-party LXC/KVM image source and cache |
-| POST | `/api/v1/images/download` | Download image |
-| POST | `/api/v1/images/cancel` | Cancel image download |
+| DELETE | `/api/v1/images/custom` | Remove a third-party LXC/KVM image source and its cache |
+| POST | `/api/v1/images/download` | Download an image |
+| POST | `/api/v1/images/cancel` | Cancel an image download |
 | DELETE | `/api/v1/images/delete` | Delete image cache |
-| PUT | `/api/v1/images/toggle` | Enable or disable image |
+| PUT | `/api/v1/images/toggle` | Enable/disable an image |
 | GET | `/api/v1/security/alerts` | Security alerts |
-| POST | `/api/v1/security/check` | Run security check |
+| POST | `/api/v1/security/check` | Run a security check now |
 | GET | `/api/v1/security/logs?container={name}` | Security connection logs |
 | GET | `/api/v1/security/summary` | Security summary |
 | GET | `/api/v1/security/settings` | Security settings |
 | PUT | `/api/v1/security/settings` | Update security settings |
-| GET | `/api/v1/swap` | Swap information |
+| GET | `/api/v1/swap` | Swap info |
 | POST | `/api/v1/swap` | Adjust Swap |
 | GET | `/api/v1/language` | Current panel language |
 | POST/PUT | `/api/v1/language` | Update panel language |
-| GET | `/api/v1/ssl` | SSL settings (requires admin permission / `admin:access`) |
-| PUT | `/api/v1/ssl` | Update SSL settings (requires admin permission / `admin:access`) |
-| GET | `/api/v1/webssh-origins` | WebSSH Origin allowlist (requires admin permission / `admin:access`) |
-| PUT | `/api/v1/webssh-origins` | Update WebSSH Origin allowlist (requires admin permission / `admin:access`) |
+| GET | `/api/v1/ssl` | SSL settings (requires admin / `admin:access`) |
+| PUT | `/api/v1/ssl` | Update SSL settings (requires admin / `admin:access`) |
+| GET | `/api/v1/webssh-origins` | WebSSH Origin allowlist (requires admin / `admin:access`) |
+| PUT | `/api/v1/webssh-origins` | Update WebSSH Origin allowlist (requires admin / `admin:access`) |
 | POST | `/api/v1/batch-create` | Batch create containers |
-| POST | `/api/v1/batch-action` | Batch power action, delete, or reinstall |
-| POST | `/api/v1/ssh-ticket` | Create WebSSH ticket |
-| POST | `/api/v1/vnc-ticket` | Create WebVNC ticket |
+| POST | `/api/v1/batch-action` | Batch start/stop/delete/reinstall |
+| POST | `/api/v1/ssh-ticket` | Create a WebSSH ticket |
+| POST | `/api/v1/vnc-ticket` | Create a WebVNC ticket |
+
+### Storage / Policies / Migration
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/storage` | Storage pools and disk status |
+| GET | `/api/v1/policies` | Policy list and trigger history |
+| POST | `/api/v1/policies` | Create a policy |
+| PUT | `/api/v1/policies/{id}` | Update a policy |
+| DELETE | `/api/v1/policies/{id}` | Delete a policy |
+| POST | `/api/v1/migrate/import` | Import a migration bundle |
+
+### Node Management (Controller-Agent)
+
+Controller-Agent endpoints use the `/api/nodes` prefix and require an administrator login session (JWT) or a node token:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/nodes` | Node list (admin) |
+| POST | `/api/nodes` | Create a node (admin) |
+| DELETE | `/api/nodes/{id}` | Delete a node (admin) |
+| GET | `/api/nodes/{id}` | Node details (admin) |
+| GET | `/api/nodes/{id}/install-script` | One-line install script (admin) |
+| GET | `/api/nodes/binary` | Download the Controller binary |
+| POST | `/api/nodes/register` | Worker registration (install key) |
+| POST | `/api/nodes/{id}/heartbeat` | Worker heartbeat (node token) |
+| GET | `/api/nodes/{id}/containers` | Proxy view of worker containers (admin) |
+| POST | `/api/nodes/{id}/containers/{cid}/{action}` | Proxy operation on worker containers (admin) |
+
+Worker-side endpoints (`/api/agent/*`) only accept the Controller node token and are used for the Controller to proxy views and operations:
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/agent/containers` | Worker container list |
+| POST | `/api/agent/containers/{cid}/{action}` | Start/stop/restart a worker container |
+| POST | `/api/agent/action` | Compatible container action endpoint |
+
+Example: create a node
+
+```json
+{
+  "name": "node-1",
+  "address": "http://203.0.113.20:8999"
+}
+```
+
+Example: worker registration
+
+```json
+{
+  "install_key": "安装密钥",
+  "name": "node-1",
+  "address": "http://203.0.113.20:8999",
+  "version": "1.1.29"
+}
+```
+
+On successful registration the worker receives its `node_id` and `token`; the worker uses the token to report heartbeats, and the Controller uses it to proxy access to the worker.
 
 ### Accounts and Logs
 
 | Method | Path | Description |
 | --- | --- | --- |
-| POST | `/api/v1/sub-user/create` | Create sub-user link |
+| POST | `/api/v1/sub-user/create` | Create a sub-user link |
 | GET | `/api/v1/sub-users` | Sub-user list |
-| POST | `/api/v1/sub-users/{id}/rotate-password` | Rotate sub-user password |
-| GET | `/api/v1/sub-users/{id}/audit-logs` | Sub-user audit logs |
+| POST | `/api/v1/sub-users/{id}/rotate-password` | Rotate a sub-user password |
+| GET | `/api/v1/sub-users/{id}/audit-logs` | Sub-user operation logs |
 | GET | `/api/v1/sub-users/{id}/login-logs` | Sub-user login logs |
-| GET | `/api/v1/audit-logs` | Audit logs |
+| GET | `/api/v1/audit-logs` | Operation logs |
 | GET | `/api/v1/login-logs` | Login logs |
 | GET | `/api/v1/api-keys` | API key list |
-| POST | `/api/v1/api-keys` | Create API key |
-| PATCH | `/api/v1/api-keys/{id}` | Update API key |
-| DELETE | `/api/v1/api-keys/{id}` | Delete API key |
+| POST | `/api/v1/api-keys` | Create an API key |
+| PATCH | `/api/v1/api-keys/{id}` | Update an API key |
+| DELETE | `/api/v1/api-keys/{id}` | Delete an API key |
 
-## Response Samples
+## Response Examples
 
-The samples below are grouped by endpoint path. Resource numbers, task IDs, container IDs, timestamps, IP addresses, and keys will differ in real environments. Passwords, tickets, and API keys are masked.
+The samples below are grouped by endpoint path. Real resource values, task IDs, container IDs, times, IPs, and keys differ in production; the passwords, tickets, and API keys in the examples have been masked.
 
 ### Overview
 
@@ -765,7 +823,7 @@ The samples below are grouped by endpoint path. Resource numbers, task IDs, cont
   },
   "POST /api/v1/swap": {
     "success": true,
-    "message": "SWAP adjusted to 16384 MB",
+    "message": "SWAP 已调整为 16384 MB",
     "data": { "total_mb": 16383, "used_mb": 0, "free_mb": 16383, "enabled": true, "swap_file": "/swapfile" }
   },
   "GET /api/v1/language": {
@@ -804,11 +862,11 @@ The samples below are grouped by endpoint path. Resource numbers, task IDs, cont
   },
   "POST /api/v1/ssh-ticket": {
     "success": true,
-    "data": { "ticket": "***60 seconds valid***" }
+    "data": { "ticket": "***60秒有效票据***" }
   },
   "POST /api/v1/vnc-ticket": {
     "success": true,
-    "data": { "ticket": "***60 seconds valid***" }
+    "data": { "ticket": "***60秒有效票据***" }
   }
 }
 ```

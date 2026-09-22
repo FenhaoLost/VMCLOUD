@@ -20,7 +20,7 @@ type panelAccessPolicyResponse struct {
 func HandlePanelAccessPolicy(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: panelAccessPolicyStatus(r, config.AppConfig.PanelAccessPolicy)})
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: panelAccessPolicyStatus(r, config.SnapshotPanelAccessPolicy())})
 	case http.MethodPut:
 		updatePanelAccessPolicy(w, r)
 	default:
@@ -48,13 +48,9 @@ func updatePanelAccessPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	previous := config.AppConfig.PanelAccessPolicy
-	config.AppConfig.PanelAccessPolicy = normalized
-	if err := config.SaveConfig(); err != nil {
-		config.AppConfig.PanelAccessPolicy = previous
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save panel access policy"})
-		return
-	}
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.PanelAccessPolicy = normalized
+	})
 	detail := "enabled=" + strings.ToLower(strings.TrimSpace(boolText(normalized.Enabled))) +
 		",allowed=" + strings.Join(normalized.AllowedSources, ",") +
 		",trusted_proxies=" + strings.Join(normalized.TrustedProxies, ",")

@@ -7,6 +7,7 @@ interface AuthContextType {
   isLoading: boolean
   username: string | null
   isSubUser: boolean
+  isReadOnly: boolean
   containerIdentifiers: string[]
   login: (username: string, password: string) => Promise<void>
   accessCodeLogin: (code: string, password: string) => Promise<void>
@@ -21,23 +22,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const [username, setUsername] = useState<string | null>(null)
   const [isSubUser, setIsSubUser] = useState(false)
+  const [isReadOnly, setIsReadOnly] = useState(false)
   const [containerIdentifiers, setContainerIdentifiers] = useState<string[]>([])
   const [token, setToken] = useState<string | null>(null)
   const navigate = useNavigate()
 
-  const saveAuth = (t: string, u: string, sub: boolean, ids: string[]) => {
-    localStorage.setItem('clicd_token', t)
-    localStorage.setItem('clicd_username', u)
+  const saveAuth = (t: string, u: string, sub: boolean, ids: string[], readOnly = false) => {
+    localStorage.setItem('eyvescloud_token', t)
+    localStorage.setItem('eyvescloud_username', u)
     setToken(t)
     setUsername(u)
     setIsSubUser(sub)
+    setIsReadOnly(sub && readOnly)
     setContainerIdentifiers(ids)
     setIsAuthenticated(true)
   }
 
   useEffect(() => {
-    const savedToken = localStorage.getItem('clicd_token')
-    const savedUsername = localStorage.getItem('clicd_username')
+    const savedToken = localStorage.getItem('eyvescloud_token')
+    const savedUsername = localStorage.getItem('eyvescloud_username')
     if (savedToken) {
       const payload = decodeTokenPayload(savedToken)
       const nextUsername = payload?.username || payload?.sub_user || savedUsername || null
@@ -46,14 +49,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(savedToken)
       setUsername(nextUsername)
       setIsSubUser(!!payload?.sub_user)
+      setIsReadOnly(!!payload?.sub_user && payload?.role === 'viewer')
       setContainerIdentifiers(nextContainerIdentifiers)
       checkAuth()
         .then(() => {
           setIsAuthenticated(true)
         })
         .catch(() => {
-          localStorage.removeItem('clicd_token')
-          localStorage.removeItem('clicd_username')
+          localStorage.removeItem('eyvescloud_token')
+          localStorage.removeItem('eyvescloud_username')
           setToken(null)
           setUsername(null)
           setIsSubUser(false)
@@ -74,8 +78,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (adminError) {
       try {
         const res = await api.post('/sub-user/login', { username: user, password })
-        const data = res.data.data as { token: string; username: string; container_uuids: string[] }
-        saveAuth(data.token, data.username, true, data.container_uuids || [])
+        const data = res.data.data as { token: string; username: string; role?: string; container_uuids: string[] }
+        saveAuth(data.token, data.username, true, data.container_uuids || [], data.role === 'viewer')
         const first = data.container_uuids?.[0]
         navigate(first ? `/container/${encodeURIComponent(first)}` : '/containers')
       } catch {
@@ -86,15 +90,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const accessCodeLogin = async (code: string, password: string) => {
     const res = await api.post('/sub-user/access', { code, password })
-    const data = res.data.data as { token: string; username: string; container_uuids: string[] }
-    saveAuth(data.token, data.username, true, data.container_uuids || [])
+    const data = res.data.data as { token: string; username: string; role?: string; container_uuids: string[] }
+    saveAuth(data.token, data.username, true, data.container_uuids || [], data.role === 'viewer')
     const first = data.container_uuids?.[0]
     navigate(first ? `/container/${encodeURIComponent(first)}` : '/containers')
   }
 
   const logout = () => {
-    localStorage.removeItem('clicd_token')
-    localStorage.removeItem('clicd_username')
+    localStorage.removeItem('eyvescloud_token')
+    localStorage.removeItem('eyvescloud_username')
     setToken(null)
     setUsername(null)
     setIsSubUser(false)
@@ -104,7 +108,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, username, isSubUser, containerIdentifiers, login, accessCodeLogin, logout, token }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, username, isSubUser, isReadOnly, containerIdentifiers, login, accessCodeLogin, logout, token }}>
       {children}
     </AuthContext.Provider>
   )
@@ -121,6 +125,7 @@ export function useAuth() {
 type TokenPayload = {
   username?: string
   sub_user?: string
+  role?: string
   container_uuids?: string[]
 }
 

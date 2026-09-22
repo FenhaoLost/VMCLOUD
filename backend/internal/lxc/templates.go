@@ -131,4 +131,3 @@ func GetTemplateMinDiskGB(templateID string) float64 {
 		return 0.5
 	}
 }
-

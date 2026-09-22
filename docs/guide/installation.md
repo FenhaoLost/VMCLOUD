@@ -1,6 +1,6 @@
 # 安装
 
-CLICD 提供一键安装脚本。脚本默认安装 GitHub Releases 的最新版本，也可以通过环境变量指定固定版本。
+EyvesCloud 提供一键安装脚本。脚本默认安装 GitHub Releases 的最新版本，也可以通过环境变量指定固定版本。
 
 ## 环境要求
 
@@ -14,7 +14,7 @@ CLICD 提供一键安装脚本。脚本默认安装 GitHub Releases 的最新版
 ## 安装最新版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh
 ```
 
 安装器会分别询问 LXC 与 KVM 的 NAT 私网网段。直接回车时，脚本会扫描宿主机路由、网卡、网桥和 libvirt 网络，自动选择未冲突的 RFC1918 `/24` 网段；也可以输入 `172.28.40.0/24` 这类 CIDR。非交互安装可设置 `CLICD_LXC_SUBNET` 和 `CLICD_KVM_SUBNET`。
@@ -24,10 +24,10 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
 ## 安装指定版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo CLICD_VERSION=v1.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
 ```
 
-把 `v1.1.6` 替换成需要安装的 Release 标签即可。
+把 `v1.1.29` 替换成需要安装的 Release 标签即可。
 
 ## 访问面板
 
@@ -39,10 +39,33 @@ http://YOUR_SERVER_IP:8999
 
 首次登录请使用安装脚本输出的管理员账号信息。生产环境建议在防火墙或反向代理层限制访问来源，并尽快修改默认账号和密码。
 
+## 运行模式
+
+同一份二进制支持三种运行模式：
+
+| 模式 | 说明 |
+| --- | --- |
+| 面板模式（默认） | 直接运行 `clicd server` 或安装后由 systemd 托管，作为独立面板。 |
+| 主控模式 | 同样是面板模式，额外进入「节点管理」页面生成被控安装脚本。任何面板都可以是主控。 |
+| 被控模式（Agent） | 在主控「节点管理」里执行一键安装脚本后，被控以 `clicd agent` 方式运行，自动注册到主控并上报心跳。 |
+
+手动以被控模式启动：
+
+```bash
+clicd agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=node-1 --addr=http://THIS_IP:8999
+```
+
+参数说明：
+
+- `--controller`：主控面板地址。
+- `--install-key`：主控「节点管理」中创建节点后生成的安装密钥（首次注册使用）。
+- `--name`：被控节点名称，默认取主机名。
+- `--addr`：被控自身面板地址，主控会通过该地址代理访问被控容器。
+
 ## 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh -s -- uninstall
 ```
 
 卸载前请确认是否需要保留容器、镜像缓存、数据库和配置文件。

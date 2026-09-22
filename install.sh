@@ -1991,7 +1991,7 @@ install_systemd_service() {
 
     cat > /etc/systemd/system/clicd.service << EOF
 [Unit]
-Description=CLICD - LXC/KVM Container Manager
+Description=EyvesCloud - LXC/KVM Container Manager
 After=network-online.target${lxc_after}${libvirt_after}
 Wants=network-online.target${libvirt_wants}
 StartLimitIntervalSec=60
@@ -2005,6 +2005,14 @@ RestartSec=5
 LimitNOFILE=1048576
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-${CLICD_NETWORK_ENV}
+# 安全加固（不影响 LXC/KVM 管理所需的权限）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
 
 [Install]
 WantedBy=multi-user.target
@@ -2020,7 +2028,7 @@ install_openrc_service() {
 #!/sbin/openrc-run
 
 name="CLICD"
-description="CLICD - LXC/KVM Container Manager"
+description="EyvesCloud - LXC/KVM Container Manager"
 command="/usr/local/bin/clicd"
 command_args="server"
 command_background=true

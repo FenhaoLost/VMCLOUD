@@ -62,6 +62,7 @@ import {
   stopContainer,
   Snapshot,
   SnapshotSchedule,
+  updateContainerTenant,
   StorageInfo,
   Template,
   updateContainerExpiry,
@@ -129,7 +130,8 @@ export default function ContainerDetail() {
   const containerIdentifier = paramId || ''
   const navigate = useNavigate()
   const dialog = useDialog()
-  const { isSubUser } = useAuth()
+  const { isSubUser, isReadOnly } = useAuth()
+  const readOnly = isSubUser && isReadOnly
   const { t } = useLanguage()
   const [container, setContainer] = useState<Container | null>(null)
   const [hostInfo, setHostInfo] = useState<HostInfo | null>(null)
@@ -576,6 +578,21 @@ export default function ContainerDetail() {
       }
     } catch (err) {
       console.error(err)
+    }
+  }
+
+  const handleEditTenant = async () => {
+    if (!containerIdentifier) return
+    const next = window.prompt('输入租户名称（留空表示未分组）', container?.tenant || '')
+    if (next === null) return
+    const tenant = next.trim()
+    try {
+      await updateContainerTenant(containerIdentifier, tenant)
+      setContainer((prev) => (prev ? { ...prev, tenant } : prev))
+      dialog.alert('完成', tenant ? `已归入租户「${tenant}」` : '已清除租户分组')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      dialog.alert('失败', error.response?.data?.message || '修改租户失败')
     }
   }
 
@@ -1120,28 +1137,28 @@ export default function ContainerDetail() {
 
           <div className="flex items-center gap-1.5 flex-wrap justify-end">
             {!isRunning ? (
-              <ActionButton dark disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('start')}>
+              <ActionButton dark disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly} onClick={() => handleAction('start')}>
                 <Play className="w-3.5 h-3.5" />
                 {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'start' ? taskActionLabels['start'] : '开机'}
               </ActionButton>
             ) : (
               <>
-                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('stop')}>
+                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly} onClick={() => handleAction('stop')}>
                   <Square className="w-3.5 h-3.5" />
                   {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'stop' ? taskActionLabels['stop'] : '关机'}
                 </ActionButton>
-                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked} onClick={() => handleAction('restart')}>
+                <ActionButton disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly} onClick={() => handleAction('restart')}>
                   <RefreshCw className="w-3.5 h-3.5" />
                   {isSubUserPolicyBlocked ? '已封禁' : isExpired ? '已到期' : taskStatus === 'restart' ? taskActionLabels['restart'] : '重启'}
                 </ActionButton>
                 {!isWindows && (
-                  <ActionButton dark disabled={isSubUserPolicyBlocked} onClick={() => setShowSSH(true)}>
+                  <ActionButton dark disabled={isSubUserPolicyBlocked || readOnly} onClick={() => setShowSSH(true)}>
                     <TerminalSquare className="w-3.5 h-3.5" />
                     WebSSH
                   </ActionButton>
                 )}
                 {isKVM && (
-                  <ActionButton dark disabled={!canOpenVNC || isSubUserPolicyBlocked} onClick={() => setShowVNC(true)}>
+                  <ActionButton dark disabled={!canOpenVNC || isSubUserPolicyBlocked || readOnly} onClick={() => setShowVNC(true)}>
                     <Monitor className="w-3.5 h-3.5" />
                     WebVNC
                   </ActionButton>
@@ -1155,20 +1172,20 @@ export default function ContainerDetail() {
               </ActionButton>
             )}
             {!hasIndependentIPv4 && hasNATQuota && (
-              <ActionButton disabled={isSubUserPolicyBlocked} onClick={() => setShowNat(true)}>
+              <ActionButton disabled={isSubUserPolicyBlocked || readOnly} onClick={() => setShowNat(true)}>
                 <Settings className="w-3.5 h-3.5" />
                 IPv4 NAT 管理
               </ActionButton>
             )}
-            <ActionButton onClick={openFirewall} disabled={isSubUserPolicyBlocked}>
+            <ActionButton onClick={openFirewall} disabled={isSubUserPolicyBlocked || readOnly}>
               <FirewallIcon className="w-3.5 h-3.5" />
               防火墙
             </ActionButton>
-            <ActionButton onClick={() => setShowSnapshots(true)} disabled={!!taskStatus || !!snapshotBusy || isSubUserPolicyBlocked}>
+            <ActionButton onClick={() => setShowSnapshots(true)} disabled={!!taskStatus || !!snapshotBusy || isSubUserPolicyBlocked || readOnly}>
               <Camera className="w-3.5 h-3.5" />
               快照
             </ActionButton>
-            <ActionButton onClick={openReinstall} disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked}>
+            <ActionButton onClick={openReinstall} disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly}>
               <RefreshCw className="w-3.5 h-3.5" />
               {isExpired ? '已到期' : taskStatus === 'reinstall' ? taskActionLabels['reinstall'] : '重装'}
             </ActionButton>
@@ -1300,6 +1317,13 @@ export default function ContainerDetail() {
             )}
           </PlainRow>
           <PlainRow label="CPU 累计时间" value={formatCPU(usage?.cpu_usage_usec || 0)} />
+          <PlainRow label="租户" value={container.tenant || '未分组'}>
+            {!isSubUser && (
+              <button onClick={handleEditTenant} className="ml-1 p-0.5 text-gray-400 hover:text-black rounded" title="修改租户">
+                <Pencil className="w-3 h-3" />
+              </button>
+            )}
+          </PlainRow>
           <PlainRow label="创建时间" value={container.created_at} />
           <PlainRow label="到期时间" value={formatExpiration(container.expires_at)}>
             {!isSubUser && (

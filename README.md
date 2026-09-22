@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="frontend/public/favicon.svg" width="96" alt="CLICD">
+  <img src="frontend/public/favicon.svg" width="96" alt="EyvesCloud">
 </p>
 
-<h1 align="center">CLICD <sub></sub></h1>
+<h1 align="center">EyvesCloud <sub></sub></h1>
 
 <p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.24-00ADD8?style=flat-square&logo=go&logoColor=white">
@@ -27,9 +27,9 @@
   <img alt="TLS" src="https://img.shields.io/badge/TLS-Let's_Encrypt-003A70?style=flat-square&logo=letsencrypt&logoColor=white">
 </p>
 
-CLICD is a lightweight virtualization management panel for LXC and KVM. It combines a web console, CLI tools, REST API, NAT/IPv6 networking, WebSSH/WebVNC access, resource quotas, traffic limits, snapshots, delegated sub-user access, and security alerts into a single deployable service.
+EyvesCloud is a lightweight virtualization management panel for LXC and KVM, forked from CLICD. It combines a web console, CLI tools, REST API, NAT/IPv6 networking, WebSSH/WebVNC access, resource quotas, traffic limits, snapshots, delegated sub-user access, and security alerts into a single deployable service.
 
-CLICD 是一个面向 LXC/KVM 的轻量虚拟化管理面板，集成 Web 控制台、CLI、REST API、NAT/IPv6 网络、WebSSH/WebVNC、资源配额、流量限制、快照、子用户授权和安全告警能力，适合 VPS 商家、实验室、开发者自建虚拟化节点以及需要批量开通容器的场景。
+EyvesCloud 是一个面向 LXC/KVM 的轻量虚拟化管理面板（源自 CLICD 深度魔改），集成 Web 控制台、CLI、REST API、NAT/IPv6 网络、WebSSH/WebVNC、资源配额、流量限制、快照、子用户授权和安全告警能力，适合 VPS 商家、实验室、开发者自建虚拟化节点以及需要批量开通容器的场景。
 
 ![alt text](/img/image-1.png)
 
@@ -53,9 +53,10 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
 
 ### English
 
-| Area | What CLICD provides |
+| Area | What EyvesCloud provides |
 | --- | --- |
 | Virtualization | Manage LXC containers and KVM virtual machines from one panel, including create, reinstall, start, stop, restart, delete, password reset, expiry control, and batch actions. |
+| Master-Agent nodes | Add unlimited worker nodes from the controller panel, generate a one-click install script, and view or operate worker containers right from the controller (similar to Mofang Cloud node mode). |
 | Images and templates | Built-in template and image management for Ubuntu, Debian, Alpine, CentOS, Arch Linux, Fedora, Rocky Linux, and other common distributions. Images can be enabled, disabled, downloaded, cancelled, or removed from cache. |
 | Networking | NAT4 port quotas, random available port allocation, TCP/UDP port mappings, public IPv4 pool management, IPv6 prefix detection, IPv6 status checks, and per-container IPv6 assignment. |
 | Resource control | CPU, memory, disk, swap, bandwidth usage, traffic reset, traffic limit, and resource limit management, with automatic shutdown behavior for expired or over-quota containers. |
@@ -68,9 +69,10 @@ curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh 
 
 ### 中文
 
-| 模块 | CLICD 提供的能力 |
+| 模块 | EyvesCloud 提供的能力 |
 | --- | --- |
 | 虚拟化管理 | 在同一个面板里管理 LXC 容器和 KVM 虚拟机，支持创建、重装、开机、关机、重启、删除、重置密码、到期时间和批量操作。 |
+| 主控-被控节点 | 在主控面板无限添加被控节点，生成一键安装脚本；被控接入后主控可直接查看并操作被控容器（类似魔方云节点模式）。 |
 | 镜像与模板 | 内置模板和镜像管理，支持 Ubuntu、Debian、Alpine、CentOS、Arch Linux、Fedora、Rocky Linux 等常见发行版，镜像可按需下载、取消、启用、禁用和清理缓存。 |
 | 网络能力 | 支持 NAT4 端口配额、随机可用端口、TCP/UDP 端口映射、公网 IPv4 池管理、IPv6 前缀检测、IPv6 状态检查和容器级 IPv6 分配。 |
 | 资源限制 | 支持 CPU、内存、磁盘、Swap、独立上行/下行带宽、读/写 I/O 限速、流量重置、流量限制和资源限制管理；容器到期或超额后可自动关机，避免资源和流量失控。 |

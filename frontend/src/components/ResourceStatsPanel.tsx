@@ -57,7 +57,7 @@ export default function ResourceStatsPanel({
 }) {
   return (
     <section className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
         <h2 className="text-sm font-semibold text-gray-950 dark:text-white">统计信息</h2>
         <div className="flex items-center gap-1.5">
           <div className="inline-flex rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-0.5">
@@ -65,7 +65,7 @@ export default function ResourceStatsPanel({
               <button
                 key={item}
                 onClick={() => onRangeChange(item)}
-                className={`h-7 px-3 rounded text-xs font-medium transition-colors ${
+                className={`h-7 shrink-0 px-2 sm:px-3 rounded text-xs font-medium transition-colors ${
                   range === item
                     ? 'bg-gray-800 text-white shadow-sm dark:bg-white dark:text-black'
                     : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
@@ -77,7 +77,7 @@ export default function ResourceStatsPanel({
           </div>
           <button
             onClick={onRefresh}
-            className="h-8 w-8 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white"
+            className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white"
             title="刷新"
           >
             <RefreshCw className="w-4 h-4" />

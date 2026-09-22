@@ -1,24 +1,26 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"math/rand"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"clicd/internal/config"
 	"clicd/internal/lxc"
 )
 
 func generateFirewallRuleID() string {
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("fw-%d", time.Now().UnixNano())
 	}
-	return string(b)
+	return hex.EncodeToString(b)
 }
 
 func getFirewall(w http.ResponseWriter, r *http.Request, id int) {

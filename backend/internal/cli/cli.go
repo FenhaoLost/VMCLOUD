@@ -35,7 +35,7 @@ var cliTranslations = map[string]string{
 	"请选择操作":             "Select an action",
 	"再见":                "Goodbye",
 	"无效选择":              "Invalid choice",
-	"CLICD - LXC 容器管理器": "CLICD - Container Manager",
+	"EyvesCloud - LXC 容器管理器": "EyvesCloud - Container Manager",
 	"Web 面板":            "Web panel",
 	"端口":                "port",
 	"运行中":               "running",
@@ -291,7 +291,7 @@ func printMenu() {
 	}
 	cliPrintln("")
 	cliPrintln("  ==========================================")
-	cliPrintln("       CLICD - LXC 容器管理器")
+	cliPrintln("       EyvesCloud - LXC 容器管理器")
 	cliPrintln("  ==========================================")
 	cliPrintln("")
 	cliPrintf("  Web 面板: %s (端口 %d)\n", func() string {
@@ -638,7 +638,7 @@ type githubRelease struct {
 }
 
 func cliUpgradeSystem(reader *bufio.Reader) {
-	cliPrintln("\n--- 检查并升级 CLICD ---")
+	cliPrintln("\n--- 检查并升级 EyvesCloud ---")
 	cliPrintln("升级只会替换 /usr/local/bin/clicd，并保留 /root/.clicd 里的配置、容器数据和任务记录。")
 
 	if os.Geteuid() != 0 {
@@ -1038,7 +1038,7 @@ func cliImportExistingContainers() {
 }
 
 func cliUninstall(reader *bufio.Reader) {
-	cliPrintln("\n--- 卸载 CLICD ---")
+	cliPrintln("\n--- 卸载 EyvesCloud ---")
 	cliPrintln("将删除 CLICD 服务和 /usr/local/bin/clicd。")
 	cliPrintln("同时会删除 /root/.clicd、/var/lib/lxc、/var/lib/clicd、镜像缓存、备份、临时文件、/swapfile 和 CLICD 网络规则。")
 

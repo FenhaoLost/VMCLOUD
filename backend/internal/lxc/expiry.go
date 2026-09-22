@@ -14,7 +14,10 @@ func IsExpired(c config.Container) bool {
 
 // StopExpiredContainers stops running containers whose expiration date has passed.
 func (m *Manager) StopExpiredContainers(now time.Time) {
-	for _, container := range config.AppConfig.Containers {
+	config.AppConfigMu.RLock()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	config.AppConfigMu.RUnlock()
+	for _, container := range containers {
 		if container.IsKVM() || !isContainerExpired(container, now) {
 			continue
 		}
@@ -50,24 +53,31 @@ func (m *Manager) StartExpiryScanner() {
 // StopTrafficExceededContainers stops running containers that have exceeded their monthly traffic limit
 func (m *Manager) StopTrafficExceededContainers(now time.Time) {
 	currentMonth := now.Format("2006-01")
+	config.AppConfigMu.RLock()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	config.AppConfigMu.RUnlock()
 	saved := false
-	for i := range config.AppConfig.Containers {
-		c := &config.AppConfig.Containers[i]
+	for _, c := range containers {
 		if c.IsKVM() || c.Status != "running" {
 			continue
 		}
 
 		// Reset traffic if new month
 		if c.TrafficResetDate != currentMonth {
-			c.TrafficUsedRX = 0
-			c.TrafficUsedTX = 0
-			c.TrafficResetDate = currentMonth
-			saved = true
+			if config.MutateContainerNoSave(c.ID, func(l *config.Container) {
+				if l.TrafficResetDate != currentMonth {
+					l.TrafficUsedRX = 0
+					l.TrafficUsedTX = 0
+					l.TrafficResetDate = currentMonth
+				}
+			}) {
+				saved = true
+			}
 			continue
 		}
 
 		// Check traffic limits
-		if isTrafficExceeded(*c) {
+		if isTrafficExceeded(c) {
 			fmt.Printf("Container %s (ID=%d) exceeded traffic limit, stopping...\n", c.Name, c.ID)
 			if err := m.StopContainer(c.ID); err != nil {
 				fmt.Printf("Warning: failed to stop traffic-exceeded container %s: %v\n", c.Name, err)
@@ -97,13 +107,13 @@ func isTrafficExceeded(c config.Container) bool {
 
 // ResetTraffic resets traffic counters for a container
 func (m *Manager) ResetTraffic(id int) error {
-	c := config.FindContainer(id)
-	if c == nil {
+	if !config.MutateContainerNoSave(id, func(l *config.Container) {
+		l.TrafficUsedRX = 0
+		l.TrafficUsedTX = 0
+		l.TrafficResetDate = time.Now().Format("2006-01")
+	}) {
 		return fmt.Errorf("container not found: %d", id)
 	}
-	c.TrafficUsedRX = 0
-	c.TrafficUsedTX = 0
-	c.TrafficResetDate = time.Now().Format("2006-01")
 	config.SaveConfig()
 	return nil
 }

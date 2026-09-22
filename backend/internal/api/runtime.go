@@ -230,4 +230,3 @@ func validateRuntimeResourceRequest(runtime string, templateID string, vcpu floa
 	}
 	return validateContainerResourceRequest(vcpu, ramMB, diskGB)
 }
-

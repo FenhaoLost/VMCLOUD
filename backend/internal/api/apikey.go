@@ -94,10 +94,12 @@ func apiKeyIDFromPath(path string) string {
 }
 
 func listApiKeys(w http.ResponseWriter, r *http.Request) {
-	keys := make([]ApiKey, 0)
+	config.AppConfigMu.RLock()
+	keys := make([]ApiKey, 0, len(config.AppConfig.ApiKeys))
 	for _, k := range config.AppConfig.ApiKeys {
 		keys = append(keys, apiKeyResponse(k))
 	}
+	config.AppConfigMu.RUnlock()
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: keys})
 }
 
@@ -140,11 +142,9 @@ func createApiKey(w http.ResponseWriter, r *http.Request) {
 		Disabled:       req.Disabled,
 		ContainerUUIDs: normalizeStringSlice(req.ContainerUUIDs),
 	}
-	config.AppConfig.ApiKeys = append(config.AppConfig.ApiKeys, key)
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save API key"})
-		return
-	}
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.ApiKeys = append(cfg.ApiKeys, key)
+	})
 	auditRequest(r, "apikey.create", key.Name, "scopes="+strings.Join(key.Scopes, ","), true, "")
 
 	resp := apiKeyResponse(key)
@@ -171,29 +171,33 @@ func updateApiKey(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid expiration date"})
 		return
 	}
-	for i := range config.AppConfig.ApiKeys {
-		if config.AppConfig.ApiKeys[i].ID != keyID {
-			continue
-		}
-		if strings.TrimSpace(req.Name) != "" {
-			config.AppConfig.ApiKeys[i].Name = strings.TrimSpace(req.Name)
-		}
-		config.AppConfig.ApiKeys[i].IPWhitelist = strings.TrimSpace(req.IPWhitelist)
-		if len(req.Scopes) > 0 {
-			config.AppConfig.ApiKeys[i].Scopes = normalizeStringSlice(req.Scopes)
-		}
-		config.AppConfig.ApiKeys[i].ExpiresAt = strings.TrimSpace(req.ExpiresAt)
-		config.AppConfig.ApiKeys[i].Disabled = req.Disabled
-		config.AppConfig.ApiKeys[i].ContainerUUIDs = normalizeStringSlice(req.ContainerUUIDs)
-		if err := config.SaveConfig(); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save API key"})
+	var updated *config.ApiKeyConfig
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		for i := range cfg.ApiKeys {
+			if cfg.ApiKeys[i].ID != keyID {
+				continue
+			}
+			if strings.TrimSpace(req.Name) != "" {
+				cfg.ApiKeys[i].Name = strings.TrimSpace(req.Name)
+			}
+			cfg.ApiKeys[i].IPWhitelist = strings.TrimSpace(req.IPWhitelist)
+			if len(req.Scopes) > 0 {
+				cfg.ApiKeys[i].Scopes = normalizeStringSlice(req.Scopes)
+			}
+			cfg.ApiKeys[i].ExpiresAt = strings.TrimSpace(req.ExpiresAt)
+			cfg.ApiKeys[i].Disabled = req.Disabled
+			cfg.ApiKeys[i].ContainerUUIDs = normalizeStringSlice(req.ContainerUUIDs)
+			copyKey := cfg.ApiKeys[i]
+			updated = &copyKey
 			return
 		}
-		auditRequest(r, "apikey.update", config.AppConfig.ApiKeys[i].Name, "scopes="+strings.Join(config.AppConfig.ApiKeys[i].Scopes, ","), true, "")
-		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: apiKeyResponse(config.AppConfig.ApiKeys[i])})
+	})
+	if updated == nil {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "API key not found"})
 		return
 	}
-	jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "API key not found"})
+	auditRequest(r, "apikey.update", updated.Name, "scopes="+strings.Join(updated.Scopes, ","), true, "")
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: apiKeyResponse(*updated)})
 }
 
 func deleteApiKey(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +207,14 @@ func deleteApiKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := keyID
+	config.AppConfigMu.RLock()
 	for _, k := range config.AppConfig.ApiKeys {
 		if k.ID == keyID {
 			name = k.Name
 			break
 		}
 	}
+	config.AppConfigMu.RUnlock()
 	config.DeleteApiKey(keyID)
 	auditRequest(r, "apikey.delete", name, "", true, "")
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "API key deleted"})
@@ -301,6 +307,8 @@ func legacyHashKey(key string) string {
 
 func matchApiKey(rawKey string) (idx int, needsRehash bool) {
 	legacyHashed := legacyHashKey(rawKey)
+	config.AppConfigMu.RLock()
+	defer config.AppConfigMu.RUnlock()
 	for i, k := range config.AppConfig.ApiKeys {
 		if verifyAPIKeyHash(rawKey, k.KeyHash) {
 			return i, false
@@ -323,23 +331,34 @@ func validateApiKeyDetails(rawKey, clientIP string) (*config.ApiKeyConfig, bool)
 	if idx < 0 {
 		return nil, false
 	}
-	k := &config.AppConfig.ApiKeys[idx]
-	if k.Disabled || apiKeyExpired(k.ExpiresAt) {
+	// Snapshot the key fields under the read lock and return a copy so callers
+	// never hold a live pointer that another goroutine may mutate.
+	config.AppConfigMu.RLock()
+	live := config.AppConfig.ApiKeys[idx]
+	if live.Disabled || apiKeyExpired(live.ExpiresAt) {
+		config.AppConfigMu.RUnlock()
 		return nil, false
 	}
-	if clientIP != "" && k.IPWhitelist != "" && !isIPAllowed(clientIP, k.IPWhitelist) {
+	if clientIP != "" && live.IPWhitelist != "" && !isIPAllowed(clientIP, live.IPWhitelist) {
+		config.AppConfigMu.RUnlock()
 		return nil, false
 	}
+	if len(live.Scopes) == 0 {
+		live.Scopes = []string{"*"}
+	}
+	config.AppConfigMu.RUnlock()
+
 	if needsRehash {
 		if newHash, err := hashAPIKey(rawKey); err == nil {
-			config.AppConfig.ApiKeys[idx].KeyHash = newHash
-			config.SaveConfig()
+			config.MutateGlobal(func(cfg *config.ClicdConfig) {
+				if idx < len(cfg.ApiKeys) && cfg.ApiKeys[idx].ID == live.ID {
+					cfg.ApiKeys[idx].KeyHash = newHash
+				}
+			})
 		}
 	}
-	if len(k.Scopes) == 0 {
-		k.Scopes = []string{"*"}
-	}
-	return k, true
+	copyKey := live
+	return &copyKey, true
 }
 
 func validateApiKeyRequest(r *http.Request) (*config.ApiKeyConfig, bool) {
@@ -436,11 +455,21 @@ func updateApiKeyLastUsed(rawKey string) {
 }
 
 func updateApiKeyLastUsedForKey(key *config.ApiKeyConfig, ip string) {
-	key.LastUsed = time.Now().Format("2006-01-02 15:04:05")
-	if ip != "" {
-		key.LastUsedIP = ip
+	if key == nil {
+		return
 	}
-	config.SaveConfig()
+	now := time.Now().Format("2006-01-02 15:04:05")
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		for i := range cfg.ApiKeys {
+			if cfg.ApiKeys[i].ID == key.ID {
+				cfg.ApiKeys[i].LastUsed = now
+				if ip != "" {
+					cfg.ApiKeys[i].LastUsedIP = ip
+				}
+				return
+			}
+		}
+	})
 }
 
 // ApiKeyMiddleware authenticates requests via X-API-Key header or Authorization bearer.

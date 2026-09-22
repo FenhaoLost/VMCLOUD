@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"clicd/internal/api"
+	"clicd/internal/agent"
 	"clicd/internal/cli"
 	"clicd/internal/config"
 	"clicd/internal/kvm"
@@ -27,10 +28,14 @@ func main() {
 	isServerMode := false
 	isCliMode := false
 	noWebAutostart := false
+	isAgentMode := false
 	isAccessPolicyCommand := len(os.Args) > 1 && os.Args[1] == "access-policy"
 	for _, arg := range os.Args[1:] {
 		if arg == "server" || arg == "-s" || arg == "--server" {
 			isServerMode = true
+		}
+		if arg == "agent" || arg == "--agent" {
+			isAgentMode = true
 		}
 		if arg == "cli" || arg == "-c" || arg == "--cli" {
 			isCliMode = true
@@ -54,6 +59,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Access policy error: %v\n", err)
 			os.Exit(1)
 		}
+		return
+	}
+
+	// 被控节点 agent 模式：注册到主控 + 心跳 + 本地面板
+	if isAgentMode {
+		agent.Run(os.Args[2:])
 		return
 	}
 

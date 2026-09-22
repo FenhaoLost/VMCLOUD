@@ -418,6 +418,17 @@ func ensureSchema() error {
 			path TEXT,
 			size_bytes INTEGER
 		)`,
+		`CREATE TABLE IF NOT EXISTS container_metrics (
+			container_key TEXT NOT NULL,
+			ts INTEGER NOT NULL,
+			cpu REAL NOT NULL DEFAULT 0,
+			memory REAL NOT NULL DEFAULT 0,
+			network_rx REAL NOT NULL DEFAULT 0,
+			network_tx REAL NOT NULL DEFAULT 0,
+			disk_read REAL NOT NULL DEFAULT 0,
+			disk_write REAL NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_container_metrics_key_ts ON container_metrics (container_key, ts)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -467,6 +478,8 @@ func ensureSchemaMigrations() error {
 		{"container_public_ipv4s", "gateway", "TEXT"},
 		{"sub_users", "allowed_image_ids", "TEXT"},
 		{"sub_users", "image_limit_configured", "INTEGER NOT NULL DEFAULT 0"},
+		{"sub_users", "role", "TEXT NOT NULL DEFAULT 'operator'"},
+		{"sub_users", "tenant", "TEXT NOT NULL DEFAULT ''"},
 		{"containers", "network_down_mbps", "INTEGER NOT NULL DEFAULT 0"},
 		{"containers", "network_up_mbps", "INTEGER NOT NULL DEFAULT 0"},
 		{"containers", "io_read_mbps", "INTEGER NOT NULL DEFAULT 0"},
@@ -476,6 +489,7 @@ func ensureSchemaMigrations() error {
 		{"containers", "firewall_rules", "TEXT"},
 		{"containers", "allowed_image_ids", "TEXT"},
 		{"containers", "image_limit_configured", "INTEGER NOT NULL DEFAULT 0"},
+		{"containers", "tenant", "TEXT NOT NULL DEFAULT ''"},
 		{"containers", "restore_on_host_boot", "INTEGER NOT NULL DEFAULT 0"},
 		{"containers", "storage_pool_id", "TEXT"},
 		{"containers", "storage_path", "TEXT"},
@@ -484,6 +498,7 @@ func ensureSchemaMigrations() error {
 		{"containers", "lan_ipv4_address", "TEXT NOT NULL DEFAULT ''"},
 		{"containers", "lan_ipv4_prefix_len", "INTEGER NOT NULL DEFAULT 0"},
 		{"containers", "lan_ipv4_gateway", "TEXT NOT NULL DEFAULT ''"},
+		{"containers", "cloud_init_user_data", "TEXT"},
 	} {
 		wasAdded, err := ensureColumn(column.table, column.name, column.def)
 		if err != nil {
@@ -640,6 +655,13 @@ func loadConfigFromDB() (*ClicdConfig, bool, error) {
 	if raw := strings.TrimSpace(meta["custom_lxc_images"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.CustomLXCImages)
 	}
+	loadPolicyState(cfg, meta)
+	if raw := strings.TrimSpace(meta["nodes"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.Nodes)
+	}
+	if cfg.Nodes == nil {
+		cfg.Nodes = []Node{}
+	}
 
 	if cfg.Containers, err = loadContainers(); err != nil {
 		return nil, false, err
@@ -744,6 +766,9 @@ func saveMeta(tx *sql.Tx) error {
 	storagePoolsJSON, _ := json.Marshal(AppConfig.StoragePools)
 	customKVMImagesJSON, _ := json.Marshal(AppConfig.CustomKVMImages)
 	customLXCImagesJSON, _ := json.Marshal(AppConfig.CustomLXCImages)
+	policyRulesJSON, _ := json.Marshal(AppConfig.PolicyRules)
+	policyHistoryJSON, _ := json.Marshal(AppConfig.PolicyHistory)
+	nodesJSON, _ := json.Marshal(AppConfig.Nodes)
 	values := map[string]string{
 		"admin_user":             AppConfig.AdminUser,
 		"admin_pass_hash":        AppConfig.AdminPassHash,
@@ -759,6 +784,7 @@ func saveMeta(tx *sql.Tx) error {
 		"kvm_nat_subnet":         AppConfig.KVMNATSubnet,
 		"setup_complete":         btoa(AppConfig.SetupComplete),
 		"security_auto_shutdown": btoa(AppConfig.SecurityAutoShutdown),
+		"arp_protection_enabled": btoa(AppConfig.ARPProtectionEnabled),
 		"task_concurrency":       strconv.Itoa(AppConfig.TaskConcurrency),
 		"language":               NormalizeLanguage(AppConfig.Language),
 		"ssl":                    string(sslJSON),
@@ -770,6 +796,9 @@ func saveMeta(tx *sql.Tx) error {
 		"storage_pools":          string(storagePoolsJSON),
 		"custom_kvm_images":      string(customKVMImagesJSON),
 		"custom_lxc_images":      string(customLXCImagesJSON),
+		"policy_rules":           string(policyRulesJSON),
+		"policy_history":         string(policyHistoryJSON),
+		"nodes":                  string(nodesJSON),
 		"schema_version":         "1",
 		"updated_at":             time.Now().Format("2006-01-02 15:04:05"),
 	}
@@ -797,8 +826,9 @@ func saveContainers(tx *sql.Tx) error {
 			snapshot_schedule_enabled, snapshot_schedule_interval_hours, snapshot_schedule_time,
 			snapshot_schedule_last_run, snapshot_schedule_next_run, snapshot_schedule_created_by,
 			policy_blocked, policy_blocked_reason, policy_blocked_at,
-			firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured,
+			tenant, cloud_init_user_data
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			c.ID, c.UUID, c.Name, c.Virtualization, c.LXCName, c.KVMName, c.DiskImage, c.StoragePoolID, c.StoragePath, c.MACAddress, c.Template,
 			c.VCPU, c.RAMMB, c.DiskGB, c.NetworkBWMbps, c.NetworkDownMbps, c.NetworkUpMbps,
 			c.MonthlyTrafficGB, c.TrafficMode, c.TrafficInGB,
@@ -811,6 +841,7 @@ func saveContainers(tx *sql.Tx) error {
 			c.SnapshotScheduleLastRun, c.SnapshotScheduleNextRun, c.SnapshotScheduleCreatedBy,
 			boolInt(c.PolicyBlocked), c.PolicyBlockedReason, c.PolicyBlockedAt,
 			boolInt(c.FirewallEnabled), normalizeFirewallDefaultAction(c.FirewallDefaultAction), marshalFirewallRules(c.FirewallRules), allowedImageIDs, boolInt(c.ImageLimitConfigured),
+			c.Tenant, c.CloudInitUserData,
 		); err != nil {
 			return err
 		}
@@ -839,8 +870,8 @@ func saveContainers(tx *sql.Tx) error {
 func saveSubUsers(tx *sql.Tx) error {
 	for _, su := range AppConfig.SubUsers {
 		allowedImageIDs := encodeStringSlice(su.AllowedImageIDs)
-		if _, err := tx.Exec(`INSERT INTO sub_users(id, username, password, pass_hash, access_code, created_at, token_version, allowed_image_ids, image_limit_configured)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, su.ID, su.Username, su.Password, su.PassHash, su.AccessCode, su.CreatedAt, su.TokenVersion, allowedImageIDs, boolInt(su.ImageLimitConfigured)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO sub_users(id, username, password, pass_hash, access_code, created_at, token_version, allowed_image_ids, image_limit_configured, role, tenant)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, su.ID, su.Username, su.Password, su.PassHash, su.AccessCode, su.CreatedAt, su.TokenVersion, allowedImageIDs, boolInt(su.ImageLimitConfigured), subUserRoleForStorage(su.Role), su.Tenant); err != nil {
 			return err
 		}
 		for i, name := range su.ContainerNames {
@@ -1026,7 +1057,8 @@ func loadContainers() ([]Container, error) {
 		snapshot_schedule_enabled, snapshot_schedule_interval_hours, snapshot_schedule_time,
 		snapshot_schedule_last_run, snapshot_schedule_next_run, snapshot_schedule_created_by,
 		policy_blocked, policy_blocked_reason, policy_blocked_at,
-		firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured
+		firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured,
+		tenant, cloud_init_user_data
 		FROM containers ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1043,6 +1075,8 @@ func loadContainers() ([]Container, error) {
 		var lanIPv4Mode, lanInterface sql.NullString
 		var lanIPv4Address, lanIPv4Gateway sql.NullString
 		var lanIPv4PrefixLen sql.NullInt64
+		var tenant sql.NullString
+		var cloudInitUserData sql.NullString
 		if err := rows.Scan(
 			&c.ID, &c.UUID, &c.Name, &c.Virtualization, &c.LXCName, &c.KVMName, &c.DiskImage, &storagePoolID, &storagePath, &c.MACAddress, &c.Template,
 			&c.VCPU, &c.RAMMB, &c.DiskGB, &c.NetworkBWMbps, &c.NetworkDownMbps, &c.NetworkUpMbps,
@@ -1056,9 +1090,12 @@ func loadContainers() ([]Container, error) {
 			&c.SnapshotScheduleLastRun, &c.SnapshotScheduleNextRun, &c.SnapshotScheduleCreatedBy,
 			&policyBlocked, &c.PolicyBlockedReason, &c.PolicyBlockedAt,
 			&firewallEnabled, &firewallDefaultAction, &firewallRulesJSON, &allowedImageIDs, &imageLimitConfigured,
+			&tenant, &cloudInitUserData,
 		); err != nil {
 			return nil, err
 		}
+		c.CloudInitUserData = cloudInitUserData.String
+		c.Tenant = tenant.String
 		c.StoragePoolID = storagePoolID.String
 		c.StoragePath = storagePath.String
 		c.LANIPv4Mode = lanIPv4Mode.String
@@ -1173,7 +1210,7 @@ func loadContainerIPv6Addresses(containerID int) ([]IPv6Assignment, error) {
 }
 
 func loadSubUsers() ([]SubUser, error) {
-	rows, err := db.Query(`SELECT id, username, password, pass_hash, access_code, created_at, token_version, allowed_image_ids, image_limit_configured FROM sub_users ORDER BY created_at, id`)
+	rows, err := db.Query(`SELECT id, username, password, pass_hash, access_code, created_at, token_version, allowed_image_ids, image_limit_configured, role, tenant FROM sub_users ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,7 +1220,7 @@ func loadSubUsers() ([]SubUser, error) {
 		var su SubUser
 		var allowedImageIDs sql.NullString
 		var imageLimitConfigured int
-		if err := rows.Scan(&su.ID, &su.Username, &su.Password, &su.PassHash, &su.AccessCode, &su.CreatedAt, &su.TokenVersion, &allowedImageIDs, &imageLimitConfigured); err != nil {
+		if err := rows.Scan(&su.ID, &su.Username, &su.Password, &su.PassHash, &su.AccessCode, &su.CreatedAt, &su.TokenVersion, &allowedImageIDs, &imageLimitConfigured, &su.Role, &su.Tenant); err != nil {
 			return nil, err
 		}
 		su.AllowedImageIDs = decodeStringSlice(allowedImageIDs.String)

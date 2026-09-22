@@ -53,6 +53,7 @@ export default function Containers() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [systemFilter, setSystemFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [tenantFilter, setTenantFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [sortField, setSortField] = useState<'id' | 'cpu' | 'ram' | 'disk' | 'net' | null>(null)
@@ -179,16 +180,25 @@ export default function Containers() {
   const displayContainers = buildDisplayContainers(containers, queuedCreates, tasks)
   const activeTaskCount = tasks.filter((task) => task.status === 'pending' || task.status === 'running').length
   const systemOptions = useMemo(() => buildSystemOptions(displayContainers), [displayContainers])
+  const tenantOptions = useMemo(() => {
+    const tenants = new Map<string, string>()
+    for (const container of displayContainers) {
+      const tenant = (container.tenant || '').trim()
+      if (tenant) tenants.set(tenant, tenant)
+    }
+    return Array.from(tenants.entries()).map(([value, label]) => ({ value, label }))
+  }, [displayContainers])
   const filteredContainers = useMemo(() => {
     return filterContainers(displayContainers, {
       search: searchText,
       type: typeFilter,
       system: systemFilter,
       status: statusFilter,
+      tenant: tenantFilter,
       taskStatusMap,
       taskNameMap,
     })
-  }, [displayContainers, searchText, typeFilter, systemFilter, statusFilter, tasks])
+  }, [displayContainers, searchText, typeFilter, systemFilter, statusFilter, tenantFilter, tasks])
   const sortedContainers = useMemo(() => {
     if (!sortField) return filteredContainers
 
@@ -249,7 +259,7 @@ export default function Containers() {
 
   useEffect(() => {
     setPage(1)
-  }, [searchText, typeFilter, systemFilter, statusFilter, pageSize, sortField, sortOrder])
+  }, [searchText, typeFilter, systemFilter, statusFilter, tenantFilter, pageSize, sortField, sortOrder])
 
   const toggleAll = () => {
     if (allFilteredSelected) {
@@ -290,7 +300,7 @@ export default function Containers() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-[180px]">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-black">容器管理</h1>
           <p className="text-sm text-gray-500 mt-1">
             共 {displayContainers.length} 个容器
@@ -335,7 +345,7 @@ export default function Containers() {
       {displayContainers.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative w-[260px]">
+            <div className="relative w-full sm:w-[260px]">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
               <input
                 value={searchText}
@@ -378,6 +388,19 @@ export default function Containers() {
               <option value="creating">创建中</option>
               <option value="failed">失败</option>
             </select>
+            {!isSubUser && tenantOptions.length > 0 && (
+              <select
+                value={tenantFilter}
+                onChange={(event) => setTenantFilter(event.target.value)}
+                className="h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 outline-none focus:border-black focus:ring-2 focus:ring-black"
+                title="租户筛选"
+              >
+                <option value="all">全部租户</option>
+                {tenantOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            )}
             <select
               value={pageSize}
               onChange={(event) => setPageSize(Number(event.target.value))}
@@ -941,6 +964,7 @@ type ContainerFilters = {
   type: string
   system: string
   status: string
+  tenant: string
   taskStatusMap: Record<number, Task>
   taskNameMap: Record<string, Task>
 }
@@ -958,6 +982,9 @@ function filterContainers(containers: DisplayContainer[], filters: ContainerFilt
     if (filters.status !== 'all' && getContainerStatusFilterValue(container, task) !== filters.status) {
       return false
     }
+    if (filters.tenant !== 'all' && (container.tenant || '').trim() !== filters.tenant) {
+      return false
+    }
     if (!keyword) return true
 
     const fields = [
@@ -971,6 +998,7 @@ function filterContainers(containers: DisplayContainer[], filters: ContainerFilt
       getTemplateName(container.template),
       getSystemFilterLabel(getSystemFilterValue(container.template)),
       String(container.ssh_port || ''),
+      container.tenant || '',
     ]
     return fields.some((field) => field.toLowerCase().includes(keyword))
   })

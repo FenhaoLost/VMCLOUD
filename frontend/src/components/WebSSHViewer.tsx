@@ -105,7 +105,7 @@ export default function WebSSHViewer({ containerName, onClose }: WebSSHViewerPro
       return
     }
 
-    const ws = new WebSocket(buildWebSSHUrl(), [`clicd-ticket.${ticket}`])
+    const ws = new WebSocket(buildWebSSHUrl(), [`eyvescloud-ticket.${ticket}`])
     ws.binaryType = 'arraybuffer'
     wsRef.current = ws
 

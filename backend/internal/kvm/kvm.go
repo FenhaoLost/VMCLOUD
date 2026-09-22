@@ -545,7 +545,7 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 			return nil, err
 		}
 		cfg.ReportProgress("cloud_init", "生成 cloud-init 初始化配置")
-		if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, sshPublicKey, mac, ipv6List, ipv4List, *image, sshAuthMode); err != nil {
+		if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, sshPublicKey, mac, ipv6List, ipv4List, *image, sshAuthMode, cfg.CloudInitUserData); err != nil {
 			return nil, err
 		}
 		xml = domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, seedPath, mac, cfg.IOReadMBps, cfg.IOWriteMBps, cfg.NetworkDownMbps, cfg.NetworkUpMbps, image.Desktop != "")
@@ -645,6 +645,7 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		SnapshotLimit:        config.NormalizeSnapshotLimit(cfg.SnapshotLimit),
 		CreatedAt:            now,
 		ExpiresAt:            cfg.ExpiresAt,
+		CloudInitUserData:    cfg.CloudInitUserData,
 	}
 	container.NormalizeNetworkAssignments()
 	cfg.ReportProgress("metadata", "保存虚拟机配置")
@@ -2183,7 +2184,7 @@ func shellQuoteWindows(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
-func createSeedISO(seedPath, instanceID, hostname, password, publicKey, mac string, ipv6s []string, ipv4s []string, image Image, sshAuthMode string) error {
+func createSeedISO(seedPath, instanceID, hostname, password, publicKey, mac string, ipv6s []string, ipv4s []string, image Image, sshAuthMode, customUserData string) error {
 	disablePubkey := sshAuthMode == "password" || sshAuthMode == "auto_password"
 	guestSetup := kvmSSHSetupScript(password, disablePubkey, publicKey)
 	if desktopSetup := kvmDesktopSetupScript(image); desktopSetup != "" {
@@ -2219,6 +2220,11 @@ runcmd:
   - |
 %s
 `, hostname, password, authorizedKeys, setupScript)
+	// An administrator-provided user-data payload overrides the default
+	// cloud-config entirely (e.g. package bootstrap or custom runcmd).
+	if strings.TrimSpace(customUserData) != "" {
+		userData = customUserData
+	}
 	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", instanceID, hostname)
 
 	// Build static address block (IPv4 + IPv6)
@@ -3290,6 +3296,11 @@ func (m *Manager) GetTrafficInfo(id int) map[string]interface{} {
 		return nil
 	}
 	m.accumulateContainerTraffic(c)
+	// accumulateContainerTraffic mutates the live config entry, so re-read the
+	// container to return the updated counters.
+	if refreshed := config.FindContainer(id); refreshed != nil {
+		c = refreshed
+	}
 	return trafficInfoMap(c)
 }
 
@@ -3298,24 +3309,36 @@ func (m *Manager) AccumulateTraffic() {
 	changed := false
 	trafficMu.Lock()
 	defer trafficMu.Unlock()
-	for i := range config.AppConfig.Containers {
-		c := &config.AppConfig.Containers[i]
+
+	// Snapshot the container list under the config read lock, then apply every
+	// counter update through MutateContainerNoSave so the mutation is serialized
+	// with the expiry scanner, policy engine and HTTP handlers.
+	config.AppConfigMu.RLock()
+	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	config.AppConfigMu.RUnlock()
+
+	for _, c := range containers {
 		if !c.IsKVM() {
 			continue
 		}
-		if c.TrafficResetDate != currentMonth {
-			c.TrafficUsedRX = 0
-			c.TrafficUsedTX = 0
-			c.TrafficResetDate = currentMonth
+		if !config.MutateContainerNoSave(c.ID, func(l *config.Container) {
+			if l.TrafficResetDate != currentMonth {
+				l.TrafficUsedRX = 0
+				l.TrafficUsedTX = 0
+				l.TrafficResetDate = currentMonth
+				delete(lastTrafficSnapshot, l.VirshName())
+				changed = true
+			}
+			if l.Status != "running" {
+				delete(lastTrafficSnapshot, l.VirshName())
+				return
+			}
+			if accumulateTrafficLocked(l) {
+				changed = true
+			}
+		}) {
+			// Container was removed concurrently.
 			delete(lastTrafficSnapshot, c.VirshName())
-			changed = true
-		}
-		if c.Status != "running" {
-			delete(lastTrafficSnapshot, c.VirshName())
-			continue
-		}
-		if accumulateTrafficLocked(c) {
-			changed = true
 		}
 	}
 	if changed {
@@ -3324,19 +3347,26 @@ func (m *Manager) AccumulateTraffic() {
 }
 
 func (m *Manager) accumulateContainerTraffic(c *config.Container) {
-	currentMonth := time.Now().Format("2006-01")
 	trafficMu.Lock()
 	defer trafficMu.Unlock()
-	changed := false
-	if c.TrafficResetDate != currentMonth {
-		c.TrafficUsedRX = 0
-		c.TrafficUsedTX = 0
-		c.TrafficResetDate = currentMonth
-		delete(lastTrafficSnapshot, c.VirshName())
-		changed = true
+	if c == nil {
+		return
 	}
-	if c.Status == "running" && accumulateTrafficLocked(c) {
-		changed = true
+	currentMonth := time.Now().Format("2006-01")
+	changed := false
+	if !config.MutateContainerNoSave(c.ID, func(l *config.Container) {
+		if l.TrafficResetDate != currentMonth {
+			l.TrafficUsedRX = 0
+			l.TrafficUsedTX = 0
+			l.TrafficResetDate = currentMonth
+			delete(lastTrafficSnapshot, l.VirshName())
+			changed = true
+		}
+		if l.Status == "running" && accumulateTrafficLocked(l) {
+			changed = true
+		}
+	}) {
+		return
 	}
 	if changed {
 		config.SaveConfig()

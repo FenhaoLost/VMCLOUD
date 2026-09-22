@@ -52,6 +52,7 @@ const defaultForm: CreateContainerRequest = {
   ssh_auth_mode: 'auto_password',
   ssh_password: '',
   ssh_public_key: '',
+  cloud_init_user_data: '',
   allowed_image_ids: [],
   image_limit_configured: false,
   expires_at: '',
@@ -635,6 +636,28 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
               )}
             </div>
           )}
+
+          <div>
+            <label className="mb-1 flex items-center justify-between text-sm font-medium text-gray-700">
+              <span>{t('Cloud-init 初始化配置（可选）')}</span>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, cloud_init_user_data: '' })}
+                className="text-xs text-gray-400 hover:text-gray-600"
+              >
+                {form.cloud_init_user_data ? t('清空') : ''}
+              </button>
+            </label>
+            <textarea
+              value={form.cloud_init_user_data || ''}
+              onChange={(event) => setForm({ ...form, cloud_init_user_data: event.target.value })}
+              className={`${inputClass} min-h-24 resize-y font-mono text-xs`}
+              placeholder={'#cloud-config\nruncmd:\n  - echo "hello" > /root/hello.txt'}
+            />
+            <p className="mt-1 text-xs text-gray-400">
+              {t('容器首次启动时由 cloud-init 执行，支持 #cloud-config 或 shell 脚本')}
+            </p>
+          </div>
 
           {currentStep === 2 && (
           <div className="grid gap-3 lg:grid-cols-2">
@@ -1485,6 +1508,7 @@ function normalizeCreateForm(form: CreateContainerRequest): CreateContainerReque
     ssh_auth_mode: sshAuthMode,
     ssh_password: linuxTemplate && sshAuthMode === 'password' ? (normalized.ssh_password || '').trim() : '',
     ssh_public_key: linuxTemplate && sshAuthMode === 'key' ? (normalized.ssh_public_key || '').trim() : '',
+    cloud_init_user_data: (normalized.cloud_init_user_data || '').trim(),
     snapshot_limit: clampInt(normalized.snapshot_limit, 1, undefined, 3),
   }
 }

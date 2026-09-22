@@ -1,6 +1,6 @@
 # 升级
 
-CLICD 的安装脚本和 CLI 都围绕 GitHub Release 产物工作。升级前建议先确认当前版本、备份配置和数据库。
+EyvesCloud 的安装脚本和 CLI 都围绕 GitHub Release 产物工作。升级前建议先确认当前版本、备份配置和数据库。
 
 ## 查看版本
 
@@ -16,7 +16,7 @@ curl http://127.0.0.1:8999/api/version
 {
   "success": true,
   "data": {
-    "version": "1.1.6"
+    "version": "1.1.29"
   }
 }
 ```
@@ -26,14 +26,18 @@ curl http://127.0.0.1:8999/api/version
 安装脚本默认使用最新 Release：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh
 ```
 
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo CLICD_VERSION=v1.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
 ```
+
+## 被控节点升级
+
+被控节点（Agent 模式）也可以直接使用安装脚本升级。升级后 `clicd agent` 会在下一次心跳时上报新版本号，主控「节点管理」页面会同步显示。
 
 ## 升级前检查
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"clicd/internal/config"
@@ -20,13 +21,17 @@ type LoginLog struct {
 }
 
 var loginLogs = make([]LoginLog, 0)
+var loginLogsMu sync.RWMutex
 
 // HandleLanguage returns or updates the global panel language.
 func HandleLanguage(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		config.AppConfigMu.RLock()
+		language := config.NormalizeLanguage(config.AppConfig.Language)
+		config.AppConfigMu.RUnlock()
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
-			"language": config.NormalizeLanguage(config.AppConfig.Language),
+			"language": language,
 		}})
 	case http.MethodPost, http.MethodPut:
 		var req struct {
@@ -36,11 +41,9 @@ func HandleLanguage(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
 			return
 		}
-		config.AppConfig.Language = config.NormalizeLanguage(req.Language)
-		if err := config.SaveConfig(); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save language"})
-			return
-		}
+		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			cfg.Language = config.NormalizeLanguage(req.Language)
+		})
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
 			"language": config.AppConfig.Language,
 		}})
@@ -67,9 +70,12 @@ func HandleTaskQueueSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		previous := config.AppConfig.TaskConcurrency
-		config.AppConfig.TaskConcurrency = req.Concurrency
-		if err := config.SaveConfig(); err != nil {
-			config.AppConfig.TaskConcurrency = previous
+		if err := config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			cfg.TaskConcurrency = req.Concurrency
+		}); err != nil {
+			config.MutateGlobal(func(cfg *config.ClicdConfig) {
+				cfg.TaskConcurrency = previous
+			})
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "保存任务队列设置失败"})
 			return
 		}
@@ -92,14 +98,18 @@ func RecordLoginLog(username, ip, userAgent string, success bool) {
 		UserAgent: userAgent,
 		Success:   success,
 	}
+	loginLogsMu.Lock()
 	loginLogs = append(loginLogs, log)
 	if len(loginLogs) > 200 {
 		loginLogs = loginLogs[len(loginLogs)-200:]
 	}
+	loginLogsMu.Unlock()
 }
 
 // RestoreLoginLogs restores login logs from config
 func RestoreLoginLogs() {
+	loginLogsMu.Lock()
+	defer loginLogsMu.Unlock()
 	for _, l := range config.AppConfig.LoginLogs {
 		loginLogs = append(loginLogs, LoginLog{
 			Time:      l.Time,
@@ -122,10 +132,12 @@ func HandleLoginLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return in reverse (newest first)
+	loginLogsMu.RLock()
 	reversed := make([]LoginLog, len(loginLogs))
 	for i, l := range loginLogs {
 		reversed[len(loginLogs)-1-i] = l
 	}
+	loginLogsMu.RUnlock()
 	if reversed == nil {
 		reversed = []LoginLog{}
 	}
@@ -165,12 +177,10 @@ func HandleAdminPasswordChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.AppConfig.AdminPassHash = string(hash)
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "保存配置失败"})
-		return
-	}
-
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.AdminPassHash = string(hash)
+		cfg.AdminTokenVersion++ // invalidate all previously issued admin tokens
+	})
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "密码修改成功"})
 }
 
@@ -200,11 +210,9 @@ func HandleAdminUsernameChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.AppConfig.AdminUser = req.NewUsername
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "保存配置失败"})
-		return
-	}
-
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.AdminUser = req.NewUsername
+		cfg.AdminTokenVersion++ // username change revokes existing admin tokens
+	})
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "用户名修改成功"})
 }

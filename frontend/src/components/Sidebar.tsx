@@ -10,14 +10,16 @@ import {
   LayoutDashboard,
   LogOut,
   Moon,
+  Network,
   Package,
   Route,
   ScrollText,
   Server,
-
   ShieldAlert,
+  SlidersHorizontal,
   Sun,
   UserCog,
+  MoveRight,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -28,6 +30,7 @@ import AppIcon from './AppIcon'
 interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
+  mobileOpen: boolean
 }
 
 function GitHubIcon({ className = '' }: { className?: string }) {
@@ -58,7 +61,7 @@ function LanguageIcon({ className = '' }: { className?: string }) {
   )
 }
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { logout, isSubUser } = useAuth()
@@ -80,6 +83,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
     location.pathname.startsWith('/containers') ||
     location.pathname.startsWith('/container')
 
+  const isNodesPage = location.pathname.startsWith('/nodes')
+
   const isImagesPage = location.pathname.startsWith('/images')
 
   const isSnapshotsPage = location.pathname.startsWith('/snapshots')
@@ -90,12 +95,17 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const isHostReportPage = location.pathname.startsWith('/host-report')
   const isSecurityPage = location.pathname.startsWith('/security')
   const isSettingsPage = location.pathname.startsWith('/settings')
+  const isMigrationPage = location.pathname.startsWith('/migration')
+  const isPolicyPage = location.pathname.startsWith('/policies')
 
   return (
     <aside
-      className={`fixed left-0 top-0 h-full bg-white border-r border-gray-200 flex flex-col transition-all duration-300 z-30 dark:bg-gray-900 dark:border-gray-700 ${
+      className={`fixed left-0 top-0 z-30 flex h-full flex-col border-r border-gray-200 bg-white transition-all duration-300 dark:border-gray-700 dark:bg-gray-900 ${
         collapsed ? 'w-16' : 'w-60'
-      }`}
+      } ${
+        // 移动端默认隐藏为抽屉，桌面端(md+)始终显示
+        mobileOpen ? 'translate-x-0' : '-translate-x-full'
+      } md:translate-x-0`}
     >
       <div className="flex items-center justify-between h-14 px-4 border-b border-gray-200 dark:border-gray-700">
         {!collapsed && (
@@ -103,7 +113,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <div className="w-7 h-7 flex items-center justify-center">
               <AppIcon className="w-5 h-5" />
             </div>
-            <span className="font-bold text-black text-sm dark:text-white">CLICD</span>
+            <span className="font-bold text-black text-sm dark:text-white">EyvesCloud</span>
           </div>
         )}
         {collapsed && (
@@ -150,6 +160,20 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <Server className="w-4 h-4" />
           {!collapsed && <span>容器管理</span>}
         </button>
+
+        {!isSubUser && (
+          <button
+            onClick={() => navigate('/nodes')}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+              isNodesPage
+                ? 'bg-black text-white dark:bg-white dark:text-black'
+                : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+            }`}
+          >
+            <Network className="w-4 h-4" />
+            {!collapsed && <span>节点管理</span>}
+          </button>
+        )}
 
         {!isSubUser && (
           <button
@@ -201,6 +225,30 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
             >
               <Route className="w-4 h-4" />
               {!collapsed && <span>路由管理</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/migration')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                isMigrationPage
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <MoveRight className="w-4 h-4" />
+              {!collapsed && <span>节点迁移</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/policies')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                isPolicyPage
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <SlidersHorizontal className="w-4 h-4" />
+              {!collapsed && <span>策略管理</span>}
             </button>
 
             <button
@@ -312,7 +360,7 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 href="https://github.com/MengMengCode/CLICD"
                 target="_blank"
                 rel="noreferrer"
-                title={`CLICD v${version}`}
+                title={`EyvesCloud v${version}`}
                 className="inline-flex items-center justify-center rounded text-gray-400 transition-colors hover:text-gray-900 dark:text-gray-500 dark:hover:text-white"
               >
                 <GitHubIcon className="h-4 w-4" />
@@ -323,11 +371,11 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   href="https://github.com/MengMengCode/CLICD"
                   target="_blank"
                   rel="noreferrer"
-                  title="CLICD"
+                  title="EyvesCloud"
                   className="inline-flex min-w-0 items-center gap-1 rounded text-gray-500 transition-colors hover:text-gray-950 dark:text-gray-400 dark:hover:text-white"
                 >
                   <GitHubIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">CLICD</span>
+                  <span className="truncate">EyvesCloud</span>
                 </a>
                 <span className="shrink-0">v{version}</span>
               </div>

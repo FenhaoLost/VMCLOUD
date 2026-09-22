@@ -121,7 +121,7 @@ export default function WebVNCViewer({ containerName, onClose }: WebVNCViewerPro
     try {
       ensureResizeObserver()
       const rfb = new RFB(target, getWebVNCUrl(containerName), {
-        wsProtocols: ['binary', `clicd-vnc-ticket.${ticket}`],
+        wsProtocols: ['binary', `eyvescloud-vnc-ticket.${ticket}`],
       })
       rfb.scaleViewport = true
       rfb.resizeSession = false

@@ -25,6 +25,8 @@ type subUserResponse struct {
 	ID                   string   `json:"id"`
 	Username             string   `json:"username"`
 	Password             string   `json:"password,omitempty"`
+	Role                 string   `json:"role"`
+	Tenant               string   `json:"tenant"`
 	ContainerNames       []string `json:"container_names"`
 	ContainerUUIDs       []string `json:"container_uuids,omitempty"`
 	AllowedImageIDs      []string `json:"allowed_image_ids,omitempty"`
@@ -39,6 +41,8 @@ func newSubUserResponse(su config.SubUser, password string) subUserResponse {
 		ID:                   su.ID,
 		Username:             su.Username,
 		Password:             password,
+		Role:                 subUserRole(su.Role),
+		Tenant:               strings.TrimSpace(su.Tenant),
 		ContainerNames:       su.ContainerNames,
 		ContainerUUIDs:       su.ContainerUUIDs,
 		AllowedImageIDs:      effectiveSubUserAllowedImageIDs(&su),
@@ -47,6 +51,14 @@ func newSubUserResponse(su config.SubUser, password string) subUserResponse {
 		AccessCode:           su.AccessCode,
 		CreatedAt:            su.CreatedAt,
 	}
+}
+
+// subUserRole normalizes an empty role to the default operator role.
+func subUserRole(role string) string {
+	if strings.EqualFold(role, "viewer") {
+		return "viewer"
+	}
+	return "operator"
 }
 
 // HandleSubUserCreate creates a sub-user for a specific container
@@ -76,43 +88,62 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 	containerName := c.Name
 
 	// Check if sub-user already exists and return the same management password.
-	for i := range config.AppConfig.SubUsers {
-		su := &config.AppConfig.SubUsers[i]
-		for _, uuid := range su.ContainerUUIDs {
-			if uuid == c.UUID {
-				if su.AccessCode == "" {
-					su.AccessCode = generateRandomStr(8)
+	// The mutation and the in-memory response snapshot happen under the config
+	// write lock so concurrent sub-user edits cannot tear the update.
+	type existingResult struct {
+		password string
+		message  string
+		su       config.SubUser
+	}
+	var found *existingResult
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		for i := range cfg.SubUsers {
+			su := &cfg.SubUsers[i]
+			matched := false
+			for _, uuid := range su.ContainerUUIDs {
+				if uuid == c.UUID {
+					matched = true
+					break
 				}
-				password := su.Password
-				message := "Sub-user link returned"
-				if password == "" {
-					password = generateRandomStr(16)
-					hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-					if err != nil {
-						jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate password"})
-						return
-					}
-					su.PassHash = string(hash)
-					su.Password = password
-					su.Token = ""
-					su.TokenVersion++
-					message = "Sub-user password generated"
-				}
-				su.ContainerNames = appendUniqueString(su.ContainerNames, containerName)
-				su.ContainerUUIDs = appendUniqueString(su.ContainerUUIDs, c.UUID)
-				if !su.ImageLimitConfigured && len(su.AllowedImageIDs) == 0 {
-					su.AllowedImageIDs = effectiveContainerAllowedImageIDs(c)
-					su.ImageLimitConfigured = true
-				}
-				config.SaveConfig()
-				jsonResponse(w, http.StatusOK, APIResponse{
-					Success: true,
-					Message: message,
-					Data:    newSubUserResponse(*su, password),
-				})
-				return
 			}
+			if !matched {
+				continue
+			}
+			if su.AccessCode == "" {
+				su.AccessCode = generateRandomStr(8)
+			}
+			password := su.Password
+			message := "Sub-user link returned"
+			if password == "" {
+				password = generateRandomStr(16)
+				hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+				if err != nil {
+					continue
+				}
+				su.PassHash = string(hash)
+				su.Password = password
+				su.Token = ""
+				su.TokenVersion++
+				message = "Sub-user password generated"
+			}
+			su.ContainerNames = appendUniqueString(su.ContainerNames, containerName)
+			su.ContainerUUIDs = appendUniqueString(su.ContainerUUIDs, c.UUID)
+			if !su.ImageLimitConfigured && len(su.AllowedImageIDs) == 0 {
+				su.AllowedImageIDs = effectiveContainerAllowedImageIDs(c)
+				su.ImageLimitConfigured = true
+			}
+			found = &existingResult{password: password, message: message, su: *su}
+			return
 		}
+	})
+	if found != nil {
+		resp := newSubUserResponse(found.su, found.password)
+		jsonResponse(w, http.StatusOK, APIResponse{
+			Success: true,
+			Message: found.message,
+			Data:    resp,
+		})
+		return
 	}
 
 	// Create new sub-user
@@ -136,8 +167,9 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:            time.Now().Format("2006-01-02 15:04:05"),
 	}
 
-	config.AppConfig.SubUsers = append(config.AppConfig.SubUsers, subUser)
-	config.SaveConfig()
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.SubUsers = append(cfg.SubUsers, subUser)
+	})
 	config.AddAuditLog("创建子用户", containerName, fmt.Sprintf("用户: %s", username), "admin")
 
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Sub-user created", Data: newSubUserResponse(subUser, password)})
@@ -159,40 +191,53 @@ func HandleSubUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
+	ip := clientIP(r)
 	clientUA := r.Header.Get("User-Agent")
+	rateKey := ip + "|user:" + req.Username
+	if loginRateLimited(w, rateKey) {
+		return
+	}
 
-	// Find sub-user
-	for _, su := range config.AppConfig.SubUsers {
+	// Find sub-user (snapshot under the read lock so a concurrent sub-user
+	// edit cannot tear the slice while it is being scanned)
+	config.AppConfigMu.RLock()
+	subUsers := append([]config.SubUser(nil), config.AppConfig.SubUsers...)
+	config.AppConfigMu.RUnlock()
+	for _, su := range subUsers {
 		if su.Username == req.Username {
 			if err := bcrypt.CompareHashAndPassword([]byte(su.PassHash), []byte(req.Password)); err == nil {
 				containerUUIDs := activeSubUserContainerUUIDs(&su)
 				if len(containerUUIDs) == 0 {
-					config.AddLoginLog(su.Username, clientIP, clientUA, false)
+					loginLimiter.recordFail(rateKey)
+					config.AddLoginLog(su.Username, ip, clientUA, false)
 					jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "No active container is assigned to this user"})
 					return
 				}
-				tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour), su.TokenVersion)
-				config.AddLoginLog(su.Username, clientIP, clientUA, true)
+				loginLimiter.reset(rateKey)
+				tokenStr := newSubUserTokenWithRole(su.Username, containerUUIDs, su.Role, time.Now().Add(24*time.Hour), su.TokenVersion)
+				config.AddLoginLog(su.Username, ip, clientUA, true)
 
 				jsonResponse(w, http.StatusOK, APIResponse{
 					Success: true,
 					Data: map[string]interface{}{
 						"token":           tokenStr,
 						"username":        su.Username,
+						"role":            subUserRole(su.Role),
 						"container_uuids": containerUUIDs,
 					},
 				})
 				return
 			} else {
-				config.AddLoginLog(su.Username, clientIP, clientUA, false)
+				loginLimiter.recordFail(rateKey)
+				config.AddLoginLog(su.Username, ip, clientUA, false)
 			}
 		}
 	}
 
+	// Unknown username: record the failure so the per-identity limiter still
+	// throttles probing attempts for accounts that do not exist.
+	loginLimiter.recordFail(rateKey)
+	config.AddLoginLog(req.Username, ip, clientUA, false)
 	jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid credentials"})
 }
 
@@ -213,34 +258,42 @@ func HandleSubUserAccessCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find sub-user by access code
-	clientIP := r.Header.Get("X-Forwarded-For")
-	if clientIP == "" {
-		clientIP = r.RemoteAddr
-	}
+	ip := clientIP(r)
 	clientUA := r.Header.Get("User-Agent")
+	rateKey := ip + "|code:" + req.Code
+	if loginRateLimited(w, rateKey) {
+		return
+	}
 
-	for _, su := range config.AppConfig.SubUsers {
+	config.AppConfigMu.RLock()
+	subUsers := append([]config.SubUser(nil), config.AppConfig.SubUsers...)
+	config.AppConfigMu.RUnlock()
+	for _, su := range subUsers {
 		if su.AccessCode == req.Code {
 			if err := bcrypt.CompareHashAndPassword([]byte(su.PassHash), []byte(req.Password)); err != nil {
-				config.AddLoginLog(su.Username, clientIP, clientUA, false)
+				loginLimiter.recordFail(rateKey)
+				config.AddLoginLog(su.Username, ip, clientUA, false)
 				jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid password"})
 				return
 			}
 
 			containerUUIDs := activeSubUserContainerUUIDs(&su)
 			if len(containerUUIDs) == 0 {
-				config.AddLoginLog(su.Username, clientIP, clientUA, false)
+				loginLimiter.recordFail(rateKey)
+				config.AddLoginLog(su.Username, ip, clientUA, false)
 				jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "No active container is assigned to this link"})
 				return
 			}
-			tokenStr := newSubUserToken(su.Username, containerUUIDs, time.Now().Add(24*time.Hour), su.TokenVersion)
-			config.AddLoginLog(su.Username, clientIP, clientUA, true)
+			loginLimiter.reset(rateKey)
+			tokenStr := newSubUserTokenWithRole(su.Username, containerUUIDs, su.Role, time.Now().Add(24*time.Hour), su.TokenVersion)
+			config.AddLoginLog(su.Username, ip, clientUA, true)
 
 			jsonResponse(w, http.StatusOK, APIResponse{
 				Success: true,
 				Data: map[string]interface{}{
 					"token":           tokenStr,
 					"username":        su.Username,
+					"role":            subUserRole(su.Role),
 					"container_uuids": containerUUIDs,
 				},
 			})
@@ -248,13 +301,20 @@ func HandleSubUserAccessCode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Unknown access code: throttle further attempts from this identity.
+	loginLimiter.recordFail(rateKey)
 	jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid access code"})
 }
 
 func newSubUserToken(username string, containerUUIDs []string, expiresAt time.Time, tokenVersion int) string {
+	return newSubUserTokenWithRole(username, containerUUIDs, "", expiresAt, tokenVersion)
+}
+
+func newSubUserTokenWithRole(username string, containerUUIDs []string, role string, expiresAt time.Time, tokenVersion int) string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub_user":        username,
 		"container_uuids": containerUUIDs,
+		"role":            subUserRole(role),
 		"token_version":   tokenVersion,
 		"exp":             expiresAt.Unix(),
 		"iat":             time.Now().Unix(),
@@ -331,9 +391,14 @@ func subUserFromRequest(r *http.Request) *config.SubUser {
 	if username == "" {
 		return nil
 	}
+	// Return a snapshot copy so callers never hold a live pointer that a
+	// concurrent sub-user edit (password rotation, role change) may mutate.
+	config.AppConfigMu.RLock()
+	defer config.AppConfigMu.RUnlock()
 	for i := range config.AppConfig.SubUsers {
 		if config.AppConfig.SubUsers[i].Username == username {
-			return &config.AppConfig.SubUsers[i]
+			copySU := config.AppConfig.SubUsers[i]
+			return &copySU
 		}
 	}
 	return nil
@@ -472,6 +537,53 @@ func isAccessRestrictedRequest(r *http.Request) bool {
 	return restricted
 }
 
+// isAdminRequest reports whether the caller is the built-in administrator
+// (or an API key with admin:access). Sub-users and narrow API keys return false.
+func isAdminRequest(r *http.Request) bool {
+	if ctx, ok := authContextFromRequest(r); ok {
+		switch ctx.Type {
+		case authTypeAdmin:
+			return true
+		case authTypeAPIKey:
+			return scopeAllowed(ctx.Scopes, "admin:access")
+		default:
+			return false
+		}
+	}
+	claims, ok := claimsFromRequest(r)
+	if !ok {
+		return false
+	}
+	_, isSubUser := claims["sub_user"]
+	return !isSubUser
+}
+
+// sanitizeContainerResponse strips secrets from a container copy before it is
+// returned to non-admin callers (sub-users and container-bound API keys).
+func sanitizeContainerResponse(r *http.Request, c *config.Container) {
+	if !isAdminRequest(r) {
+		c.SSHPassword = ""
+	}
+}
+
+// subUserIsReadOnly reports whether the current sub-user has the read-only role.
+func subUserIsReadOnly(r *http.Request) bool {
+	su := subUserFromRequest(r)
+	if su == nil {
+		return false
+	}
+	return subUserRole(su.Role) == "viewer"
+}
+
+// requireSubUserWrite denies mutating operations for read-only sub-users.
+func requireSubUserWrite(w http.ResponseWriter, r *http.Request) bool {
+	if subUserIsReadOnly(r) {
+		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Read-only sub-user cannot perform this operation"})
+		return false
+	}
+	return true
+}
+
 func containerByIdentifier(identifier string) *config.Container {
 	return config.FindContainerByIdentifier(identifier)
 }
@@ -498,7 +610,9 @@ func HandleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logs := config.AppConfig.AuditLogs
+	config.AppConfigMu.RLock()
+	logs := append([]config.AuditLog(nil), config.AppConfig.AuditLogs...)
+	config.AppConfigMu.RUnlock()
 	if logs == nil {
 		logs = []config.AuditLog{}
 	}
@@ -684,6 +798,17 @@ func isSubUserContainerActionAllowed(action string, method string) bool {
 
 func activeSubUserContainerUUIDs(su *config.SubUser) []string {
 	uuids := make([]string, 0, len(su.ContainerUUIDs))
+	// 租户绑定：可访问该租户下全部容器
+	if strings.TrimSpace(su.Tenant) != "" {
+		config.AppConfigMu.RLock()
+		containers := append([]config.Container(nil), config.AppConfig.Containers...)
+		config.AppConfigMu.RUnlock()
+		for _, c := range containers {
+			if strings.TrimSpace(c.Tenant) == strings.TrimSpace(su.Tenant) && c.UUID != "" {
+				uuids = appendUniqueString(uuids, c.UUID)
+			}
+		}
+	}
 	for _, uuid := range su.ContainerUUIDs {
 		if c := config.FindContainerByUUID(uuid); c != nil {
 			uuids = appendUniqueString(uuids, c.UUID)
@@ -743,6 +868,8 @@ func splitBy(s, sep string) []string {
 type SubUserListItem struct {
 	ID                   string   `json:"id"`
 	Username             string   `json:"username"`
+	Role                 string   `json:"role"`
+	Tenant               string   `json:"tenant"`
 	ContainerNames       []string `json:"container_names"`
 	ContainerUUIDs       []string `json:"container_uuids"`
 	AllowedImageIDs      []string `json:"allowed_image_ids"`
@@ -768,11 +895,18 @@ func HandleSubUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := make([]SubUserListItem, 0, len(config.AppConfig.SubUsers))
-	for _, su := range config.AppConfig.SubUsers {
+	config.AppConfigMu.RLock()
+	subUsers := append([]config.SubUser(nil), config.AppConfig.SubUsers...)
+	loginLogs := append([]config.SavedLoginLog(nil), config.AppConfig.LoginLogs...)
+	config.AppConfigMu.RUnlock()
+
+	result := make([]SubUserListItem, 0, len(subUsers))
+	for _, su := range subUsers {
 		item := SubUserListItem{
 			ID:                   su.ID,
 			Username:             su.Username,
+			Role:                 subUserRole(su.Role),
+			Tenant:               strings.TrimSpace(su.Tenant),
 			ContainerNames:       su.ContainerNames,
 			ContainerUUIDs:       su.ContainerUUIDs,
 			AllowedImageIDs:      effectiveSubUserAllowedImageIDs(&su),
@@ -796,8 +930,8 @@ func HandleSubUserList(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Find last login time
-		for i := len(config.AppConfig.LoginLogs) - 1; i >= 0; i-- {
-			log := config.AppConfig.LoginLogs[i]
+		for i := len(loginLogs) - 1; i >= 0; i-- {
+			log := loginLogs[i]
 			if log.Username == su.Username {
 				item.LastLogin = log.Time
 				item.LastLoginIP = log.IP
@@ -828,14 +962,17 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
-	// Find sub-user
+	// Find sub-user (snapshot copy; mutations below go through MutateGlobal)
 	var target *config.SubUser
+	config.AppConfigMu.RLock()
 	for i := range config.AppConfig.SubUsers {
 		if config.AppConfig.SubUsers[i].ID == subUserID {
-			target = &config.AppConfig.SubUsers[i]
+			copySU := config.AppConfig.SubUsers[i]
+			target = &copySU
 			break
 		}
 	}
+	config.AppConfigMu.RUnlock()
 	if target == nil {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
 		return
@@ -847,20 +984,35 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		password := generateRandomStr(16)
-		if hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost); err == nil {
-			target.PassHash = string(hash)
-			target.Password = password
-			target.Token = ""
-			target.TokenVersion++ // invalidate all existing tokens
-			config.SaveConfig()
-			jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
-				"password":    password,
-				"access_code": target.AccessCode,
-				"username":    target.Username,
-			}})
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate password"})
 			return
 		}
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate password"})
+		var updated config.SubUser
+		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			for i := range cfg.SubUsers {
+				if cfg.SubUsers[i].ID != subUserID {
+					continue
+				}
+				cfg.SubUsers[i].PassHash = string(hash)
+				cfg.SubUsers[i].Password = password
+				cfg.SubUsers[i].Token = ""
+				cfg.SubUsers[i].TokenVersion++ // invalidate all existing tokens
+				updated = cfg.SubUsers[i]
+				return
+			}
+		})
+		if updated.ID == "" {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
+			"password":    password,
+			"access_code": updated.AccessCode,
+			"username":    updated.Username,
+		}})
+		return
 
 	case action == "audit-logs" && r.Method == http.MethodGet:
 		if !requireScope(w, r, "audit:read") {
@@ -894,11 +1046,85 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 			return
 		}
-		target.AllowedImageIDs = ids
-		target.ImageLimitConfigured = true
-		target.TokenVersion++
-		config.SaveConfig()
-		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: newSubUserResponse(*target, target.Password)})
+		var updated config.SubUser
+		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			for i := range cfg.SubUsers {
+				if cfg.SubUsers[i].ID != subUserID {
+					continue
+				}
+				cfg.SubUsers[i].AllowedImageIDs = ids
+				cfg.SubUsers[i].ImageLimitConfigured = true
+				cfg.SubUsers[i].TokenVersion++
+				updated = cfg.SubUsers[i]
+				return
+			}
+		})
+		if updated.ID == "" {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: newSubUserResponse(updated, updated.Password)})
+
+	case action == "role" && r.Method == http.MethodPut:
+		if !requireScope(w, r, "subuser:update") {
+			return
+		}
+		var req struct {
+			Role string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
+			return
+		}
+		role := subUserRole(req.Role)
+		var updated config.SubUser
+		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			for i := range cfg.SubUsers {
+				if cfg.SubUsers[i].ID != subUserID {
+					continue
+				}
+				cfg.SubUsers[i].Role = role
+				updated = cfg.SubUsers[i]
+				return
+			}
+		})
+		if updated.ID == "" {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
+			return
+		}
+		auditRequest(r, "subuser.role", updated.Username, "role="+role, true, "")
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: newSubUserResponse(updated, updated.Password)})
+
+	case action == "tenant" && r.Method == http.MethodPut:
+		if !requireScope(w, r, "subuser:update") {
+			return
+		}
+		var req struct {
+			Tenant string `json:"tenant"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
+			return
+		}
+		tenant := strings.TrimSpace(req.Tenant)
+		var updated config.SubUser
+		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			for i := range cfg.SubUsers {
+				if cfg.SubUsers[i].ID != subUserID {
+					continue
+				}
+				cfg.SubUsers[i].Tenant = tenant
+				cfg.SubUsers[i].TokenVersion++ // 强制重新登录，刷新租户容器范围
+				updated = cfg.SubUsers[i]
+				return
+			}
+		})
+		if updated.ID == "" {
+			jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Sub-user not found"})
+			return
+		}
+		auditRequest(r, "subuser.tenant", updated.Username, "tenant="+tenant, true, "")
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: newSubUserResponse(updated, updated.Password)})
 
 	default:
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Action not found"})
@@ -906,9 +1132,12 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func filterSubUserAuditLogs(username string) []config.AuditLog {
+	config.AppConfigMu.RLock()
+	logs := append([]config.AuditLog(nil), config.AppConfig.AuditLogs...)
+	config.AppConfigMu.RUnlock()
 	result := make([]config.AuditLog, 0)
-	for i := len(config.AppConfig.AuditLogs) - 1; i >= 0; i-- {
-		log := config.AppConfig.AuditLogs[i]
+	for i := len(logs) - 1; i >= 0; i-- {
+		log := logs[i]
 		if log.User == username || strings.HasPrefix(log.User, "user:") && strings.Contains(log.User, username) {
 			result = append(result, log)
 		}
@@ -920,9 +1149,12 @@ func filterSubUserAuditLogs(username string) []config.AuditLog {
 }
 
 func filterSubUserLoginLogs(username string) []config.SavedLoginLog {
+	config.AppConfigMu.RLock()
+	logs := append([]config.SavedLoginLog(nil), config.AppConfig.LoginLogs...)
+	config.AppConfigMu.RUnlock()
 	result := make([]config.SavedLoginLog, 0)
-	for i := len(config.AppConfig.LoginLogs) - 1; i >= 0; i-- {
-		log := config.AppConfig.LoginLogs[i]
+	for i := len(logs) - 1; i >= 0; i-- {
+		log := logs[i]
 		if log.Username == username {
 			result = append(result, log)
 		}

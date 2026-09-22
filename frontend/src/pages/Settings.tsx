@@ -1,17 +1,21 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useState } from 'react'
-import { Clock, Globe, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Terminal, Upload, UserCog } from 'lucide-react'
+import { Bell, Clock, Globe, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Terminal, Upload, UserCog } from 'lucide-react'
 import {
   changePassword,
   changeUsername,
   getLoginLogs,
+  getNotificationSettings,
   getPanelAccessPolicy,
   getSSLSettings,
   getTaskQueueSettings,
   getWebSSHOriginSettings,
   LoginLog,
+  NotificationSettings,
   PanelAccessPolicy,
   SSLSettings,
   TaskQueueSettings,
+  testNotification,
+  updateNotificationSettings,
   updateTaskQueueSettings,
   updateSSLSettings,
   updatePanelAccessPolicy,
@@ -22,7 +26,7 @@ import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 
-type SettingsSection = 'tasks' | 'account' | 'access' | 'webssh' | 'ssl' | 'logs'
+type SettingsSection = 'tasks' | 'account' | 'access' | 'webssh' | 'ssl' | 'logs' | 'notify'
 
 const settingsSections = [
   { id: 'tasks', label: '任务队列', icon: ListTodo },
@@ -30,6 +34,7 @@ const settingsSections = [
   { id: 'access', label: '访问来源', icon: Shield },
   { id: 'webssh', label: 'WebSSH 访问', icon: Terminal },
   { id: 'ssl', label: 'SSL 证书', icon: ShieldCheck },
+  { id: 'notify', label: '告警推送', icon: Bell },
   { id: 'logs', label: '登录日志', icon: LogIn },
 ] as const
 
@@ -67,6 +72,22 @@ export default function Settings() {
   const [trustedProxiesText, setTrustedProxiesText] = useState('')
   const [savingAccessPolicy, setSavingAccessPolicy] = useState(false)
   const [activeSection, setActiveSection] = useState<SettingsSection>('tasks')
+
+  // 告警推送
+  const [notify, setNotify] = useState<NotificationSettings | null>(null)
+  const [notifyEnabled, setNotifyEnabled] = useState(false)
+  const [notifyMinSeverity, setNotifyMinSeverity] = useState('medium')
+  const [notifyWebhookURL, setNotifyWebhookURL] = useState('')
+  const [smtpEnabled, setSMTPEnabled] = useState(false)
+  const [smtpServer, setSMTPServer] = useState('')
+  const [smtpPort, setSMTPPort] = useState(465)
+  const [smtpUser, setSMTPUser] = useState('')
+  const [smtpPassword, setSMTPPassword] = useState('')
+  const [smtpFrom, setSMTPFrom] = useState('')
+  const [smtpTo, setSMTPTo] = useState('')
+  const [smtpPasswordSet, setSMTPPasswordSet] = useState(false)
+  const [savingNotify, setSavingNotify] = useState(false)
+  const [testingNotify, setTestingNotify] = useState(false)
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -132,19 +153,41 @@ export default function Settings() {
     }
   }, [])
 
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await getNotificationSettings()
+      const data = res.data.data
+      if (!data) return
+      setNotify(data)
+      setNotifyEnabled(!!data.security_alerts_enabled)
+      setNotifyMinSeverity(data.min_severity || 'medium')
+      setNotifyWebhookURL(data.webhook_url || '')
+      setSMTPEnabled(!!data.smtp_enabled)
+      setSMTPServer(data.smtp_server || '')
+      setSMTPPort(data.smtp_port || 465)
+      setSMTPUser(data.smtp_user || '')
+      setSMTPFrom(data.smtp_from || '')
+      setSMTPTo(data.smtp_to || '')
+      setSMTPPasswordSet(!!data.smtp_password_set)
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
   useEffect(() => {
     fetchLogs()
     fetchSSL()
     fetchWebSSHOrigins()
     fetchTaskQueue()
     fetchAccessPolicy()
+    fetchNotifications()
     const logTimer = setInterval(fetchLogs, 15000)
     const taskTimer = setInterval(fetchTaskQueue, 5000)
     return () => {
       clearInterval(logTimer)
       clearInterval(taskTimer)
     }
-  }, [fetchAccessPolicy, fetchLogs, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
+  }, [fetchAccessPolicy, fetchLogs, fetchNotifications, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
 
   const handleSaveTaskQueue = async () => {
     const concurrency = Math.max(1, Math.min(16, Math.round(taskConcurrency || 1)))
@@ -247,6 +290,52 @@ export default function Settings() {
       dialog.alert('失败', e.response?.data?.message || '面板访问来源策略保存失败')
     } finally {
       setSavingAccessPolicy(false)
+    }
+  }
+
+  const handleSaveNotifications = async () => {
+    if (notifyEnabled && !notifyWebhookURL.trim() && !smtpEnabled) {
+      dialog.alert('提示', '请至少配置 Webhook 地址或启用邮件推送')
+      return
+    }
+    setSavingNotify(true)
+    try {
+      const res = await updateNotificationSettings({
+        security_alerts_enabled: notifyEnabled,
+        min_severity: notifyMinSeverity,
+        webhook_url: notifyWebhookURL.trim(),
+        smtp_enabled: smtpEnabled,
+        smtp_server: smtpServer.trim(),
+        smtp_port: Number(smtpPort) || 465,
+        smtp_user: smtpUser.trim(),
+        smtp_from: smtpFrom.trim(),
+        smtp_to: smtpTo.trim(),
+        smtp_password: smtpPassword,
+      })
+      if (res.data.data) {
+        setNotify(res.data.data)
+        setSMTPPasswordSet(!!res.data.data.smtp_password_set)
+        setSMTPPassword('')
+      }
+      dialog.alert('完成', '告警推送设置已保存')
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string } } }
+      dialog.alert('失败', e.response?.data?.message || '告警推送设置保存失败')
+    } finally {
+      setSavingNotify(false)
+    }
+  }
+
+  const handleTestNotification = async () => {
+    setTestingNotify(true)
+    try {
+      const res = await testNotification()
+      dialog.alert(res.data.success ? '完成' : '失败', res.data.message || '测试告警已发送')
+    } catch (err: unknown) {
+      const e = err as { response?: { data?: { message?: string } } }
+      dialog.alert('失败', e.response?.data?.message || '测试告警发送失败')
+    } finally {
+      setTestingNotify(false)
     }
   }
 
@@ -420,6 +509,36 @@ export default function Settings() {
 
           {activeSection === 'logs' && (
             <LoginLogCard logs={logs} logPage={logPage} pageSize={pageSize} totalPages={totalPages} setLogPage={setLogPage} />
+          )}
+
+          {activeSection === 'notify' && (
+            <NotificationCard
+              enabled={notifyEnabled}
+              minSeverity={notifyMinSeverity}
+              webhookURL={notifyWebhookURL}
+              smtpEnabled={smtpEnabled}
+              smtpServer={smtpServer}
+              smtpPort={smtpPort}
+              smtpUser={smtpUser}
+              smtpPassword={smtpPassword}
+              smtpFrom={smtpFrom}
+              smtpTo={smtpTo}
+              smtpPasswordSet={smtpPasswordSet}
+              saving={savingNotify}
+              testing={testingNotify}
+              onEnabledChange={setNotifyEnabled}
+              onMinSeverityChange={setNotifyMinSeverity}
+              onWebhookURLChange={setNotifyWebhookURL}
+              onSMTPEnabledChange={setSMTPEnabled}
+              onSMTPServerChange={setSMTPServer}
+              onSMTPPortChange={setSMTPPort}
+              onSMTPUserChange={setSMTPUser}
+              onSMTPPasswordChange={setSMTPPassword}
+              onSMTPFromChange={setSMTPFrom}
+              onSMTPToChange={setSMTPTo}
+              onSave={handleSaveNotifications}
+              onTest={handleTestNotification}
+            />
           )}
         </section>
       </div>
@@ -845,4 +964,131 @@ function formatUA(ua: string): string {
   else if (ua.includes('Safari') && !ua.includes('Chrome')) parts.push('Safari')
 
   return parts.join(' / ') || ua.substring(0, 40)
+}
+
+interface NotificationCardProps {
+  enabled: boolean
+  minSeverity: string
+  webhookURL: string
+  smtpEnabled: boolean
+  smtpServer: string
+  smtpPort: number
+  smtpUser: string
+  smtpPassword: string
+  smtpFrom: string
+  smtpTo: string
+  smtpPasswordSet: boolean
+  saving: boolean
+  testing: boolean
+  onEnabledChange: (enabled: boolean) => void
+  onMinSeverityChange: (value: string) => void
+  onWebhookURLChange: (value: string) => void
+  onSMTPEnabledChange: (enabled: boolean) => void
+  onSMTPServerChange: (value: string) => void
+  onSMTPPortChange: (value: number) => void
+  onSMTPUserChange: (value: string) => void
+  onSMTPPasswordChange: (value: string) => void
+  onSMTPFromChange: (value: string) => void
+  onSMTPToChange: (value: string) => void
+  onSave: () => void
+  onTest: () => void
+}
+
+function NotificationCard(props: NotificationCardProps) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+          <Bell className="h-4 w-4" />外部告警推送
+        </h2>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">安全告警通过 Webhook / 邮件推送到外部，同一类告警 5 分钟内最多推送一次</p>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+        <input type="checkbox" checked={props.enabled} onChange={(e) => props.onEnabledChange(e.target.checked)} className="h-4 w-4 rounded border-gray-300" />
+        启用安全告警推送
+      </label>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500">最低推送级别</label>
+          <select
+            value={props.minSeverity}
+            onChange={(e) => props.onMinSeverityChange(e.target.value)}
+            disabled={!props.enabled}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500"
+          >
+            <option value="low">low（全部）</option>
+            <option value="medium">medium 及以上</option>
+            <option value="high">high 及以上</option>
+            <option value="critical">critical 仅严重</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-500">Webhook 地址</label>
+          <input
+            type="url"
+            value={props.webhookURL}
+            onChange={(e) => props.onWebhookURLChange(e.target.value)}
+            disabled={!props.enabled}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500"
+            placeholder="https://example.com/hook/security"
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-md border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+          <input type="checkbox" checked={props.smtpEnabled} onChange={(e) => props.onSMTPEnabledChange(e.target.checked)} disabled={!props.enabled} className="h-4 w-4 rounded border-gray-300" />
+          邮件推送（SMTP）
+        </label>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">SMTP 服务器</label>
+            <input type="text" value={props.smtpServer} onChange={(e) => props.onSMTPServerChange(e.target.value)} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" placeholder="smtp.example.com" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">端口（465 隐式 TLS / 587 STARTTLS）</label>
+            <input type="number" value={props.smtpPort} onChange={(e) => props.onSMTPPortChange(Number(e.target.value))} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">用户名</label>
+            <input type="text" value={props.smtpUser} onChange={(e) => props.onSMTPUserChange(e.target.value)} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" autoComplete="off" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">密码{props.smtpPasswordSet ? '（已设置，留空保持不变）' : ''}</label>
+            <input type="password" value={props.smtpPassword} onChange={(e) => props.onSMTPPasswordChange(e.target.value)} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" placeholder={props.smtpPasswordSet ? '••••••••' : ''} autoComplete="new-password" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">发件人（From）</label>
+            <input type="text" value={props.smtpFrom} onChange={(e) => props.onSMTPFromChange(e.target.value)} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" placeholder="noreply@example.com" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500">收件人（逗号分隔）</label>
+            <input type="text" value={props.smtpTo} onChange={(e) => props.onSMTPToChange(e.target.value)} disabled={!props.enabled || !props.smtpEnabled} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500" placeholder="admin@example.com" />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" onClick={props.onTest} disabled={props.testing || !props.enabled} className="inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
+          <SendIcon className="h-4 w-4" />
+          {props.testing ? '发送中...' : '发送测试告警'}
+        </button>
+        <button type="button" onClick={props.onSave} disabled={props.saving} className="inline-flex items-center justify-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+          <Save className="h-4 w-4" />
+          {props.saving ? '保存中...' : '保存推送设置'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SendIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </svg>
+  )
 }

@@ -1,6 +1,6 @@
 # 发布流程
 
-CLICD 的安装和升级依赖 GitHub Release 产物。发布时建议使用语义化版本标签，例如 `v1.1.6`。
+EyvesCloud 的安装和升级依赖 GitHub Release 产物。发布时建议使用语义化版本标签，例如 `v1.1.29`。
 
 ## 版本号
 
@@ -34,7 +34,7 @@ clicd-linux-arm64
 示例：
 
 ```bash
-CLICD_VERSION=v1.1.6 sh install.sh
+CLICD_VERSION=v1.1.29 sh install.sh
 ```
 
 ## 发布后验证

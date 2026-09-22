@@ -1,7 +1,10 @@
 package lxc
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -92,7 +95,7 @@ func DownloadCustomImageWithProgress(ctx context.Context, template Template, pro
 }
 
 func downloadCustomRootfs(ctx context.Context, sourceURL, target string, progress CustomImageDownloadProgressFunc) error {
-	response, err := safehttp.Get(ctx, sourceURL, "CLICD/1.0 LXC image downloader", 30*time.Minute)
+	response, err := safehttp.Get(ctx, sourceURL, "EyvesCloud/1.0 LXC image downloader", 30*time.Minute)
 	if err != nil {
 		return err
 	}
@@ -160,34 +163,25 @@ func verifyCustomRootfsSHA256(filePath, expected string) error {
 }
 
 func ValidateCustomRootfsArchive(archivePath string) error {
-	command := exec.Command("tar", "-tf", archivePath)
-	stdout, err := command.StdoutPipe()
+	stream, closeFn, err := openTarStream(archivePath)
 	if err != nil {
 		return err
 	}
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("failed to inspect rootfs archive: %v", err)
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	defer closeFn()
+	tr := tar.NewReader(stream)
 	entries := make([]string, 0, 4096)
-	for scanner.Scan() {
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("invalid rootfs archive: %v", err)
+		}
 		if len(entries) >= 2_000_000 {
-			_ = command.Process.Kill()
 			return fmt.Errorf("rootfs archive contains too many entries")
 		}
-		entries = append(entries, scanner.Text())
-	}
-	scanErr := scanner.Err()
-	waitErr := command.Wait()
-	if scanErr != nil {
-		return fmt.Errorf("failed to read rootfs archive: %v", scanErr)
-	}
-	if waitErr != nil {
-		return fmt.Errorf("invalid rootfs archive: %v, output: %s", waitErr, strings.TrimSpace(stderr.String()))
+		entries = append(entries, hdr.Name)
 	}
 	return validateCustomRootfsEntries(entries)
 }
@@ -236,9 +230,8 @@ func ExtractCustomRootfs(templateID, destination string) error {
 	if err := os.MkdirAll(destination, 0755); err != nil {
 		return err
 	}
-	output, err := exec.Command("tar", "-xpf", archive, "-C", destination).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to extract custom LXC rootfs: %v, output: %s", err, strings.TrimSpace(string(output)))
+	if err := extractTarGzSafe(archive, destination); err != nil {
+		return fmt.Errorf("failed to extract custom LXC rootfs: %v", err)
 	}
 	if err := secureExtractedRootfs(destination); err != nil {
 		return err
@@ -247,6 +240,141 @@ func ExtractCustomRootfs(templateID, destination string) error {
 		return fmt.Errorf("extracted custom LXC rootfs is invalid: init not found")
 	}
 	return nil
+}
+
+// openTarStream opens a possibly-compressed tar archive and returns a reader
+// positioned at the tar stream. gzip and xz are detected by magic bytes; xz
+// decompression shells out to the system xz tool, while every entry is still
+// validated by the Go extraction code.
+func openTarStream(archivePath string) (io.Reader, func(), error) {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	br := bufio.NewReader(f)
+	magic, _ := br.Peek(6)
+	if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("invalid gzip stream: %v", err)
+		}
+		return gz, func() { _ = gz.Close(); _ = f.Close() }, nil
+	}
+	if len(magic) >= 6 && bytes.Equal(magic[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}) {
+		cmd := exec.Command("xz", "-dc")
+		cmd.Stdin = br
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			f.Close()
+			return nil, nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			f.Close()
+			return nil, nil, err
+		}
+		return stdout, func() { _ = stdout.Close(); _ = cmd.Wait(); _ = f.Close() }, nil
+	}
+	return br, func() { _ = f.Close() }, nil
+}
+
+// extractTarGzSafe extracts a tar archive (gzip/xz/plain) to dest while
+// validating every entry in real time: absolute paths, path traversal and
+// symlink/hardlink targets that escape dest are rejected before anything is
+// written, preventing zip-slip style attacks on untrusted rootfs images.
+func extractTarGzSafe(archivePath, dest string) error {
+	stream, closeFn, err := openTarStream(archivePath)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+	tr := tar.NewReader(stream)
+	destAbs, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		clean := path.Clean(strings.TrimPrefix(strings.ReplaceAll(hdr.Name, "\\", "/"), "./"))
+		if strings.HasPrefix(clean, "/") {
+			return fmt.Errorf("rootfs archive contains an absolute path: %s", hdr.Name)
+		}
+		if clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("rootfs archive contains path traversal: %s", hdr.Name)
+		}
+		target := filepath.Join(destAbs, filepath.FromSlash(clean))
+		if !withinDir(destAbs, target) {
+			return fmt.Errorf("rootfs archive entry escapes destination: %s", hdr.Name)
+		}
+		info := hdr.FileInfo()
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+			_ = os.Chmod(target, info.Mode())
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+			_ = os.Chmod(target, info.Mode())
+		case tar.TypeSymlink:
+			linkAbs := filepath.Join(filepath.Dir(target), filepath.FromSlash(hdr.Linkname))
+			if !withinDir(destAbs, linkAbs) {
+				return fmt.Errorf("rootfs archive symlink escapes destination: %s -> %s", hdr.Name, hdr.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return err
+			}
+		case tar.TypeLink:
+			linkAbs := filepath.Join(destAbs, filepath.FromSlash(hdr.Linkname))
+			if !withinDir(destAbs, linkAbs) {
+				return fmt.Errorf("rootfs archive hardlink escapes destination: %s -> %s", hdr.Name, hdr.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			if err := os.Link(linkAbs, target); err != nil {
+				return err
+			}
+		default:
+			// Ignore special entries (fifos, devices).
+			continue
+		}
+	}
+	return nil
+}
+
+// withinDir reports whether target resolves to a path inside root.
+func withinDir(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func secureExtractedRootfs(root string) error {

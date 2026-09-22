@@ -347,6 +347,64 @@ print(resp.json())
 | POST | `/api/v1/ssh-ticket` | 创建 WebSSH 票据 |
 | POST | `/api/v1/vnc-ticket` | 创建 WebVNC 票据 |
 
+### 存储 / 策略 / 迁移
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/storage` | 存储池与磁盘状态 |
+| GET | `/api/v1/policies` | 策略列表与触发历史 |
+| POST | `/api/v1/policies` | 创建策略 |
+| PUT | `/api/v1/policies/{id}` | 更新策略 |
+| DELETE | `/api/v1/policies/{id}` | 删除策略 |
+| POST | `/api/v1/migrate/import` | 导入迁移包 |
+
+### 节点管理（主控-被控）
+
+主控-被控接口使用 `/api/nodes` 前缀，需要管理员登录态（JWT）或节点 token：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/nodes` | 节点列表（管理员） |
+| POST | `/api/nodes` | 创建节点（管理员） |
+| DELETE | `/api/nodes/{id}` | 删除节点（管理员） |
+| GET | `/api/nodes/{id}` | 节点详情（管理员） |
+| GET | `/api/nodes/{id}/install-script` | 一键安装脚本（管理员） |
+| GET | `/api/nodes/binary` | 下载主控二进制 |
+| POST | `/api/nodes/register` | 被控注册（安装密钥） |
+| POST | `/api/nodes/{id}/heartbeat` | 被控心跳（节点 token） |
+| GET | `/api/nodes/{id}/containers` | 代理查看被控容器（管理员） |
+| POST | `/api/nodes/{id}/containers/{cid}/{action}` | 代理操作被控容器（管理员） |
+
+被控侧接口（`/api/agent/*`）仅接受主控节点 token，用于主控代理查看与操作：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/agent/containers` | 被控容器列表 |
+| POST | `/api/agent/containers/{cid}/{action}` | 被控容器开关机/重启 |
+| POST | `/api/agent/action` | 兼容的容器动作接口 |
+
+创建节点示例：
+
+```json
+{
+  "name": "node-1",
+  "address": "http://203.0.113.20:8999"
+}
+```
+
+被控注册示例：
+
+```json
+{
+  "install_key": "安装密钥",
+  "name": "node-1",
+  "address": "http://203.0.113.20:8999",
+  "version": "1.1.29"
+}
+```
+
+注册成功后返回被控节点 `node_id` 与 `token`，被控用该 token 上报心跳，主控用该 token 代理访问被控。
+
 ### 账号与日志
 
 | 方法 | 路径 | 说明 |

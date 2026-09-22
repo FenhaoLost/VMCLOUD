@@ -9,8 +9,29 @@
 可以：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo CLICD_VERSION=v1.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
 ```
+
+## 主控和被控是什么关系？
+
+主控是运行面板的服务器，负责统一管理多台被控。被控是安装了 `clicd agent` 的服务器，注册到主控后自动上报心跳，主控可以直接查看和操作被控的容器。同一份二进制既可以是主控，也可以是被控。
+
+## 被控节点一直显示“待接入”怎么办？
+
+- 确认被控已执行一键安装脚本且输出注册成功。
+- 确认被控能访问主控的 `:8999`（注册与心跳）。
+- 等待 10 秒内下一次心跳上报后刷新页面。
+
+## 主控看不到被控的容器怎么办？
+
+- 确认被控节点状态为「在线」。
+- 确认被控创建时填写了可访问的「被控面板地址」，或在安装脚本第二个参数中指定。
+- 确认主控能访问被控的该地址（`curl http://NODE_IP:8999/api/version`）。
+- 若被控地址填写了内网 IP，请改为公网可访问地址。
+
+## 删除节点后还能重新接入吗？
+
+可以。在主控重新「添加节点」生成新的安装脚本，在被控上重新执行即可（会生成新的安装密钥与 token）。
 
 ## 子用户能看到全部容器吗？
 

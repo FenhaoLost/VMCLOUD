@@ -32,6 +32,9 @@ func HandleContainers(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Container-bound API keys cannot create containers"})
 			return
 		}
+		if !requireSubUserWrite(w, r) {
+			return
+		}
 		createContainer(w, r)
 	default:
 		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
@@ -96,6 +99,11 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 只读子用户（viewer）禁止一切写操作
+	if r.Method != http.MethodGet && !requireSubUserWrite(w, r) {
+		return
+	}
+
 	switch {
 	case action == "start" && r.Method == http.MethodPost:
 		if !requireScope(w, r, "container:power") {
@@ -127,6 +135,21 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resetSSHPassword(w, r, id)
+	case action == "tenant" && r.Method == http.MethodPut:
+		if !requireScope(w, r, "container:resize") {
+			return
+		}
+		var req struct {
+			Tenant string `json:"tenant"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
+			return
+		}
+		tenant := strings.TrimSpace(req.Tenant)
+		config.SetContainerTenant(id, tenant)
+		auditRequest(r, "container.tenant", c.Name, "tenant="+tenant, true, "")
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{"tenant": tenant}})
 	case action == "usage" && r.Method == http.MethodGet:
 		if !requireScope(w, r, "container:read") {
 			return
@@ -182,6 +205,8 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updateIPv6Addresses(w, r, id)
+	case action == "migrate-export" && r.Method == http.MethodGet:
+		HandleContainerMigrateExport(w, r, id)
 	case action == "snapshots" || strings.HasPrefix(action, "snapshots/"):
 		handleContainerSnapshots(w, r, id, action)
 	case action == "port-mappings" && r.Method == http.MethodPost:
@@ -222,6 +247,9 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 func listContainers(w http.ResponseWriter, r *http.Request) {
 	containers, _ := listByRuntime()
 	containers = filterContainersForRequest(r, containers)
+	for i := range containers {
+		sanitizeContainerResponse(r, &containers[i])
+	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: containers})
 }
 
@@ -348,7 +376,9 @@ func getContainer(w http.ResponseWriter, r *http.Request, id int) {
 		_, _ = kvmManager.RefreshVNCPort(c.ID)
 		_, _ = kvmManager.RefreshNetwork(c.ID)
 	}
-	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: c})
+	res := *c
+	sanitizeContainerResponse(r, &res)
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: res})
 }
 
 func getUsage(w http.ResponseWriter, r *http.Request, id int) {
@@ -388,14 +418,14 @@ func updateExpiry(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func resetTraffic(w http.ResponseWriter, r *http.Request, id int) {
-	c := config.FindContainer(id)
-	if c == nil {
+	if !config.MutateContainerNoSave(id, func(c *config.Container) {
+		c.TrafficUsedRX = 0
+		c.TrafficUsedTX = 0
+		c.TrafficResetDate = time.Now().Format("2006-01")
+	}) {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
 		return
 	}
-	c.TrafficUsedRX = 0
-	c.TrafficUsedTX = 0
-	c.TrafficResetDate = time.Now().Format("2006-01")
 	config.SaveConfig()
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Traffic reset"})
 }
@@ -411,15 +441,15 @@ func updateTrafficLimit(w http.ResponseWriter, r *http.Request, id int) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request"})
 		return
 	}
-	c := config.FindContainer(id)
-	if c == nil {
+	if !config.MutateContainerNoSave(id, func(c *config.Container) {
+		c.TrafficMode = req.Mode
+		c.MonthlyTrafficGB = req.MonthlyGB
+		c.TrafficInGB = req.TrafficInGB
+		c.TrafficOutGB = req.TrafficOutGB
+	}) {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
 		return
 	}
-	c.TrafficMode = req.Mode
-	c.MonthlyTrafficGB = req.MonthlyGB
-	c.TrafficInGB = req.TrafficInGB
-	c.TrafficOutGB = req.TrafficOutGB
 	config.SaveConfig()
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Traffic limit updated"})
 }

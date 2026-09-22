@@ -156,6 +156,7 @@ type Container struct {
 	FirewallRules                 []FirewallRule         `json:"firewall_rules"`
 	AllowedImageIDs               []string               `json:"allowed_image_ids,omitempty"`
 	ImageLimitConfigured          bool                   `json:"image_limit_configured,omitempty"`
+	Tenant                        string                 `json:"tenant,omitempty"`
 	SnapshotLimit                 int                    `json:"snapshot_limit"`
 	CreatedAt                     string                 `json:"created_at"`
 	ExpiresAt                     string                 `json:"expires_at"`
@@ -168,6 +169,7 @@ type Container struct {
 	PolicyBlocked                 bool                   `json:"policy_blocked"`
 	PolicyBlockedReason           string                 `json:"policy_blocked_reason,omitempty"`
 	PolicyBlockedAt               string                 `json:"policy_blocked_at,omitempty"`
+	CloudInitUserData             string                 `json:"cloud_init_user_data,omitempty"`
 }
 
 const (
@@ -689,6 +691,8 @@ type ApiKeyConfig struct {
 
 // DeleteApiKey removes an API key by ID
 func DeleteApiKey(id string) {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
 	filtered := make([]ApiKeyConfig, 0, len(AppConfig.ApiKeys))
 	for _, k := range AppConfig.ApiKeys {
 		if k.ID != id {
@@ -696,7 +700,7 @@ func DeleteApiKey(id string) {
 		}
 	}
 	AppConfig.ApiKeys = filtered
-	SaveConfig()
+	_ = saveConfigToDB()
 }
 
 type SubUser struct {
@@ -704,6 +708,8 @@ type SubUser struct {
 	Username             string   `json:"username"`
 	Password             string   `json:"password,omitempty"`
 	PassHash             string   `json:"pass_hash"`
+	Role                 string   `json:"role"`             // operator(默认，可操作) / viewer(只读)
+	Tenant               string   `json:"tenant,omitempty"` // 绑定租户：该子用户可访问此租户下全部容器
 	ContainerNames       []string `json:"container_names"`
 	ContainerUUIDs       []string `json:"container_uuids,omitempty"`
 	AllowedImageIDs      []string `json:"allowed_image_ids,omitempty"`
@@ -712,6 +718,14 @@ type SubUser struct {
 	AccessCode           string   `json:"access_code"`
 	CreatedAt            string   `json:"created_at"`
 	TokenVersion         int      `json:"token_version"`
+}
+
+// subUserRoleForStorage normalizes a sub-user role for persistence.
+func subUserRoleForStorage(role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), "viewer") {
+		return "viewer"
+	}
+	return "operator"
 }
 
 type Snapshot struct {
@@ -781,10 +795,47 @@ func defaultPrimaryStoragePool() StoragePool {
 	}
 }
 
+// NotificationConfig controls external alert push (webhook / SMTP).
+type NotificationConfig struct {
+	SecurityAlertsEnabled bool   `json:"security_alerts_enabled"`
+	MinSeverity           string `json:"min_severity"` // low / medium / high / critical
+	WebhookURL            string `json:"webhook_url,omitempty"`
+	SMTPEnabled           bool   `json:"smtp_enabled"`
+	SMTPServer            string `json:"smtp_server,omitempty"`
+	SMTPPort              int    `json:"smtp_port"`
+	SMTPUser              string `json:"smtp_user,omitempty"`
+	SMTPPassword          string `json:"smtp_password,omitempty"`
+	SMTPFrom              string `json:"smtp_from,omitempty"`
+	SMTPTo                string `json:"smtp_to,omitempty"`
+}
+
+// Node represents a managed worker (被控节点) registered to this controller.
+// The controller generates InstallKey (used once by the agent install script)
+// and Token (used for heartbeat and controller->agent API calls).
+type Node struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Address        string  `json:"address,omitempty"` // 被控自身面板地址 http(s)://host:port
+	Token          string  `json:"token,omitempty"`
+	InstallKey     string  `json:"install_key,omitempty"`
+	Status         string  `json:"status"` // online / offline / pending
+	LastSeen       string  `json:"last_seen,omitempty"`
+	Version        string  `json:"version,omitempty"`
+	OSName         string  `json:"os_name,omitempty"`
+	CPUCount       int     `json:"cpu_count,omitempty"`
+	RAMTotalMB     int64   `json:"ram_total_mb,omitempty"`
+	RAMUsedMB      int64   `json:"ram_used_mb,omitempty"`
+	DiskTotalGB    float64 `json:"disk_total_gb,omitempty"`
+	DiskUsedGB     float64 `json:"disk_used_gb,omitempty"`
+	ContainerCount int     `json:"container_count,omitempty"`
+	CreatedAt      string  `json:"created_at,omitempty"`
+}
+
 // ClicdConfig is the main configuration structure
 type ClicdConfig struct {
 	AdminUser            string                 `json:"admin_user"`
 	AdminPassHash        string                 `json:"admin_pass_hash"`
+	AdminTokenVersion    int                    `json:"admin_token_version"`
 	JWTSecret            string                 `json:"jwt_secret"`
 	Port                 int                    `json:"port"`
 	DataDir              string                 `json:"data_dir"`
@@ -811,11 +862,16 @@ type ClicdConfig struct {
 	WebSSHAllowedOrigins []string               `json:"webssh_allowed_origins"`
 	PanelAccessPolicy    PanelAccessPolicy      `json:"panel_access_policy"`
 	SecurityAutoShutdown bool                   `json:"security_auto_shutdown"`
+	ARPProtectionEnabled bool                   `json:"arp_protection_enabled"`
+	Notifications        NotificationConfig     `json:"notifications"`
 	TaskConcurrency      int                    `json:"task_concurrency"`
 	Language             string                 `json:"language"`
 	SSL                  SSLConfig              `json:"ssl"`
 	SSLCertificates      map[string]SSLConfig   `json:"ssl_certificates"`
 	StoragePools         []StoragePool          `json:"storage_pools"`
+	PolicyRules          []PolicyRule           `json:"policy_rules"`
+	PolicyHistory        []PolicyTriggerRecord  `json:"policy_history"`
+	Nodes                []Node                 `json:"nodes,omitempty"`
 }
 
 const (
@@ -854,6 +910,27 @@ type CustomLXCImage struct {
 var configPath string
 var AppConfig *ClicdConfig
 var allocationMu sync.Mutex
+
+// agentToken is the node token issued by the controller. In agent mode it is
+// used to authenticate controller->agent API calls (/api/agent/*).
+var agentToken string
+
+// SetAgentToken stores the agent token for this node.
+func SetAgentToken(token string) {
+	agentToken = token
+}
+
+// AgentToken returns the configured agent token ("" when not in agent mode).
+func AgentToken() string {
+	return agentToken
+}
+
+// AppConfigMu guards concurrent access to the in-memory AppConfig graph.
+// Background goroutines (policy engine, metric sampler, security scanner,
+// expiry scanner) and HTTP handlers mutate the same slices, so every read
+// snapshot and every mutation must hold this lock. Lock order convention:
+// always acquire AppConfigMu before dbMu (SaveConfig path), never the reverse.
+var AppConfigMu sync.RWMutex
 
 const DefaultSnapshotLimit = 3
 
@@ -911,6 +988,25 @@ func NewContainerUUID() string {
 	for {
 		uuid := generateUUIDString()
 		if FindContainerByUUID(uuid) == nil {
+			return uuid
+		}
+	}
+}
+
+// newContainerUUIDUnlocked returns a unique UUID. The caller must already hold
+// AppConfigMu (write lock). It must not call FindContainerByUUID, which would
+// attempt to re-acquire the lock and deadlock the writer.
+func newContainerUUIDUnlocked() string {
+	for {
+		uuid := generateUUIDString()
+		found := false
+		for i := range AppConfig.Containers {
+			if AppConfig.Containers[i].UUID == uuid {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return uuid
 		}
 	}
@@ -1008,7 +1104,7 @@ func InitConfig() (*ClicdConfig, error) {
 	}
 
 	fmt.Println("\n========================================")
-	fmt.Println("  CLICD - LXC Container Manager")
+	fmt.Println("  EyvesCloud - LXC Container Manager")
 	fmt.Println("========================================")
 	fmt.Printf("  Username: %s\n", adminUser)
 	fmt.Printf("  Password: %s\n", adminPass)
@@ -1120,6 +1216,10 @@ func normalizeConfigDefaults(dataDir string) bool {
 	}
 	if AppConfig.LoginLogs == nil {
 		AppConfig.LoginLogs = make([]SavedLoginLog, 0)
+		changed = true
+	}
+	if AppConfig.Nodes == nil {
+		AppConfig.Nodes = make([]Node, 0)
 		changed = true
 	}
 	if AppConfig.EnabledImages == nil {
@@ -1497,8 +1597,11 @@ func removeLegacyVNCMappings() bool {
 	return changed
 }
 
-// SaveConfig saves configuration to disk
+// SaveConfig saves configuration to disk. It holds AppConfigMu for the whole
+// serialization so background readers observe a consistent snapshot.
 func SaveConfig() error {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
 	return saveConfigToDB()
 }
 
@@ -1602,15 +1705,93 @@ func RemoveCustomLXCImage(id string) (bool, error) {
 
 // AddContainer adds a container to the config
 func AddContainer(c Container) {
-	allocationMu.Lock()
-	defer allocationMu.Unlock()
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
 	if c.UUID == "" {
-		c.UUID = NewContainerUUID()
+		c.UUID = newContainerUUIDUnlocked()
 	}
 	c.Virtualization = NormalizeVirtualization(c.Virtualization)
 	NormalizeContainerResourceAliases(&c)
 	AppConfig.Containers = append(AppConfig.Containers, c)
-	SaveConfig()
+	_ = saveConfigToDB()
+}
+
+// MutateGlobal applies fn to the live configuration under the write lock and
+// persists the result. It is the safe way for handlers to change top-level
+// config fields (admin credentials, language, concurrency, ...) concurrently
+// with the background scanners and metric samplers.
+func MutateGlobal(fn func(*ClicdConfig)) error {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	fn(AppConfig)
+	return saveConfigToDB()
+}
+
+// FindNode returns a snapshot copy of a managed node by ID.
+func FindNode(id string) (Node, bool) {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	for _, n := range AppConfig.Nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return Node{}, false
+}
+
+// FindNodeByInstallKey returns a snapshot copy of a node by its install key.
+func FindNodeByInstallKey(key string) (Node, bool) {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	for _, n := range AppConfig.Nodes {
+		if n.InstallKey != "" && n.InstallKey == key {
+			return n, true
+		}
+	}
+	return Node{}, false
+}
+
+// AddNode persists a new managed node. Node IDs must be unique.
+func AddNode(n Node) error {
+	return MutateGlobal(func(cfg *ClicdConfig) {
+		cfg.Nodes = append(cfg.Nodes, n)
+	})
+}
+
+// UpdateNode applies fn to a node under the write lock and returns the updated
+// snapshot. It reports whether the node existed.
+func UpdateNode(id string, fn func(*Node)) (Node, bool) {
+	var updated Node
+	ok := false
+	_ = MutateGlobal(func(cfg *ClicdConfig) {
+		for i := range cfg.Nodes {
+			if cfg.Nodes[i].ID != id {
+				continue
+			}
+			fn(&cfg.Nodes[i])
+			updated = cfg.Nodes[i]
+			ok = true
+			return
+		}
+	})
+	return updated, ok
+}
+
+// RemoveNode removes a managed node by ID.
+func RemoveNode(id string) bool {
+	removed := false
+	_ = MutateGlobal(func(cfg *ClicdConfig) {
+		filtered := make([]Node, 0, len(cfg.Nodes))
+		for _, n := range cfg.Nodes {
+			if n.ID == id {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, n)
+		}
+		cfg.Nodes = filtered
+	})
+	return removed
 }
 
 // AllocateContainerID allocates a new container ID
@@ -1625,6 +1806,8 @@ func AllocateContainerID() int {
 
 // RemoveContainer removes a container from config by ID
 func RemoveContainer(id int) bool {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
 	for i, c := range AppConfig.Containers {
 		if c.ID == id {
 			removeSubUserContainerAccess(c.Name, c.UUID)
@@ -1632,7 +1815,7 @@ func RemoveContainer(id int) bool {
 			// Clear snapshot schedule for this container
 			clearContainerSnapshotSchedule(&AppConfig.Containers[i])
 			AppConfig.Containers = append(AppConfig.Containers[:i], AppConfig.Containers[i+1:]...)
-			SaveConfig()
+			_ = saveConfigToDB()
 			return true
 		}
 	}
@@ -1726,8 +1909,9 @@ func removeSubUserContainerAccess(containerName string, containerUUID string) {
 	AppConfig.SubUsers = filteredUsers
 }
 
-// FindContainer finds a container by ID
-func FindContainer(id int) *Container {
+// findContainerUnlocked finds a container by ID. Caller must hold AppConfigMu
+// (read or write) when calling this from a locked context.
+func findContainerUnlocked(id int) *Container {
 	for i, c := range AppConfig.Containers {
 		if c.ID == id {
 			return &AppConfig.Containers[i]
@@ -1736,8 +1920,17 @@ func FindContainer(id int) *Container {
 	return nil
 }
 
+// FindContainer finds a container by ID
+func FindContainer(id int) *Container {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return findContainerUnlocked(id)
+}
+
 // FindContainerByUUID finds a container by UUID.
 func FindContainerByUUID(uuid string) *Container {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
 	for i, c := range AppConfig.Containers {
 		if c.UUID == uuid {
 			return &AppConfig.Containers[i]
@@ -1748,6 +1941,8 @@ func FindContainerByUUID(uuid string) *Container {
 
 // FindContainerByName finds a container by name
 func FindContainerByName(name string) *Container {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
 	for i, c := range AppConfig.Containers {
 		if c.Name == name {
 			return &AppConfig.Containers[i]
@@ -1758,45 +1953,61 @@ func FindContainerByName(name string) *Container {
 
 // FindContainerByIdentifier finds a container by ID, UUID, or name.
 func FindContainerByIdentifier(identifier string) *Container {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
 	if id, err := strconv.Atoi(identifier); err == nil {
-		if c := FindContainer(id); c != nil {
+		if c := findContainerUnlocked(id); c != nil {
 			return c
 		}
 	}
-	if c := FindContainerByUUID(identifier); c != nil {
-		return c
+	for i, c := range AppConfig.Containers {
+		if c.UUID == identifier {
+			return &AppConfig.Containers[i]
+		}
 	}
-	return FindContainerByName(identifier)
+	for i, c := range AppConfig.Containers {
+		if c.Name == identifier {
+			return &AppConfig.Containers[i]
+		}
+	}
+	return nil
 }
 
 // UpdateContainerStatus updates container status by ID
 func UpdateContainerStatus(id int, status string) {
-	c := FindContainer(id)
-	if c != nil {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	if c := findContainerUnlocked(id); c != nil {
 		c.Status = status
-		SaveConfig()
+		_ = saveConfigToDB()
 	}
 }
 
 func UpdateContainerStatusAndRestore(id int, status string, restoreOnHostBoot bool) {
-	c := FindContainer(id)
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
 	if c != nil {
 		c.Status = status
 		c.RestoreOnHostBoot = restoreOnHostBoot
-		SaveConfig()
+		_ = saveConfigToDB()
 	}
 }
 
 func SetContainerRestoreOnHostBoot(id int, restore bool) {
-	c := FindContainer(id)
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
 	if c != nil {
 		c.RestoreOnHostBoot = restore
-		SaveConfig()
+		_ = saveConfigToDB()
 	}
 }
 
 func SetContainerPolicyBlock(id int, blocked bool, reason string) {
-	c := FindContainer(id)
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
 	if c == nil {
 		return
 	}
@@ -1808,13 +2019,74 @@ func SetContainerPolicyBlock(id int, blocked bool, reason string) {
 		c.PolicyBlockedReason = ""
 		c.PolicyBlockedAt = ""
 	}
-	SaveConfig()
+	_ = saveConfigToDB()
+}
+
+// SetContainerTenant assigns a container to a tenant group.
+func SetContainerTenant(id int, tenant string) {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
+	if c == nil {
+		return
+	}
+	c.Tenant = strings.TrimSpace(tenant)
+	_ = saveConfigToDB()
 }
 
 // UpdateVNC refreshes all container statuses
 func UpdateVNC(containers []Container) {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
 	AppConfig.Containers = containers
-	SaveConfig()
+	_ = saveConfigToDB()
+}
+
+// MutateContainerByID applies fn to the live container under the write lock
+// and persists the change. It reports whether the container existed and the
+// mutation was saved, and returns the container so the caller can apply the
+// change to the runtime afterwards.
+func MutateContainerByID(id int, fn func(*Container)) (bool, *Container) {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
+	if c == nil {
+		return false, nil
+	}
+	fn(c)
+	if err := saveConfigToDB(); err != nil {
+		return false, c
+	}
+	return true, c
+}
+
+// MutateContainerNoSave applies fn to the live container under the write lock
+// without persisting. Returns false if the container no longer exists. The
+// caller is expected to persist with SaveConfig once after a batch of
+// mutations. This keeps multi-field updates (e.g. traffic counters) atomic
+// against readers and other writers.
+func MutateContainerNoSave(id int, fn func(*Container)) bool {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	c := findContainerUnlocked(id)
+	if c == nil {
+		return false
+	}
+	fn(c)
+	return true
+}
+
+// UpdatePolicyRuleMeta persists the trigger counters for a policy rule.
+func UpdatePolicyRuleMeta(id string, triggeredCount int, lastTriggered string) {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	for i := range AppConfig.PolicyRules {
+		if AppConfig.PolicyRules[i].ID == id {
+			AppConfig.PolicyRules[i].TriggeredCount = triggeredCount
+			AppConfig.PolicyRules[i].LastTriggered = lastTriggered
+			return
+		}
+	}
 }
 
 func NormalizeNATPortRange(start, end int) (int, int, error) {
@@ -1984,10 +2256,12 @@ func AddAuditLog(action, target, detail, user string) {
 		Detail: detail,
 		User:   user,
 	}
+	AppConfigMu.Lock()
 	AppConfig.AuditLogs = append(AppConfig.AuditLogs, log)
 	if len(AppConfig.AuditLogs) > 500 {
 		AppConfig.AuditLogs = AppConfig.AuditLogs[len(AppConfig.AuditLogs)-500:]
 	}
+	AppConfigMu.Unlock()
 	SaveConfig()
 }
 
@@ -2004,16 +2278,20 @@ func AddAuditLogFull(action, target, detail, user, ip, userAgent string, success
 		Success:   &s,
 		Error:     errMsg,
 	}
+	AppConfigMu.Lock()
 	AppConfig.AuditLogs = append(AppConfig.AuditLogs, log)
 	if len(AppConfig.AuditLogs) > 500 {
 		AppConfig.AuditLogs = AppConfig.AuditLogs[len(AppConfig.AuditLogs)-500:]
 	}
+	AppConfigMu.Unlock()
 	SaveConfig()
 }
 
 // SaveTasks persists the task queue to config
 func SaveTasks(tasks []SavedTask) {
+	AppConfigMu.Lock()
 	AppConfig.Tasks = tasks
+	AppConfigMu.Unlock()
 	SaveConfig()
 }
 
@@ -2026,10 +2304,12 @@ func AddLoginLog(username, ip, userAgent string, success bool) {
 		UserAgent: userAgent,
 		Success:   success,
 	}
+	AppConfigMu.Lock()
 	AppConfig.LoginLogs = append(AppConfig.LoginLogs, log)
 	if len(AppConfig.LoginLogs) > 200 {
 		AppConfig.LoginLogs = AppConfig.LoginLogs[len(AppConfig.LoginLogs)-200:]
 	}
+	AppConfigMu.Unlock()
 	SaveConfig()
 }
 

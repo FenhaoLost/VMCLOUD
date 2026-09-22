@@ -1,29 +1,50 @@
 # FAQ
 
-## Which version does the installer install by default?
+## Which version does the install script install by default?
 
-It installs the latest version from GitHub Releases. The script default is `CLICD_VERSION=latest`, which downloads the Linux AMD64 or ARM64 artifact from `releases/latest` according to the host architecture.
+The latest version from GitHub Releases. The script defaults to `CLICD_VERSION=latest` and downloads the Linux AMD64 or ARM64 artifact from `releases/latest` according to the host architecture.
 
 ## Can I pin a specific version?
 
 Yes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo CLICD_VERSION=v1.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
 ```
 
-## Can sub-users see every container?
+## What is the relationship between the Controller and workers?
 
-No. Sub-users only see containers authorized by the administrator.
+The Controller is the server running the panel that centrally manages multiple workers. A worker is a server running `clicd agent`; after registering with the Controller, it reports heartbeats automatically, and the Controller can view and operate the worker's containers directly. The same binary can be either a Controller or a worker.
 
-## Is an API key the same as the login password?
+## A worker node keeps showing "Pending". What should I do?
 
-No. API keys are created on the API Integration page for programmatic access. The login password is used for the web panel.
+- Make sure the worker has run the one-line install script and the output reported a successful registration.
+- Make sure the worker can reach the Controller's `:8999` (registration and heartbeat).
+- Wait for the next heartbeat within 10 seconds, then refresh the page.
 
-## What happens after a container reaches its traffic limit?
+## The Controller cannot see a worker's containers. What should I do?
 
-The container is automatically shut down to avoid further overage. The administrator can adjust the limit or reset traffic usage.
+- Make sure the worker node status is "Online".
+- Make sure a reachable "worker panel address" was entered when creating the node, or specified as the second argument of the install script.
+- Make sure the Controller can reach that address (`curl http://NODE_IP:8999/api/version`).
+- If an internal IP was used as the worker address, change it to a publicly reachable address.
 
-## Why is IPv6 unreachable after assignment?
+## Can a deleted node rejoin?
 
-IPv6 reachability depends on the host and upstream network. Confirm that the host has a routable IPv6 prefix and that routing, firewall, neighbor discovery, or proxy configuration is correct.
+Yes. Add the node again on the Controller to generate a new install script, then run it on the worker again (a new install key and token are generated).
+
+## Can sub-users see all containers?
+
+No. Sub-users only see the containers the administrator authorized for them.
+
+## Are API keys the same as the login password?
+
+No. API keys are created on the "API Integration" page for programmatic API calls. The login password is for the web panel.
+
+## What happens when a container reaches its traffic limit?
+
+The container is automatically shut down to avoid further overage traffic. Administrators can adjust the limit or reset the traffic.
+
+## Why is my public IPv6 not reachable after assignment?
+
+IPv6 reachability depends on the host and the upstream network. The host must have a routable IPv6 range, and the routing, firewall, neighbor discovery, or proxy configuration must be correct.

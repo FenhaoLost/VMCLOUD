@@ -10,7 +10,7 @@ const api = axios.create({
 
 // Request interceptor to add auth token
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('clicd_token')
+  const token = localStorage.getItem('eyvescloud_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
@@ -25,8 +25,8 @@ api.interceptors.response.use(
     const isLoginRequest = ['/login', '/sub-user/login', '/sub-user/access']
       .some((path) => requestURL === path || requestURL.endsWith(path))
     if (error.response?.status === 401 && !isLoginRequest) {
-      localStorage.removeItem('clicd_token')
-      localStorage.removeItem('clicd_username')
+      localStorage.removeItem('eyvescloud_token')
+      localStorage.removeItem('eyvescloud_username')
       if (window.location.pathname !== '/login') {
         window.location.href = '/login'
       }
@@ -121,6 +121,7 @@ export interface Container {
   firewall_default_action: 'ACCEPT' | 'DROP'
   firewall_rules: FirewallRule[]
   snapshot_limit: number
+  tenant?: string
   created_at: string
   expires_at: string
   snapshot_schedule_enabled: boolean
@@ -132,6 +133,7 @@ export interface Container {
   policy_blocked?: boolean
   policy_blocked_reason?: string
   policy_blocked_at?: string
+  cloud_init_user_data?: string
 }
 
 export interface Template {
@@ -187,6 +189,7 @@ export interface CreateContainerRequest {
   ssh_public_key?: string
   allowed_image_ids?: string[]
   image_limit_configured?: boolean
+  cloud_init_user_data?: string
   expires_at: string
 }
 
@@ -568,6 +571,36 @@ export const getPanelAccessPolicy = () =>
 export const updatePanelAccessPolicy = (data: Pick<PanelAccessPolicy, 'enabled' | 'allowed_sources' | 'trusted_proxies'>) =>
   api.put<APIResponse<PanelAccessPolicy>>('/access-policy', data)
 
+// 外部告警推送
+export interface NotificationSettings {
+  security_alerts_enabled: boolean
+  min_severity: string
+  webhook_url?: string
+  smtp_enabled: boolean
+  smtp_server?: string
+  smtp_port: number
+  smtp_user?: string
+  smtp_from?: string
+  smtp_to?: string
+  smtp_password_set?: boolean
+}
+
+export const getNotificationSettings = () =>
+  api.get<APIResponse<NotificationSettings>>('/notifications')
+
+export const updateNotificationSettings = (data: Partial<NotificationSettings> & { smtp_password?: string }) =>
+  api.put<APIResponse<NotificationSettings>>('/notifications', data)
+
+export const testNotification = () =>
+  api.post<APIResponse>('/notifications/test')
+
+// 租户
+export const updateContainerTenant = (id: string, tenant: string) =>
+  api.put<APIResponse<{ tenant: string }>>(`/containers/${id}/tenant`, { tenant })
+
+export const updateSubUserTenant = (subUserId: string, tenant: string) =>
+  api.put<APIResponse>(`/sub-users/${subUserId}/tenant`, { tenant })
+
 // Containers
 export const getContainers = () =>
   api.get<APIResponse<Container[]>>('/containers')
@@ -774,6 +807,42 @@ export const updateRoutingIPv6Prefixes = (ipv6_prefixes: IPv6PrefixInfo[]) =>
 
 export const scanRoutingIPv4Segment = (payload: { cidr: string; interface: string; gateway: string; verify: boolean; limit?: number }) =>
   api.post<APIResponse<PublicIPv4ScanResult[]>>('/routing/ipv4-scan', payload)
+
+// 主控-被控节点管理（Controller / Agent）
+export interface ManagedNode {
+  id: string
+  name: string
+  address: string
+  status: string // online / offline / pending
+  last_seen?: string
+  version?: string
+  os_name?: string
+  cpu_count?: number
+  ram_total_mb?: number
+  ram_used_mb?: number
+  disk_total_gb?: number
+  disk_used_gb?: number
+  container_count?: number
+  created_at?: string
+}
+
+export const getNodes = () =>
+  api.get<APIResponse<ManagedNode[]>>('/nodes')
+
+export const createNode = (name?: string, address?: string) =>
+  api.post<APIResponse<ManagedNode>>('/nodes', { name, address })
+
+export const deleteNode = (id: string) =>
+  api.delete<APIResponse>(`/nodes/${id}`)
+
+export const getNodeInstallScript = (id: string) =>
+  api.get<string>(`/nodes/${id}/install-script`, { responseType: 'text' })
+
+export const getNodeContainers = (nodeId: string) =>
+  api.get<APIResponse<Container[]>>(`/nodes/${nodeId}/containers`)
+
+export const nodeContainerAction = (nodeId: string, containerId: number, action: string) =>
+  api.post<APIResponse>(`/nodes/${nodeId}/containers/${containerId}/${action}`)
 
 // Templates
 export const getTemplates = () =>
@@ -1026,7 +1095,8 @@ export interface SecuritySummary {
 }
 
 export interface SecuritySettings {
-  auto_shutdown: boolean
+  auto_shutdown?: boolean
+  arp_protection?: boolean
 }
 
 export interface SecurityLog {
@@ -1074,5 +1144,101 @@ export const updateLanguage = (language: PanelLanguage) =>
 // Version
 export const getVersion = () =>
   api.get<APIResponse<{ version: string }>>('/version')
+
+// ---- CPU/带宽策略 (Policy) ----
+export interface PolicyRule {
+  id?: string
+  name: string
+  enabled: boolean
+  metric: 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'disk_io'
+  operator: 'gt' | 'lt'
+  threshold: number
+  action: 'raise_cpu' | 'raise_ram' | 'adjust_bw' | 'shutdown'
+  adjust_vcpu?: number
+  adjust_ram_mb?: number
+  adjust_bw_mbps?: number
+  cooldown_minutes?: number
+  target_scope: string
+  created_at?: string
+  last_triggered?: string
+  triggered_count?: number
+}
+
+export interface PolicyTriggerRecord {
+  time: string
+  rule_id: string
+  rule_name: string
+  container: string
+  metric: string
+  value: number
+  action: string
+  detail: string
+}
+
+export const getPolicies = () =>
+  api.get<APIResponse<{ rules: PolicyRule[]; history: PolicyTriggerRecord[] }>>('/policies')
+
+export const createPolicy = (data: PolicyRule) =>
+  api.post<APIResponse<PolicyRule>>('/policies', data)
+
+export const updatePolicy = (id: string, data: PolicyRule) =>
+  api.put<APIResponse<PolicyRule>>(`/policies/${id}`, data)
+
+export const deletePolicy = (id: string) =>
+  api.delete<APIResponse>(`/policies/${id}`)
+
+// ---- 节点迁移 (Migration) ----
+export const migrateExport = (id: ContainerIdentifier) =>
+  api.get<MigrateBundle>(`/containers/${id}/migrate-export`)
+
+export const migrateImport = (data: MigrateBundle) =>
+  api.post<APIResponse<{ name: string }>>('/migrate/import', data)
+
+export interface MigrateContainer {
+  name: string
+  virtualization: string
+  template: string
+  vcpu: number
+  ram_mb: number
+  disk_gb: number
+  network_bw_mbps: number
+  network_down_mbps: number
+  network_up_mbps: number
+  monthly_traffic_gb: number
+  traffic_mode: string
+  traffic_in_gb: number
+  traffic_out_gb: number
+  io_speed_mbps: number
+  io_read_mbps: number
+  io_write_mbps: number
+  lan_ipv4_mode?: string
+  lan_interface?: string
+  lan_ipv4_address?: string
+  lan_ipv4_prefix_len?: number
+  lan_ipv4_gateway?: string
+  public_ipv4s?: PublicIPv4Assignment[]
+  ipv6_addresses?: IPv6Assignment[]
+  port_mappings?: PortMapping[]
+  port_mapping_limit?: number
+  firewall_enabled?: boolean
+  firewall_default_action?: string
+  firewall_rules?: FirewallRule[]
+  ssh_auth_mode?: string
+  ssh_password?: string
+  ssh_public_key?: string
+  cloud_init_user_data?: string
+  snapshot_limit?: number
+  tenant?: string
+  expires_at?: string
+  created_at?: string
+}
+
+export interface MigrateBundle {
+  format: string
+  version: number
+  exported_at: string
+  source_node?: string
+  container: MigrateContainer
+}
 
 export default api

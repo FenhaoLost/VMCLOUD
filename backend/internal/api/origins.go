@@ -44,17 +44,17 @@ func updateWebSSHOriginSettings(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
-	config.AppConfig.WebSSHAllowedOrigins = normalized
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Save Origin allowlist failed"})
-		return
-	}
+	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		cfg.WebSSHAllowedOrigins = normalized
+	})
 	auditRequest(r, "settings.webssh_origins", "WebSSH Origin", "origins="+strings.Join(normalized, ","), true, "")
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Origin allowlist saved", Data: webSSHOriginSettingsStatus(r)})
 }
 
 func webSSHOriginSettingsStatus(r *http.Request) webSSHOriginSettingsResponse {
-	origins := config.AppConfig.WebSSHAllowedOrigins
+	config.AppConfigMu.RLock()
+	origins := append([]string(nil), config.AppConfig.WebSSHAllowedOrigins...)
+	config.AppConfigMu.RUnlock()
 	if origins == nil {
 		origins = []string{}
 	}

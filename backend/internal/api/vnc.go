@@ -50,6 +50,9 @@ func HandleVNCTicket(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "Access denied to this container"})
 		return
 	}
+	if !requireSubUserWrite(w, r) {
+		return
+	}
 	c := config.FindContainerByName(req.ContainerName)
 	if c == nil {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
@@ -186,7 +189,7 @@ func vncRequesterIdentity(r *http.Request) (string, bool) {
 
 func webVNCTicketFromRequest(r *http.Request) string {
 	for _, protocol := range websocket.Subprotocols(r) {
-		const prefix = "clicd-vnc-ticket."
+		const prefix = "eyvescloud-vnc-ticket."
 		if len(protocol) > len(prefix) && protocol[:len(prefix)] == prefix {
 			return protocol[len(prefix):]
 		}
@@ -201,7 +204,7 @@ func webVNCResponseProtocol(r *http.Request) string {
 		}
 	}
 	for _, protocol := range websocket.Subprotocols(r) {
-		const prefix = "clicd-vnc-ticket."
+		const prefix = "eyvescloud-vnc-ticket."
 		if len(protocol) > len(prefix) && protocol[:len(prefix)] == prefix {
 			return protocol
 		}

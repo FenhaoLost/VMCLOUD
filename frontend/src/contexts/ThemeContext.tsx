@@ -12,7 +12,7 @@ const ThemeContext = createContext<ThemeContextType>({ theme: 'light', toggleThe
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'light'
-    const stored = localStorage.getItem('clicd_theme') as Theme | null
+    const stored = localStorage.getItem('eyvescloud_theme') as Theme | null
     if (stored === 'dark' || stored === 'light') return stored
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   })
@@ -24,7 +24,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       root.classList.remove('dark')
     }
-    localStorage.setItem('clicd_theme', theme)
+    localStorage.setItem('eyvescloud_theme', theme)
   }, [theme])
 
   const toggleTheme = useCallback(() => {

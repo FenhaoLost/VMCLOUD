@@ -108,6 +108,18 @@ func stringSlicesEqual(a, b []string) bool {
 	return true
 }
 
+// SnapshotPanelAccessPolicy returns a deep copy of the current panel access
+// policy. Every request goes through the panel access middleware, so reads
+// must be isolated from concurrent policy updates via the config lock.
+func SnapshotPanelAccessPolicy() PanelAccessPolicy {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	policy := AppConfig.PanelAccessPolicy
+	policy.AllowedSources = append([]string(nil), policy.AllowedSources...)
+	policy.TrustedProxies = append([]string(nil), policy.TrustedProxies...)
+	return policy
+}
+
 // EvaluatePanelAccess resolves the effective client address and applies policy.
 // Forwarded headers are only considered when the TCP peer is trusted.
 func EvaluatePanelAccess(policy PanelAccessPolicy, remoteAddr string, headers ForwardedClientHeaders) PanelAccessDecision {

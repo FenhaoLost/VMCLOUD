@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -140,6 +141,19 @@ func appendContainerMetricPoint(c config.Container, usage map[string]interface{}
 		history = history[:len(history)-keepFrom]
 	}
 	containerMetricHistory[key] = append(history, point)
+
+	// 持久化到 SQLite，面板重启后历史不丢失
+	go func(key string, point ContainerMetricPoint) {
+		_ = config.SaveMetricSamples(key, []config.MetricSample{{
+			TS:        point.TS,
+			CPU:       point.CPU,
+			Memory:    point.Memory,
+			NetworkRx: point.NetworkRx,
+			NetworkTx: point.NetworkTx,
+			DiskRead:  point.DiskRead,
+			DiskWrite: point.DiskWrite,
+		}})
+	}(key, point)
 }
 
 func getContainerMetricHistory(c *config.Container) []ContainerMetricPoint {
@@ -147,23 +161,63 @@ func getContainerMetricHistory(c *config.Container) []ContainerMetricPoint {
 		return nil
 	}
 	key := containerMetricKey(*c)
-	containerMetricMu.RLock()
-	defer containerMetricMu.RUnlock()
+	cutoff := time.Now().Add(-hostMetricRetention).UnixMilli()
 
-	history := containerMetricHistory[key]
-	result := make([]ContainerMetricPoint, len(history))
-	copy(result, history)
-	return result
+	// 合并 SQLite 持久化历史与内存最新采样
+	dbSamples, _ := config.LoadMetricSamples(key, cutoff)
+	merged := make([]ContainerMetricPoint, 0, len(dbSamples)+8)
+	seen := map[int64]bool{}
+	for _, s := range dbSamples {
+		if s.TS < cutoff || seen[s.TS] {
+			continue
+		}
+		seen[s.TS] = true
+		merged = append(merged, ContainerMetricPoint{
+			TS:        s.TS,
+			CPU:       s.CPU,
+			Memory:    s.Memory,
+			NetworkRx: s.NetworkRx,
+			NetworkTx: s.NetworkTx,
+			Network:   s.NetworkRx + s.NetworkTx,
+			DiskRead:  s.DiskRead,
+			DiskWrite: s.DiskWrite,
+			DiskIO:    s.DiskRead + s.DiskWrite,
+		})
+	}
+
+	containerMetricMu.RLock()
+	mem := containerMetricHistory[key]
+	for _, p := range mem {
+		if p.TS < cutoff || seen[p.TS] {
+			continue
+		}
+		seen[p.TS] = true
+		merged = append(merged, p)
+	}
+	containerMetricMu.RUnlock()
+
+	sort.Slice(merged, func(i, j int) bool { return merged[i].TS < merged[j].TS })
+	if merged == nil {
+		return []ContainerMetricPoint{}
+	}
+	return merged
 }
 
 func pruneContainerMetricHistory() {
 	cutoff := time.Now().Add(-hostMetricRetention).UnixMilli()
 	valid := map[string]bool{}
 	if config.AppConfig != nil {
-		for _, c := range config.AppConfig.Containers {
+		config.AppConfigMu.RLock()
+		containers := append([]config.Container(nil), config.AppConfig.Containers...)
+		config.AppConfigMu.RUnlock()
+		for _, c := range containers {
 			valid[containerMetricKey(c)] = true
 		}
 	}
+
+	// 清理 SQLite 持久化历史（过期 + 已删除容器）
+	_ = config.PruneMetricSamples(cutoff)
+	_ = config.PruneMetricSamplesForContainers(valid)
 
 	containerMetricMu.Lock()
 	defer containerMetricMu.Unlock()

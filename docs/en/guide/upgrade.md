@@ -1,10 +1,10 @@
 # Upgrade
 
-The CLICD installer and CLI are built around GitHub Release artifacts. Before upgrading, check the current version and back up configuration and database files.
+The EyvesCloud install script and CLI are built around GitHub Release artifacts. Before upgrading, check the current version and back up configuration and the database.
 
 ## Check the Version
 
-The current version is shown at the bottom of the web panel sidebar. You can also run:
+The current version is shown at the bottom of the web panel sidebar. You can also visit:
 
 ```bash
 curl http://127.0.0.1:8999/api/version
@@ -16,28 +16,32 @@ Example response:
 {
   "success": true,
   "data": {
-    "version": "1.1.6"
+    "version": "1.1.29"
   }
 }
 ```
 
-## Upgrade with the Installer
+## Upgrade with the Install Script
 
-The installer uses the latest release by default:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
-```
-
-Install a specific version:
+The install script uses the latest Release by default:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo CLICD_VERSION=v1.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh
 ```
+
+Pin a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
+```
+
+## Upgrading Worker Nodes
+
+Worker nodes (Agent mode) can also be upgraded directly with the install script. After the upgrade, `clicd agent` reports the new version on the next heartbeat, and the Controller's "Node Management" page shows it automatically.
 
 ## Pre-upgrade Checklist
 
-- Back up `/root/.clicd/` or the actual configuration directory.
-- Make sure no critical tasks are currently running.
-- If an image download or snapshot restore is running, wait for it to finish first.
+- Make sure `/root/.clicd/` or the actual configuration directory is backed up.
+- Make sure the system service is not running critical tasks.
+- If an image download or snapshot restore is in progress, wait for it to finish before upgrading.
 - After upgrading, check `systemctl status clicd` and the version shown in the web panel.
