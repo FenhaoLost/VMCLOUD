@@ -172,7 +172,7 @@ export default defineConfig({
       provider: 'local',
     },
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/EyvesCloud/EyvesCloud' },
+      { icon: 'github', link: 'https://github.com/FenhaoLost/VMCLOUD' },
     ],
     footer: {
       message: 'EyvesCloud 文档面向部署、使用、运维和二次开发场景。',

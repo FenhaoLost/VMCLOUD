@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 const ipv6GatewayLinkLocal = "fe80::1"
@@ -750,7 +750,7 @@ func verifyIPv4SourceUsable(iface, address string) (bool, string) {
 	cidr := address + "/32"
 	added := false
 	if exec.Command("ip", "-4", "addr", "show", "dev", iface, "to", cidr).Run() != nil {
-		output, err := exec.Command("ip", "-4", "addr", "add", cidr, "dev", iface, "label", iface+":clicdscan").CombinedOutput()
+		output, err := exec.Command("ip", "-4", "addr", "add", cidr, "dev", iface, "label", iface+":eyvescloudscan").CombinedOutput()
 		if err != nil {
 			return false, "failed to temporarily bind address: " + strings.TrimSpace(string(output))
 		}
@@ -961,7 +961,7 @@ func EnsureAssignedPublicIPv4s(assignments []config.PublicIPv4Assignment) {
 		if publicIPv4AddressBound(addr, iface) {
 			continue
 		}
-		if output, err := exec.Command("ip", "-4", "addr", "add", cidr, "dev", iface, "label", iface+":clicd").CombinedOutput(); err != nil {
+		if output, err := exec.Command("ip", "-4", "addr", "add", cidr, "dev", iface, "label", iface+":eyvescloud").CombinedOutput(); err != nil {
 			fmt.Printf("Warning: failed to add assigned public IPv4 %s to %s: %v, output: %s\n", cidr, iface, err, string(output))
 		}
 	}
@@ -1674,7 +1674,7 @@ func (m *Manager) applyIPv6Config(lxcName string, ipv6s ...string) error {
 	next := make([]string, 0, len(lines))
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "# clicd managed: public IPv6") ||
+		if strings.Contains(trimmed, "# eyvescloud managed: public IPv6") ||
 			strings.HasPrefix(trimmed, "lxc.net.0.ipv6.address") ||
 			strings.HasPrefix(trimmed, "lxc.net.0.ipv6.gateway") {
 			continue
@@ -1683,7 +1683,7 @@ func (m *Manager) applyIPv6Config(lxcName string, ipv6s ...string) error {
 	}
 	ipv6s = normalizeIPv6List(ipv6s)
 	if len(ipv6s) > 0 {
-		next = append(next, "", "# clicd managed: public IPv6 routed /128")
+		next = append(next, "", "# eyvescloud managed: public IPv6 routed /128")
 		for _, ipv6 := range ipv6s {
 			next = append(next, fmt.Sprintf("lxc.net.0.ipv6.address = %s/128", ipv6))
 		}
@@ -1798,14 +1798,14 @@ func installContainerIPv6Init(rootfsPath string, ipv6s ...string) error {
 		}
 	}
 
-	scriptPath := filepath.Join(rootfsPath, "usr", "local", "sbin", "clicd-ipv6-init")
+	scriptPath := filepath.Join(rootfsPath, "usr", "local", "sbin", "eyvescloud-ipv6-init")
 	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
 		return err
 	}
 	script := `#!/bin/sh
 IPV6_ADDRS="` + strings.Join(ipv6s, " ") + `"
 IPV6_GW=` + shellQuote(ipv6GatewayLinkLocal) + `
-IFACE="${CLICD_IPV6_IFACE:-eth0}"
+IFACE="${EYVESCLOUD_IPV6_IFACE:-eth0}"
 
 command -v ip >/dev/null 2>&1 || exit 0
 
@@ -1856,14 +1856,14 @@ exit 0
 
 func removeContainerIPv6Init(rootfsPath string) error {
 	paths := []string{
-		filepath.Join(rootfsPath, "usr", "local", "sbin", "clicd-ipv6-init"),
-		filepath.Join(rootfsPath, "etc", "systemd", "system", "clicd-ipv6.service"),
-		filepath.Join(rootfsPath, "etc", "systemd", "system", "multi-user.target.wants", "clicd-ipv6.service"),
-		filepath.Join(rootfsPath, "etc", "init.d", "clicd-ipv6"),
-		filepath.Join(rootfsPath, "etc", "runlevels", "default", "clicd-ipv6"),
+		filepath.Join(rootfsPath, "usr", "local", "sbin", "eyvescloud-ipv6-init"),
+		filepath.Join(rootfsPath, "etc", "systemd", "system", "eyvescloud-ipv6.service"),
+		filepath.Join(rootfsPath, "etc", "systemd", "system", "multi-user.target.wants", "eyvescloud-ipv6.service"),
+		filepath.Join(rootfsPath, "etc", "init.d", "eyvescloud-ipv6"),
+		filepath.Join(rootfsPath, "etc", "runlevels", "default", "eyvescloud-ipv6"),
 	}
 	for _, level := range []string{"2", "3", "4", "5"} {
-		paths = append(paths, filepath.Join(rootfsPath, "etc", "rc"+level+".d", "S99clicd-ipv6"))
+		paths = append(paths, filepath.Join(rootfsPath, "etc", "rc"+level+".d", "S99eyvescloud-ipv6"))
 	}
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -1874,18 +1874,18 @@ func removeContainerIPv6Init(rootfsPath string) error {
 }
 
 func installContainerIPv6Systemd(rootfsPath string) error {
-	servicePath := filepath.Join(rootfsPath, "etc", "systemd", "system", "clicd-ipv6.service")
+	servicePath := filepath.Join(rootfsPath, "etc", "systemd", "system", "eyvescloud-ipv6.service")
 	if err := os.MkdirAll(filepath.Dir(servicePath), 0755); err != nil {
 		return err
 	}
 	service := `[Unit]
-Description=CLICD IPv6 setup
+Description=EYVESCLOUD IPv6 setup
 After=network-online.target network.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/clicd-ipv6-init
+ExecStart=/usr/local/sbin/eyvescloud-ipv6-init
 RemainAfterExit=yes
 
 [Install]
@@ -1898,17 +1898,17 @@ WantedBy=multi-user.target
 	if err := os.MkdirAll(wantsDir, 0755); err != nil {
 		return err
 	}
-	return replaceSymlink("../clicd-ipv6.service", filepath.Join(wantsDir, "clicd-ipv6.service"))
+	return replaceSymlink("../eyvescloud-ipv6.service", filepath.Join(wantsDir, "eyvescloud-ipv6.service"))
 }
 
 func installContainerIPv6OpenRC(rootfsPath string) error {
-	initPath := filepath.Join(rootfsPath, "etc", "init.d", "clicd-ipv6")
+	initPath := filepath.Join(rootfsPath, "etc", "init.d", "eyvescloud-ipv6")
 	if err := os.MkdirAll(filepath.Dir(initPath), 0755); err != nil {
 		return err
 	}
 	initScript := `#!/sbin/openrc-run
-name="CLICD IPv6 setup"
-description="Apply CLICD IPv6 settings"
+name="EYVESCLOUD IPv6 setup"
+description="Apply EYVESCLOUD IPv6 settings"
 
 depend() {
 	after net networking
@@ -1916,8 +1916,8 @@ depend() {
 }
 
 start() {
-	ebegin "Applying CLICD IPv6"
-	/usr/local/sbin/clicd-ipv6-init
+	ebegin "Applying EYVESCLOUD IPv6"
+	/usr/local/sbin/eyvescloud-ipv6-init
 	eend $?
 }
 `
@@ -1928,7 +1928,7 @@ start() {
 	if err := os.MkdirAll(runlevelDir, 0755); err != nil {
 		return err
 	}
-	return replaceSymlink(filepath.Join("..", "..", "init.d", "clicd-ipv6"), filepath.Join(runlevelDir, "clicd-ipv6"))
+	return replaceSymlink(filepath.Join("..", "..", "init.d", "eyvescloud-ipv6"), filepath.Join(runlevelDir, "eyvescloud-ipv6"))
 }
 
 func installContainerIPv6SysV(rootfsPath string) error {
@@ -1936,20 +1936,20 @@ func installContainerIPv6SysV(rootfsPath string) error {
 	if err := os.MkdirAll(initDir, 0755); err != nil {
 		return err
 	}
-	initPath := filepath.Join(initDir, "clicd-ipv6")
+	initPath := filepath.Join(initDir, "eyvescloud-ipv6")
 	initScript := `#!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          clicd-ipv6
+# Provides:          eyvescloud-ipv6
 # Required-Start:    $network
 # Required-Stop:
 # Default-Start:     2 3 4 5
 # Default-Stop:
-# Short-Description: CLICD IPv6 setup
+# Short-Description: EYVESCLOUD IPv6 setup
 ### END INIT INFO
 
 case "$1" in
 	start|restart|force-reload)
-		/usr/local/sbin/clicd-ipv6-init
+		/usr/local/sbin/eyvescloud-ipv6-init
 		;;
 	stop|status)
 		exit 0
@@ -1969,7 +1969,7 @@ exit 0
 		if !dirExists(rcDir) {
 			continue
 		}
-		if err := replaceSymlink(filepath.Join("..", "init.d", "clicd-ipv6"), filepath.Join(rcDir, "S99clicd-ipv6")); err != nil {
+		if err := replaceSymlink(filepath.Join("..", "init.d", "eyvescloud-ipv6"), filepath.Join(rcDir, "S99eyvescloud-ipv6")); err != nil {
 			return err
 		}
 	}

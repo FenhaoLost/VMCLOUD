@@ -6,6 +6,7 @@ import {
   Code2,
   Cpu,
   Camera,
+  Building2,
   HardDrive,
   LayoutDashboard,
   LogOut,
@@ -288,6 +289,18 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
             </button>
 
             <button
+              onClick={() => navigate('/tenants')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/tenants')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Building2 className="w-4 h-4" />
+              {!collapsed && <span>多租户</span>}
+            </button>
+
+            <button
               onClick={() => navigate('/api-integration')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
                 isApiIntegrationPage
@@ -357,7 +370,7 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
           <div className={`px-3 py-2 text-xs text-gray-400 dark:text-gray-500 ${collapsed ? 'text-center' : ''}`}>
             {collapsed ? (
               <a
-                href="https://github.com/MengMengCode/CLICD"
+                href="https://github.com/FenhaoLost/VMCLOUD"
                 target="_blank"
                 rel="noreferrer"
                 title={`EyvesCloud v${version}`}
@@ -368,7 +381,7 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
             ) : (
               <div className="flex min-w-0 items-center gap-2">
                 <a
-                  href="https://github.com/MengMengCode/CLICD"
+                  href="https://github.com/FenhaoLost/VMCLOUD"
                   target="_blank"
                   rel="noreferrer"
                   title="EyvesCloud"

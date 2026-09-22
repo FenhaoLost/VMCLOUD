@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 func generateFirewallRuleID() string {

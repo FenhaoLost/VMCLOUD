@@ -182,7 +182,7 @@ export default function Storage() {
             {mountedDisks.map((disk) => {
               const pool = pools.find((item) => poolForDisk(item, disk))
               const contentUsage = contentUsageMap(pool?.content_usage || disk.content_usage || [])
-              const clicdUsed = pool?.clicd_used_bytes || disk.clicd_used_bytes || 0
+              const eyvescloudUsed = pool?.eyvescloud_used_bytes || disk.eyvescloud_used_bytes || 0
               return (
                 <section
                   key={`${disk.path}-${disk.mount_point}`}
@@ -203,7 +203,7 @@ export default function Storage() {
                   </div>
                   <div className="min-w-0">
                     <div className="mb-2 text-xs font-medium text-gray-500 2xl:hidden">{t('空间分布')}</div>
-                    <DiskUsageBar disk={disk} contentUsage={contentUsage} clicdUsed={clicdUsed} />
+                    <DiskUsageBar disk={disk} contentUsage={contentUsage} eyvescloudUsed={eyvescloudUsed} />
                   </div>
                   <div className="min-w-0">
                     <div className="mb-2 text-xs font-medium text-gray-500 2xl:hidden">{t('用于存储')}</div>
@@ -250,11 +250,11 @@ export default function Storage() {
 function DiskUsageBar({
   disk,
   contentUsage,
-  clicdUsed,
+  eyvescloudUsed,
 }: {
   disk: StorageDisk
   contentUsage: Record<string, number>
-  clicdUsed: number
+  eyvescloudUsed: number
 }) {
   const { t } = useLanguage()
   const total = Math.max(0, disk.size_bytes || 0)
@@ -267,18 +267,18 @@ function DiskUsageBar({
       color: contentColors[value],
     }))
   const rawContentTotal = rawContentSegments.reduce((sum, segment) => sum + segment.size, 0)
-  const normalizedClicdUsed = Math.max(0, Math.min(used, Math.max(clicdUsed || 0, rawContentTotal)))
-  const contentScale = rawContentTotal > normalizedClicdUsed && rawContentTotal > 0
-    ? normalizedClicdUsed / rawContentTotal
+  const normalizedEyvescloudUsed = Math.max(0, Math.min(used, Math.max(eyvescloudUsed || 0, rawContentTotal)))
+  const contentScale = rawContentTotal > normalizedEyvescloudUsed && rawContentTotal > 0
+    ? normalizedEyvescloudUsed / rawContentTotal
     : 1
   const contentSegments = rawContentSegments.map((segment) => ({ ...segment, size: segment.size * contentScale }))
-  const categorizedClicdUsed = contentSegments.reduce((sum, segment) => sum + segment.size, 0)
-  const unclassifiedClicdUsed = Math.max(0, normalizedClicdUsed - categorizedClicdUsed)
-  const nonClicdUsed = Math.max(0, used - normalizedClicdUsed)
+  const categorizedEyvescloudUsed = contentSegments.reduce((sum, segment) => sum + segment.size, 0)
+  const unclassifiedEyvescloudUsed = Math.max(0, normalizedEyvescloudUsed - categorizedEyvescloudUsed)
+  const nonEyvescloudUsed = Math.max(0, used - normalizedEyvescloudUsed)
   const segments = [
     ...contentSegments,
-    { key: 'clicd-other', label: 'CLICD 其他', size: unclassifiedClicdUsed, color: '#111827' },
-    { key: 'other', label: '非 CLICD', size: nonClicdUsed, color: '#4b5563' },
+    { key: 'eyvescloud-other', label: 'EYVESCLOUD 其他', size: unclassifiedEyvescloudUsed, color: '#111827' },
+    { key: 'other', label: '非 EYVESCLOUD', size: nonEyvescloudUsed, color: '#4b5563' },
     { key: 'free', label: '可用空间', size: free, color: '#e5e7eb' },
   ].filter((segment) => segment.size > 0)
 
@@ -332,7 +332,7 @@ function defaultPoolForDisk(disk: StorageDisk): StoragePool {
   return {
     id: `disk-${slugID(mount === '/' ? 'root' : baseName)}`,
     name: `${baseName} (${disk.path || disk.name})`,
-    path: mount === '/' ? '/var/lib/clicd' : `${mount}/clicd`,
+    path: mount === '/' ? '/var/lib/eyvescloud' : `${mount}/eyvescloud`,
     content_types: primaryContents,
     default_contents: [...primaryContents],
     enabled: true,

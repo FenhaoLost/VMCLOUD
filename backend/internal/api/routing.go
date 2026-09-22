@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 type routeCapacity struct {

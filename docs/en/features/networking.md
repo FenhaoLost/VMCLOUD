@@ -1,6 +1,6 @@
 # Networking and Routing
 
-CLICD provides NAT4 port mapping, random available ports, public IPv4 assignment, IPv6 status checks, and IPv6 assignment. During container creation, you can use NAT only, public IPv4 only, IPv6 only, or a mixed network setup.
+EyvesCloud provides NAT4 port mapping, random available ports, public IPv4 assignment, IPv6 status checks, and IPv6 assignment. During container creation, you can use NAT only, public IPv4 only, IPv6 only, or a mixed network setup.
 
 ## NAT4
 

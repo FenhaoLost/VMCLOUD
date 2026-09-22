@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/safehttp"
+	"eyvescloud/internal/safehttp"
 )
 
 type CustomImageDownloadProgress struct {

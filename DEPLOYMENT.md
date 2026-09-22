@@ -1,6 +1,6 @@
 # EyvesCloud 部署文档
 
-EyvesCloud 是基于 CLICD 深度魔改的轻量虚拟化管理面板，面向 LXC / KVM，提供自动化配置、节点迁移、精细权限、租户隔离、ARP 防护、Cloud-init、API 开放接口、CPU/带宽策略、监控告警、详细日志、静态 IP 与多维统计等能力，适合 VPS 商家、实验室、开发者自建虚拟化节点以及需要批量开通容器的场景。
+EyvesCloud 是一个面向 LXC / KVM 的轻量虚拟化管理面板，提供自动化配置、节点迁移、精细权限、租户隔离、ARP 防护、Cloud-init、API 开放接口、CPU/带宽策略、监控告警、详细日志、静态 IP 与多维统计等能力，适合 VPS 商家、实验室、开发者自建虚拟化节点以及需要批量开通容器的场景。
 
 ---
 
@@ -20,32 +20,36 @@ EyvesCloud 是基于 CLICD 深度魔改的轻量虚拟化管理面板，面向 L
 
 ## 二、一键安装
 
+> 说明：`install.sh` 默认从本仓库 Release 拉取发行版；如需指向其它仓库或上游构建，可通过 `EYVESCLOUD_REPO` 覆盖（默认 `FenhaoLost/VMCLOUD`）。
+
 ```bash
-# 安装（国内网络可先配置代理或使用镜像）
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
+# 安装本仓库发行版（国内网络可先配置代理或使用镜像）
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh
 ```
 
 常用环境变量：
 
 ```bash
+# 发行版来源仓库（推荐显式指定为本仓库）
+EYVESCLOUD_REPO=FenhaoLost/VMCLOUD
 # 指定版本（默认 latest）
-CLICD_VERSION=v1.1.29
+EYVESCLOUD_VERSION=latest
 # 手动指定 NAT 网段（默认自动检测可用私网）
-CLICD_LXC_SUBNET=10.0.3.0/24
-CLICD_KVM_SUBNET=192.168.122.0/24
+EYVESCLOUD_LXC_SUBNET=10.0.3.0/24
+EYVESCLOUD_KVM_SUBNET=192.168.122.0/24
 # 指定面板语言
-CLICD_LANG=zh
+EYVESCLOUD_LANG=zh
 ```
 
 卸载：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh -s -- uninstall
 # 非交互卸载
-CLICD_UNINSTALL_CONFIRM=1 sudo sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_UNINSTALL_CONFIRM=1 sh -s -- uninstall
 ```
 
-> 卸载仅删除名称形如 `ct-数字` 的 LXC 容器、`clicd-img-dl-*` 下载临时容器和 `vm-数字` 的 KVM 域，不会误删其他生产数据；`/root/clicd-backups` 备份目录会被保留。
+> 卸载仅删除名称形如 `ct-数字` 的 LXC 容器、`eyvescloud-img-dl-*` 下载临时容器和 `vm-数字` 的 KVM 域，不会误删其他生产数据；`/root/eyvescloud-backups` 备份目录会被保留。
 
 ---
 
@@ -62,7 +66,7 @@ apt-get install -y qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clie
 
 # 2. 编译后端
 cd backend
-go build -o clicd .
+go build -o eyvescloud .
 
 # 3. 编译前端（可选，产物会自动内嵌到后端）
 cd ../frontend
@@ -70,13 +74,13 @@ npm install
 npm run build
 
 # 4. 安装二进制与服务
-install -m 0755 clicd /usr/local/bin/clicd
+install -m 0755 eyvescloud /usr/local/bin/eyvescloud
 ```
 
 systemd 服务（供参考，一键安装脚本会自动生成）：
 
 ```ini
-# /etc/systemd/system/clicd.service
+# /etc/systemd/system/eyvescloud.service
 [Unit]
 Description=EyvesCloud - LXC/KVM Container Manager
 After=network-online.target lxc.service lxcfs.service lxc-net.service libvirtd.service
@@ -84,18 +88,17 @@ Wants=network-online.target libvirtd.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/clicd server
+ExecStart=/usr/local/bin/eyvescloud server
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# 安全加固（不影响 LXC/KVM 管理所需的权限）
-NoNewPrivileges=true
+# 注意：不要使用 NoNewPrivileges / ProtectControlGroups / ProtectKernelTunables /
+# ProtectKernelModules / RestrictSUIDSGID 加固——eyvescloud 通过子进程管理 LXC/KVM，
+# 需要可写 cgroup、/proc/sys、可加载内核模块（br_netfilter/tun/vhost）及 setuid 辅助
+# 程序（lxc-start、mount -o loop、nsenter、modprobe 等），上述加固会导致容器/虚拟机
+# 无法启动。保留对功能无害的 PrivateTmp 与 RestrictRealtime 即可。
 PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
 RestrictRealtime=true
 
 [Install]
@@ -103,7 +106,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-systemctl daemon-reload && systemctl enable --now clicd
+systemctl daemon-reload && systemctl enable --now eyvescloud
 ```
 
 ---
@@ -113,7 +116,7 @@ systemctl daemon-reload && systemctl enable --now clicd
 1. 浏览器访问 `http://服务器IP:8999`（默认端口 8999，可在面板设置中修改）。
 2. 首次启动时后端会在日志中输出初始管理员账号与随机密码：
    ```bash
-   journalctl -u clicd --no-pager -n 80 | grep -E "Username:|Password:"
+   journalctl -u eyvescloud --no-pager -n 80 | grep -E "Username:|Password:"
    ```
 3. 登录后进入「面板设置」立即修改管理员密码。
 4. 按需在「存储管理」中添加存储池、「镜像管理」中启用并下载所需模板镜像，然后即可在「容器管理」中创建实例。
@@ -218,7 +221,7 @@ systemctl daemon-reload && systemctl enable --now clicd
 
 ## 七、数据存储与备份
 
-面板数据保存在 SQLite 数据库（默认 `/root/.clicd/config.db`），包含：
+面板数据保存在 SQLite 数据库（默认 `/root/.eyvescloud/config.db`），包含：
 - 容器、子用户、API Key、操作日志、登录日志、任务队列
 - 安全设置、通知渠道、面板访问策略、存储池
 - 策略规则与触发历史
@@ -228,11 +231,11 @@ systemctl daemon-reload && systemctl enable --now clicd
 
 ```bash
 # 停服备份最安全；也可在线复制（WAL 模式下建议先执行 checkpoint）
-sqlite3 /root/.clicd/config.db "PRAGMA wal_checkpoint(TRUNCATE);"
-cp /root/.clicd/config.db /root/clicd-backups/config.$(date +%F).db
+sqlite3 /root/.eyvescloud/config.db "PRAGMA wal_checkpoint(TRUNCATE);"
+cp /root/.eyvescloud/config.db /root/eyvescloud-backups/config.$(date +%F).db
 ```
 
-恢复：停止 clicd 服务，将备份文件覆盖到 `/root/.clicd/config.db`，然后启动服务。
+恢复：停止 eyvescloud 服务，将备份文件覆盖到 `/root/.eyvescloud/config.db`，然后启动服务。
 
 ---
 
@@ -240,10 +243,10 @@ cp /root/.clicd/config.db /root/clicd-backups/config.$(date +%F).db
 
 ```bash
 # 一键安装的节点直接重跑安装脚本即可升级
-curl -fsSL https://raw.githubusercontent.com/MengMengCode/CLICD/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh
 
 # 手动编译方式
-cd backend && go build -o clicd . && systemctl restart clicd
+cd backend && go build -o eyvescloud . && systemctl restart eyvescloud
 ```
 
 数据库结构会在启动时自动执行增量迁移（新增字段/表），无需手工处理。
@@ -254,18 +257,18 @@ cd backend && go build -o clicd . && systemctl restart clicd
 
 ```bash
 # systemd
-systemctl status clicd
-journalctl -u clicd -f
+systemctl status eyvescloud
+journalctl -u eyvescloud -f
 
 # OpenRC
-rc-service clicd status
-tail -f /var/log/clicd.log /var/log/clicd.err
+rc-service eyvescloud status
+tail -f /var/log/eyvescloud.log /var/log/eyvescloud.err
 
 # 查看默认端口与监听
 ss -tlnp | grep 8999
 
 # CLI 模式（不启动 Web，便于排查）
-clicd --help
+eyvescloud --help
 ```
 
 ---
@@ -273,13 +276,13 @@ clicd --help
 ## 十、常见问题
 
 **Q1：首次启动没有看到初始密码？**
-说明服务器上已存在 `/root/.clicd/config.db`（旧数据）。管理员密码使用 bcrypt 存储，无法反查；请在面板内「修改密码」，或备份后删除数据库重新初始化。
+说明服务器上已存在 `/root/.eyvescloud/config.db`（旧数据）。管理员密码使用 bcrypt 存储，无法反查；请在面板内「修改密码」，或备份后删除数据库重新初始化。
 
 **Q2：KVM 创建失败？**
 检查 `ls /dev/kvm` 是否存在（VPS 需开启嵌套虚拟化）、`systemctl status libvirtd` 是否正常、`cloud-localds` 是否安装（cloud-image-utils）。
 
 **Q3：容器无法上网？**
-确认 `net.ipv4.ip_forward=1` 已生效（`/etc/sysctl.d/99-clicd.conf`）、`lxcbr0`/`virbr0` 网桥存在、NAT 网段未与宿主机其他网段冲突；如启用 UFW，需放行 lxcbr0/virbr0 的入站与转发。
+确认 `net.ipv4.ip_forward=1` 已生效（`/etc/sysctl.d/99-eyvescloud.conf`）、`lxcbr0`/`virbr0` 网桥存在、NAT 网段未与宿主机其他网段冲突；如启用 UFW，需放行 lxcbr0/virbr0 的入站与转发。
 
 **Q4：策略自动关机后如何恢复？**
 在「容器管理」手动开机即可。策略触发记录可在「策略管理 → 触发记录」中查看；如不需要该行为，关闭对应策略。

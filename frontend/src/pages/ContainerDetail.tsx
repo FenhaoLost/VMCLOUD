@@ -2783,7 +2783,7 @@ function mergeIPv4Choices(candidates: PublicIPv4Info[], assigned: { address: str
 }
 
 function historyKey(containerName: string) {
-  return `clicd_container_metric_history:${containerName}`
+  return `eyvescloud_container_metric_history:${containerName}`
 }
 
 function clamp(value: number) {

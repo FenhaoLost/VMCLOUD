@@ -9,13 +9,13 @@ import (
 	"sync"
 	"syscall"
 
-	"clicd/internal/api"
-	"clicd/internal/agent"
-	"clicd/internal/cli"
-	"clicd/internal/config"
-	"clicd/internal/kvm"
-	"clicd/internal/lxc"
-	"clicd/internal/server"
+	"eyvescloud/internal/api"
+	"eyvescloud/internal/agent"
+	"eyvescloud/internal/cli"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/kvm"
+	"eyvescloud/internal/lxc"
+	"eyvescloud/internal/server"
 
 	"golang.org/x/term"
 )
@@ -138,7 +138,7 @@ func installShutdownStateCapture() {
 }
 
 func isWebPanelSystemdRunning() bool {
-	cmd := exec.Command("systemctl", "is-active", "clicd")
+	cmd := exec.Command("systemctl", "is-active", "eyvescloud")
 	output, err := cmd.Output()
 	if err != nil {
 		return false
@@ -147,7 +147,7 @@ func isWebPanelSystemdRunning() bool {
 }
 
 func startWebPanelSystemd() {
-	cmd := exec.Command("systemctl", "start", "clicd")
+	cmd := exec.Command("systemctl", "start", "eyvescloud")
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", mainT("警告: 自动启动 Web 面板失败"), err)
 	} else {
@@ -170,7 +170,7 @@ func mainT(text string) string {
 }
 
 func mainEnglish() bool {
-	lang := strings.ToLower(strings.TrimSpace(os.Getenv("CLICD_LANG")))
+	lang := strings.ToLower(strings.TrimSpace(os.Getenv("EYVESCLOUD_LANG")))
 	if lang == "en" || strings.HasPrefix(lang, "en_") || strings.HasPrefix(lang, "en-") {
 		return true
 	}

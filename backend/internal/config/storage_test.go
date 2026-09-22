@@ -10,7 +10,7 @@ func TestNormalizeStoragePoolsReplacesPersistedCustomPath(t *testing.T) {
 	t.Cleanup(func() { AppConfig = previousConfig })
 	mountPoint := filepath.Join(t.TempDir(), "data")
 
-	AppConfig = &ClicdConfig{StoragePools: []StoragePool{{
+	AppConfig = &EyvescloudConfig{StoragePools: []StoragePool{{
 		ID:         "data",
 		Name:       "data",
 		Path:       filepath.Join(t.TempDir(), "uncontrolled"),
@@ -34,7 +34,7 @@ func TestSelectStoragePoolForContent(t *testing.T) {
 		probeStoragePoolFreeBytes = previousProbe
 	})
 
-	AppConfig = &ClicdConfig{StoragePools: []StoragePool{
+	AppConfig = &EyvescloudConfig{StoragePools: []StoragePool{
 		{
 			ID:              "primary",
 			Path:            "/primary",
@@ -100,7 +100,7 @@ func TestSelectStoragePoolRequiresEnabledContent(t *testing.T) {
 		probeStoragePoolFreeBytes = previousProbe
 	})
 
-	AppConfig = &ClicdConfig{StoragePools: []StoragePool{{
+	AppConfig = &EyvescloudConfig{StoragePools: []StoragePool{{
 		ID:           "primary",
 		Path:         "/primary",
 		ContentTypes: []string{StorageContentLXC},

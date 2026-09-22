@@ -19,7 +19,7 @@ features:
   - title: 主控-被控多节点
     details: 主控一键生成安装脚本，被控安装 Agent 后自动接入，可在主控上查看和操作被控容器。
   - title: Web 与 CLI 并行
-    details: 管理员可使用 Web 面板，也可以进入 clicd CLI 完成维护操作。
+    details: 管理员可使用 Web 面板，也可以进入 eyvescloud CLI 完成维护操作。
   - title: 自动化友好
     details: /api/v1 提供容器、镜像、快照、安全、日志、子用户和 API Key 管理接口。
   - title: 策略与配额

@@ -1,6 +1,6 @@
 # Security Alerts
 
-CLICD includes lightweight security alerts based on connection behavior. It does not keep full normal connection logs; it focuses on abnormal behavior and high-risk patterns.
+EyvesCloud includes lightweight security alerts based on connection behavior. It does not keep full normal connection logs; it focuses on abnormal behavior and high-risk patterns.
 
 ## Covered Scenarios
 

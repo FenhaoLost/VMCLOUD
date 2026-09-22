@@ -140,9 +140,8 @@ export default function WebSSHViewer({ containerName, onClose }: WebSSHViewerPro
     }
 
     ws.onclose = () => {
-      if (status !== 'error') {
-        setStatus((current) => current === 'connected' ? 'disconnected' : current)
-      }
+      // Functional update only: avoids stale-closure reads of the outer `status`.
+      setStatus((current) => (current === 'connected' ? 'disconnected' : current))
     }
 
     term.onData((data) => {

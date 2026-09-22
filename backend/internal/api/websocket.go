@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"github.com/gorilla/websocket"
 )

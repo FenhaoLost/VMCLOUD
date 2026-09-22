@@ -44,6 +44,17 @@ interface ApiKeyForm {
 const BASE_URL = window.location.origin
 const SAMPLE_BASE_URL = 'https://panel.example.com'
 
+// Extracts a human-readable message from an axios error.
+function errorMessage(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const resp = (err as { response?: { data?: { message?: string } } }).response
+    if (resp?.data?.message) return resp.data.message
+    const axiosErr = err as { message?: string }
+    if (axiosErr.message) return axiosErr.message
+  }
+  return '请求失败，请稍后重试'
+}
+
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 type EndpointTuple = [HttpMethod, string, string]
 
@@ -272,6 +283,7 @@ export default function ApiIntegration() {
   const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null)
   const [form, setForm] = useState<ApiKeyForm>(emptyForm)
   const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
   const [newKey, setNewKey] = useState('')
   const [copiedKey, setCopiedKey] = useState(false)
   const [showDocs, setShowDocs] = useState(true)
@@ -307,11 +319,13 @@ export default function ApiIntegration() {
   const openCreate = () => {
     setEditingKey(null)
     setForm(emptyForm())
+    setFormError('')
     setShowForm(true)
   }
 
   const openEdit = (item: ApiKeyItem) => {
     setEditingKey(item)
+    setFormError('')
     setForm({
       name: item.name,
       ipWhitelist: item.ip_whitelist || '',
@@ -347,9 +361,10 @@ export default function ApiIntegration() {
           if (res.data.data.key) setNewKey(res.data.data.key)
         }
       }
+      setFormError('')
       setShowForm(false)
-    } catch {
-      // axios interceptor handles auth; form stays open
+    } catch (err: unknown) {
+      setFormError(errorMessage(err))
     } finally {
       setSaving(false)
     }
@@ -360,8 +375,8 @@ export default function ApiIntegration() {
     try {
       await api.delete(`/api-keys/${id}`)
       setKeys(prev => prev.filter(k => k.id !== id))
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      window.alert(t('删除 API Key 失败：') + errorMessage(err))
     }
   }
 
@@ -532,8 +547,8 @@ export default function ApiIntegration() {
         {showDocs && (
           <div className="space-y-6 p-5">
             <div className="rounded-lg bg-gray-900 p-4 font-mono text-xs text-gray-100">
-              <div>curl -X GET {BASE_URL}/api/v1/containers -H "X-API-Key: clicd_sk_xxxx"</div>
-              <div className="mt-2 text-gray-400">curl -X GET {BASE_URL}/api/v1/dashboard -H "Authorization: Bearer clicd_sk_xxxx"</div>
+              <div>curl -X GET {BASE_URL}/api/v1/containers -H "X-API-Key: eyvescloud_sk_xxxx"</div>
+              <div className="mt-2 text-gray-400">curl -X GET {BASE_URL}/api/v1/dashboard -H "Authorization: Bearer eyvescloud_sk_xxxx"</div>
             </div>
 
             {endpointGroups.map(group => (
@@ -728,6 +743,11 @@ export default function ApiIntegration() {
                 </div>
               </div>
             </div>
+            {formError && (
+              <div className="border-t border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">
+                {formError}
+              </div>
+            )}
             <div className="flex justify-end gap-2 border-t border-gray-200 px-5 py-4">
               <button onClick={() => setShowForm(false)} className="rounded-md border border-gray-200 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
                 取消
@@ -870,7 +890,7 @@ const requestBodySamples: Record<string, Record<string, unknown>> = {
       {
         id: 'disk-root',
         name: 'system (/)',
-        path: '/var/lib/clicd',
+        path: '/var/lib/eyvescloud',
         mount_point: '/',
         content_types: ['lxc', 'kvm', 'images', 'snapshots', 'backups'],
         default_contents: ['lxc', 'kvm', 'images', 'snapshots', 'backups'],
@@ -1282,7 +1302,7 @@ const responseSamples: Record<string, unknown> = {
         {
           id: 'disk-root',
           name: 'system (/)',
-          path: '/var/lib/clicd',
+          path: '/var/lib/eyvescloud',
           mount_point: '/',
           content_types: ['lxc', 'kvm', 'images', 'snapshots', 'backups'],
           default_contents: ['lxc', 'kvm', 'images', 'snapshots', 'backups'],
@@ -1300,7 +1320,7 @@ const responseSamples: Record<string, unknown> = {
   'PUT /api/v1/storage': {
     success: true,
     data: {
-      pools: [{ id: 'disk-root', path: '/var/lib/clicd', mount_point: '/', content_types: ['lxc', 'kvm', 'images', 'snapshots', 'backups'], enabled: true, available: true }],
+      pools: [{ id: 'disk-root', path: '/var/lib/eyvescloud', mount_point: '/', content_types: ['lxc', 'kvm', 'images', 'snapshots', 'backups'], enabled: true, available: true }],
       disks: [],
       content_types: ['lxc', 'kvm', 'images', 'snapshots', 'backups'],
     },
@@ -1349,14 +1369,14 @@ const responseSamples: Record<string, unknown> = {
   },
   'GET /api/v1/api-keys': {
     success: true,
-    data: [{ id: 'c271023f', name: 'Test', prefix: 'clicd_sk_dd9d...', ip_whitelist: '', created_at: '2026-06-08 15:44:40', last_used: '2026-06-08 15:46:10', scopes: ['*'], last_used_ip: '198.51.100.23' }],
+    data: [{ id: 'c271023f', name: 'Test', prefix: 'eyvescloud_sk_dd9d...', ip_whitelist: '', created_at: '2026-06-08 15:44:40', last_used: '2026-06-08 15:46:10', scopes: ['*'], last_used_ip: '198.51.100.23' }],
   },
   'POST /api/v1/api-keys': {
     success: true,
     message: "API key created. Save this key now - it won't be shown again.",
-    data: { id: 'a1b2c3d4', name: 'Automation', key: 'clicd_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', prefix: 'clicd_sk_xxxx...', scopes: ['dashboard:read', 'container:read'] },
+    data: { id: 'a1b2c3d4', name: 'Automation', key: 'eyvescloud_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', prefix: 'eyvescloud_sk_xxxx...', scopes: ['dashboard:read', 'container:read'] },
   },
-  'PATCH /api/v1/api-keys/{id}': { success: true, data: { id: 'a1b2c3d4', name: 'Automation', prefix: 'clicd_sk_xxxx...', scopes: ['dashboard:read', 'container:read'], disabled: false } },
+  'PATCH /api/v1/api-keys/{id}': { success: true, data: { id: 'a1b2c3d4', name: 'Automation', prefix: 'eyvescloud_sk_xxxx...', scopes: ['dashboard:read', 'container:read'], disabled: false } },
   'DELETE /api/v1/api-keys/{id}': { success: true, message: 'API key deleted' },
 }
 
@@ -1470,7 +1490,7 @@ function buildPythonExample(doc: EndpointDoc) {
     'import requests',
     '',
     `BASE_URL = "${SAMPLE_BASE_URL}"`,
-    'API_KEY = "clicd_sk_xxxx"',
+    'API_KEY = "eyvescloud_sk_xxxx"',
     '',
     ...(hasBody ? [`payload = json.loads(r'''${bodyJSON}''')`, ''] : []),
     `response = requests.${doc.method.toLowerCase()}(`,

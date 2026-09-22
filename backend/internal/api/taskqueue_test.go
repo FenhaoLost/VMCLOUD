@@ -3,8 +3,8 @@ package api
 import (
 	"testing"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 func TestRunnableTaskIndexSkipsActiveContainer(t *testing.T) {

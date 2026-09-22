@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -41,7 +41,7 @@ func HandleLanguage(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
 			return
 		}
-		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			cfg.Language = config.NormalizeLanguage(req.Language)
 		})
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
@@ -70,10 +70,10 @@ func HandleTaskQueueSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		previous := config.AppConfig.TaskConcurrency
-		if err := config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		if err := config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			cfg.TaskConcurrency = req.Concurrency
 		}); err != nil {
-			config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 				cfg.TaskConcurrency = previous
 			})
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "保存任务队列设置失败"})
@@ -177,7 +177,7 @@ func HandleAdminPasswordChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.AdminPassHash = string(hash)
 		cfg.AdminTokenVersion++ // invalidate all previously issued admin tokens
 	})
@@ -210,7 +210,7 @@ func HandleAdminUsernameChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.AdminUser = req.NewUsername
 		cfg.AdminTokenVersion++ // username change revokes existing admin tokens
 	})

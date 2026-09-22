@@ -10,7 +10,7 @@ The default installation creates one primary storage pool:
 | --- | --- |
 | ID | `disk-root` |
 | Name | `system (/)` |
-| Path | `/var/lib/clicd` |
+| Path | `/var/lib/eyvescloud` |
 | Mount point | `/` |
 | Content types | LXC, KVM, images, snapshots, backups |
 
@@ -30,7 +30,7 @@ You can add more storage pools on the "Storage Management" page, for example to 
 | --- | --- |
 | ID | `disk-data` |
 | Name | `data disk (/data)` |
-| Path | `/data/clicd` |
+| Path | `/data/eyvescloud` |
 | Mount point | `/data` |
 | Content types | LXC, images |
 

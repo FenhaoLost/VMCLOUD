@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 type panelAccessPolicyResponse struct {
@@ -48,7 +48,7 @@ func updatePanelAccessPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.PanelAccessPolicy = normalized
 	})
 	detail := "enabled=" + strings.ToLower(strings.TrimSpace(boolText(normalized.Enabled))) +

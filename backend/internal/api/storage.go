@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 type storageInfoResponse struct {
@@ -26,7 +26,7 @@ type storagePoolInfo struct {
 	SizeBytes      int64                 `json:"size_bytes"`
 	UsedBytes      int64                 `json:"used_bytes"`
 	FreeBytes      int64                 `json:"free_bytes"`
-	ClicdUsedBytes int64                 `json:"clicd_used_bytes"`
+	EyvescloudUsedBytes int64                 `json:"eyvescloud_used_bytes"`
 	ContentUsage   []storageContentUsage `json:"content_usage"`
 	Error          string                `json:"error,omitempty"`
 }
@@ -48,7 +48,7 @@ type storageDiskInfo struct {
 	FreeBytes      int64                 `json:"free_bytes"`
 	StoragePoolID  string                `json:"storage_pool_id,omitempty"`
 	StoragePath    string                `json:"storage_path,omitempty"`
-	ClicdUsedBytes int64                 `json:"clicd_used_bytes"`
+	EyvescloudUsedBytes int64                 `json:"eyvescloud_used_bytes"`
 	ContentUsage   []storageContentUsage `json:"content_usage"`
 }
 
@@ -106,7 +106,7 @@ func buildStorageInfo() storageInfoResponse {
 		if detectedMountPoint != "" && filepath.Clean(info.MountPoint) == filepath.Clean(detectedMountPoint) {
 			info.Available = info.Exists
 			info.SizeBytes, info.UsedBytes, info.FreeBytes = dfPath(pool.Path)
-			info.ContentUsage, info.ClicdUsedBytes = contentUsageForPool(pool.Path)
+			info.ContentUsage, info.EyvescloudUsedBytes = contentUsageForPool(pool.Path)
 		} else if info.Error == "" {
 			info.Error = "storage disk is not mounted"
 		}
@@ -117,7 +117,7 @@ func buildStorageInfo() storageInfoResponse {
 			if pool.MountPoint != disks[i].MountPoint {
 				continue
 			}
-			disks[i].ClicdUsedBytes += pool.ClicdUsedBytes
+			disks[i].EyvescloudUsedBytes += pool.EyvescloudUsedBytes
 			disks[i].ContentUsage = mergeContentUsage(disks[i].ContentUsage, pool.ContentUsage)
 			if disks[i].StoragePoolID == "" {
 				disks[i].StoragePoolID = pool.ID
@@ -239,9 +239,9 @@ func storagePoolIdentity(disk storageDiskInfo) (string, string) {
 
 func managedStoragePath(mountPoint string) string {
 	if filepath.Clean(mountPoint) == string(os.PathSeparator) {
-		return filepath.Join(string(os.PathSeparator), "var", "lib", "clicd")
+		return filepath.Join(string(os.PathSeparator), "var", "lib", "eyvescloud")
 	}
-	return filepath.Join(filepath.Clean(mountPoint), "clicd")
+	return filepath.Join(filepath.Clean(mountPoint), "eyvescloud")
 }
 
 func normalizeStorageContentTypes(values []string) []string {
@@ -430,7 +430,7 @@ func dirSizeBytes(path string) int64 {
 	}
 	// Count allocated blocks on this filesystem only. LXC rootfs directories can
 	// contain active mounts such as proc/sys; traversing them is slow and reports
-	// enormous virtual sizes that are not actually occupied by CLICD data.
+	// enormous virtual sizes that are not actually occupied by EYVESCLOUD data.
 	out, err := exec.Command("du", "-skx", path).Output()
 	if err == nil {
 		fields := strings.Fields(string(out))

@@ -21,8 +21,8 @@ func TestSafeReleaseBackupComponent(t *testing.T) {
 
 func TestReleaseArchiveAssetName(t *testing.T) {
 	tests := map[string]string{
-		"amd64": "clicd-linux-amd64.tar.gz",
-		"arm64": "clicd-linux-arm64.tar.gz",
+		"amd64": "eyvescloud-linux-amd64.tar.gz",
+		"arm64": "eyvescloud-linux-arm64.tar.gz",
 	}
 	for goarch, want := range tests {
 		got, err := releaseArchiveAssetName(goarch)
@@ -41,9 +41,9 @@ func TestReleaseArchiveAssetName(t *testing.T) {
 
 func TestCopyFileToBackupRejectsUnsafeFileName(t *testing.T) {
 	unsafeNames := []string{
-		"../clicd",
-		"..\\clicd",
-		"subdir/clicd",
+		"../eyvescloud",
+		"..\\eyvescloud",
+		"subdir/eyvescloud",
 		"",
 	}
 	for _, name := range unsafeNames {

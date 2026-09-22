@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -169,7 +169,7 @@ func TestVerifyKVMHostKeyCapturesAndRejectsMismatch(t *testing.T) {
 func TestGetImagesIncludesHostArchitectureCustomImage(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		CustomKVMImages: []config.CustomKVMImage{
 			{
 				ID:          "custom-kvm-linux",
@@ -204,7 +204,7 @@ func TestGetImagesIncludesHostArchitectureCustomImage(t *testing.T) {
 func TestCustomWindowsProvisionerControlsImageType(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{CustomKVMImages: []config.CustomKVMImage{{
+	config.AppConfig = &config.EyvescloudConfig{CustomKVMImages: []config.CustomKVMImage{{
 		ID:          "custom-kvm-windows",
 		Name:        "Custom Windows",
 		Distro:      "windows",
@@ -224,7 +224,7 @@ func TestCustomWindowsProvisionerControlsImageType(t *testing.T) {
 
 func TestVerifyFileSHA256(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "image")
-	content := []byte("clicd custom image")
+	content := []byte("eyvescloud custom image")
 	if err := os.WriteFile(path, content, 0600); err != nil {
 		t.Fatal(err)
 	}

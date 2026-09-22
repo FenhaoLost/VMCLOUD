@@ -21,7 +21,7 @@ type HostMetricPoint = {
   diskWrite?: number
 }
 
-const hostHistoryKey = 'clicd_host_metric_history_v2'
+const hostHistoryKey = 'eyvescloud_host_metric_history_v2'
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)

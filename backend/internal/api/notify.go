@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // notifyMu guards lastNotify (per-alert push dedupe map).
@@ -272,8 +272,10 @@ func HandleNotificationSettings(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 			return
 		}
-		config.AppConfig.Notifications = req
-		if err := config.SaveConfig(); err != nil {
+		// 通过 MutateGlobal 在写锁下更新，避免与后台安全告警协程无锁读产生数据竞争。
+		if err := config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+			cfg.Notifications = req
+		}); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return
 		}

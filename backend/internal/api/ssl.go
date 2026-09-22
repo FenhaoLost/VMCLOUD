@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 type sslSettingsRequest struct {
@@ -522,7 +522,7 @@ func restartIfRequested(applyNow bool) {
 	}
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		_ = exec.Command("systemctl", "restart", "clicd").Start()
+		_ = exec.Command("systemctl", "restart", "eyvescloud").Start()
 	}()
 }
 

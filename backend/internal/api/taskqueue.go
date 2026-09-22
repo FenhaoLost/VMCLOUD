@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 type TaskType string

@@ -18,7 +18,7 @@ func TestSQLiteConfigMigratesLegacyJSONAndPersists(t *testing.T) {
 	legacyPath := filepath.Join(dir, "config.json")
 	SetConfigPath(legacyPath)
 
-	legacy := ClicdConfig{
+	legacy := EyvescloudConfig{
 		AdminUser:       "admin",
 		AdminPassHash:   "hash",
 		JWTSecret:       "secret",

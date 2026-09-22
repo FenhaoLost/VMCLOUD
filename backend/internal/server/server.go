@@ -4,12 +4,22 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 
-	"clicd/internal/api"
-	"clicd/internal/config"
+	"eyvescloud/internal/api"
+	"eyvescloud/internal/config"
 )
+
+// clientAddress extracts the network peer address (host only) for rate limiting.
+func clientAddress(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
 
 // webFS holds embedded frontend files
 var webFS http.FileSystem
@@ -60,6 +70,12 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ssl", corsMiddleware(api.AdminMiddleware(api.HandleSSLSettings)))
 	mux.HandleFunc("/api/webssh-origins", corsMiddleware(api.AdminMiddleware(api.HandleWebSSHOriginSettings)))
 	mux.HandleFunc("/api/access-policy", corsMiddleware(api.AdminMiddleware(api.HandlePanelAccessPolicy)))
+	// 管理员两步验证（TOTP）
+	mux.HandleFunc("/api/2fa/status", corsMiddleware(api.AdminMiddleware(api.Handle2FAStatus)))
+	mux.HandleFunc("/api/2fa/setup", corsMiddleware(api.AdminMiddleware(api.Handle2FASetup)))
+	mux.HandleFunc("/api/2fa/enable", corsMiddleware(api.AdminMiddleware(api.Handle2FAEnable)))
+	mux.HandleFunc("/api/2fa/disable", corsMiddleware(api.AdminMiddleware(api.Handle2FADisable)))
+	mux.HandleFunc("/api/2fa/regenerate-backup-codes", corsMiddleware(api.AdminMiddleware(api.Handle2FARegenerateBackupCodes)))
 	mux.HandleFunc("/api/containers", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleContainers))))
 	mux.HandleFunc("/api/containers/list", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleContainerListAlias))))
 	mux.HandleFunc("/api/containers/", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleSingleContainer))))
@@ -110,6 +126,44 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/policies/", corsMiddleware(api.AdminMiddleware(api.HandlePolicyItem)))
 	mux.HandleFunc("/api/migrate/import", corsMiddleware(api.AdminMiddleware(api.HandleMigrateImport)))
 
+	// 企业化：审计合规（导出默认不支持导出全量，保留期设置）
+	mux.HandleFunc("/api/audit-logs/export", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleAuditLogExport))))
+	mux.HandleFunc("/api/audit/settings", corsMiddleware(api.AdminMiddleware(api.HandleAuditSettings)))
+
+	// 企业化：容灾恢复（配置备份）
+	mux.HandleFunc("/api/backup/settings", corsMiddleware(api.AdminMiddleware(api.HandleBackupSettings)))
+	mux.HandleFunc("/api/backup", corsMiddleware(api.AdminMiddleware(api.HandleBackupCreate)))
+	mux.HandleFunc("/api/backup/list", corsMiddleware(api.AdminMiddleware(api.HandleBackupList)))
+	mux.HandleFunc("/api/backup/download", corsMiddleware(api.AdminMiddleware(api.HandleBackupDownload)))
+	mux.HandleFunc("/api/backup/restore", corsMiddleware(api.AdminMiddleware(api.HandleBackupRestore)))
+
+	// 企业化：可观测性（健康检查）
+	mux.HandleFunc("/api/health", corsMiddleware(api.HandleHealth))
+	mux.HandleFunc("/api/health/detail", corsMiddleware(api.AdminMiddleware(api.HandleHealthDetail)))
+
+	// 企业化：API 治理（契约 / 限流）
+	mux.HandleFunc("/api/openapi.json", corsMiddleware(api.HandleOpenAPI))
+	mux.HandleFunc("/api/rate-limit/settings", corsMiddleware(api.AdminMiddleware(api.HandleRateLimitSettings)))
+
+	// 企业化：多租户（租户 / 配额）
+	mux.HandleFunc("/api/tenants", corsMiddleware(api.AdminMiddleware(api.HandleTenants)))
+	mux.HandleFunc("/api/tenants/", corsMiddleware(api.AdminMiddleware(api.HandleTenantItem)))
+
+	// 也暴露到版本化命名空间便于外部集成
+	mux.HandleFunc("/api/v1/audit-logs/export", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleAuditLogExport))))
+	mux.HandleFunc("/api/v1/audit/settings", corsMiddleware(api.AdminMiddleware(api.HandleAuditSettings)))
+	mux.HandleFunc("/api/v1/backup/settings", corsMiddleware(api.AdminMiddleware(api.HandleBackupSettings)))
+	mux.HandleFunc("/api/v1/backup", corsMiddleware(api.AdminMiddleware(api.HandleBackupCreate)))
+	mux.HandleFunc("/api/v1/backup/list", corsMiddleware(api.AdminMiddleware(api.HandleBackupList)))
+	mux.HandleFunc("/api/v1/backup/download", corsMiddleware(api.AdminMiddleware(api.HandleBackupDownload)))
+	mux.HandleFunc("/api/v1/backup/restore", corsMiddleware(api.AdminMiddleware(api.HandleBackupRestore)))
+	mux.HandleFunc("/api/v1/health", corsMiddleware(api.HandleHealth))
+	mux.HandleFunc("/api/v1/health/detail", corsMiddleware(api.AdminMiddleware(api.HandleHealthDetail)))
+	mux.HandleFunc("/api/v1/openapi.json", corsMiddleware(api.HandleOpenAPI))
+	mux.HandleFunc("/api/v1/rate-limit/settings", corsMiddleware(api.AdminMiddleware(api.HandleRateLimitSettings)))
+	mux.HandleFunc("/api/v1/tenants", corsMiddleware(api.AdminMiddleware(api.HandleTenants)))
+	mux.HandleFunc("/api/v1/tenants/", corsMiddleware(api.AdminMiddleware(api.HandleTenantItem)))
+
 	// 主控（Controller）节点管理
 	mux.HandleFunc("/api/nodes", corsMiddleware(api.AdminMiddleware(api.HandleNodes)))
 	mux.HandleFunc("/api/nodes/", corsMiddleware(api.HandleNodeSubRoutes))
@@ -143,7 +197,7 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/storage", corsMiddleware(api.AdminMiddleware(api.HandleStorage)))
 	mux.HandleFunc("/api/v1/ipv6/status", corsMiddleware(api.AuthMiddleware(api.HandleIPv6Status)))
 	mux.HandleFunc("/api/v1/tasks", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleTasks))))
-	mux.HandleFunc("/api/v1/tasks/", corsMiddleware(api.AuthMiddleware(api.HandleTaskDelete)))
+	mux.HandleFunc("/api/v1/tasks/", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleTaskDelete))))
 	mux.HandleFunc("/api/v1/task-queue/settings", corsMiddleware(api.AdminMiddleware(api.HandleTaskQueueSettings)))
 	mux.HandleFunc("/api/v1/batch-create", corsMiddleware(api.AuthMiddleware(api.HandleBatchCreate)))
 	mux.HandleFunc("/api/v1/batch-action", corsMiddleware(api.AuthMiddleware(api.HandleBatchAction)))
@@ -164,8 +218,8 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/notifications/test", corsMiddleware(api.AuthMiddleware(api.HandleNotificationTest)))
 	mux.HandleFunc("/api/v1/ssh-ticket", corsMiddleware(api.AuthMiddleware(api.HandleWebSSHTicket)))
 	mux.HandleFunc("/api/v1/vnc-ticket", corsMiddleware(api.AuthMiddleware(api.HandleVNCTicket)))
-	mux.HandleFunc("/api/v1/api-keys", corsMiddleware(api.AuthMiddleware(api.HandleApiKeys)))
-	mux.HandleFunc("/api/v1/api-keys/", corsMiddleware(api.AuthMiddleware(api.HandleApiKeyDelete)))
+	mux.HandleFunc("/api/v1/api-keys", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleApiKeys))))
+	mux.HandleFunc("/api/v1/api-keys/", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleApiKeyDelete))))
 	mux.HandleFunc("/api/v1/policies", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandlePolicies))))
 	mux.HandleFunc("/api/v1/policies/", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandlePolicyItem))))
 	mux.HandleFunc("/api/v1/migrate/import", corsMiddleware(api.AuthMiddleware(api.AdminMiddleware(api.HandleMigrateImport))))
@@ -210,6 +264,31 @@ func setupRoutes(mux *http.ServeMux) {
 	}
 }
 
+// limitRequestBody 限制请求体大小，防止超大请求体导致内存占用（DoS）。
+func limitRequestBody(next http.Handler) http.Handler {
+	const maxBodyBytes = 64 << 20 // 64 MiB
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// apiRateLimitMiddleware applies a per-client-IP rate limit to the versioned
+// API (/api/v1/...) when API governance rate limiting is enabled.
+func apiRateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := config.GetAPIRateLimit()
+		if cfg.Enabled && cfg.PerMinute > 0 && strings.HasPrefix(r.URL.Path, "/api/v1/") && clientAddress(r) != "" {
+			if !api.AllowVersionedRequest(clientAddress(r), cfg.PerMinute) {
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, `{"success":false,"message":"API rate limit exceeded"}`, http.StatusTooManyRequests)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Run starts the HTTP server
 func Run() error {
 	// Use embedded frontend files
@@ -217,6 +296,9 @@ func Run() error {
 	api.StartHostMetricSampler()
 	api.StartContainerMetricSampler()
 	api.StartPolicyEngine()
+	api.StartAuditRetention()
+	api.StartBackupScheduler()
+	api.StartUptimeTracking()
 
 	mux := http.NewServeMux()
 	setupRoutes(mux)
@@ -227,7 +309,7 @@ func Run() error {
 
 	server := &http.Server{
 		Addr:    addr,
-		Handler: panelAccessMiddleware(mux),
+		Handler: limitRequestBody(panelAccessMiddleware(apiRateLimitMiddleware(mux))),
 	}
 
 	if sslEnabled() {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // RunAccessPolicyCommand manages the panel source policy without requiring the
@@ -30,7 +30,7 @@ func RunAccessPolicyCommand(args []string) error {
 		fmt.Println("Panel access allowlist disabled.")
 		return reloadPanelAfterAccessPolicyCommand()
 	case "set", "enable":
-		flags := flag.NewFlagSet("clicd access-policy set", flag.ContinueOnError)
+		flags := flag.NewFlagSet("eyvescloud access-policy set", flag.ContinueOnError)
 		flags.SetOutput(new(strings.Builder))
 		var allowed string
 		var trusted string
@@ -73,8 +73,8 @@ func reloadPanelAfterAccessPolicyCommand() error {
 	if !isWebPanelRunning() {
 		return nil
 	}
-	if err := restartService("clicd"); err != nil {
-		return fmt.Errorf("policy was saved but clicd service restart failed: %w", err)
+	if err := restartService("eyvescloud"); err != nil {
+		return fmt.Errorf("policy was saved but eyvescloud service restart failed: %w", err)
 	}
 	return nil
 }

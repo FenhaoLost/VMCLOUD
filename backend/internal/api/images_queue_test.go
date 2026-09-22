@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"clicd/internal/lxc"
+	"eyvescloud/internal/lxc"
 )
 
 func resetLXCQueueForTest() {

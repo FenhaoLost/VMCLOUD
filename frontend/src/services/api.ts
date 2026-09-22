@@ -206,7 +206,7 @@ export interface StoragePool {
   used_bytes?: number
   free_bytes?: number
   mount_point?: string
-  clicd_used_bytes?: number
+  eyvescloud_used_bytes?: number
   content_usage?: StorageContentUsage[]
   error?: string
 }
@@ -228,7 +228,7 @@ export interface StorageDisk {
   free_bytes: number
   storage_pool_id?: string
   storage_path?: string
-  clicd_used_bytes?: number
+  eyvescloud_used_bytes?: number
   content_usage?: StorageContentUsage[]
 }
 
@@ -460,8 +460,8 @@ export interface APIResponse<T = unknown> {
 }
 
 // Auth
-export const login = (username: string, password: string) =>
-  api.post<APIResponse<LoginResponse>>('/login', { username, password })
+export const login = (username: string, password: string, twofaCode?: string) =>
+  api.post<APIResponse<LoginResponse>>('/login', { username, password, twofa_code: twofaCode ?? '' })
 
 export const checkAuth = () =>
   api.get<APIResponse>('/check-auth')
@@ -471,6 +471,32 @@ export const changePassword = (oldPassword: string, newPassword: string) =>
 
 export const changeUsername = (newUsername: string, password: string) =>
   api.post<APIResponse>('/change-username', { new_username: newUsername, password })
+
+// Two-Factor Authentication (TOTP)
+export interface TwoFAStatus {
+  enabled: boolean
+  has_secret: boolean
+}
+
+export interface TwoFASetupResult {
+  secret: string
+  otpauth_uri: string
+}
+
+export const get2FAStatus = () =>
+  api.get<APIResponse<TwoFAStatus>>('/2fa/status')
+
+export const setup2FA = () =>
+  api.post<APIResponse<TwoFASetupResult>>('/2fa/setup')
+
+export const enable2FA = (code: string, backupCount = 8) =>
+  api.post<APIResponse<{ backup_codes: string[] }>>('/2fa/enable', { code, backup_codes_count: backupCount })
+
+export const disable2FA = (code: string) =>
+  api.post<APIResponse>('/2fa/disable', { code })
+
+export const regenerate2FABackupCodes = (code: string, backupCount = 8) =>
+  api.post<APIResponse<{ backup_codes: string[] }>>('/2fa/regenerate-backup-codes', { code, backup_codes_count: backupCount })
 
 // Login Logs
 export interface LoginLog {
@@ -491,6 +517,113 @@ export interface AuditLog {
 
 export const getLoginLogs = () =>
   api.get<APIResponse<LoginLog[]>>('/login-logs')
+
+// 企业化：审计合规（导出 / 保留期）
+export interface AuditSettings {
+  retention_days: number
+  audit_log_count?: number
+  retention_notes?: string
+}
+
+export const getAuditSettings = () =>
+  api.get<APIResponse<AuditSettings>>('/audit/settings')
+
+export const updateAuditSettings = (retention_days: number) =>
+  api.put<APIResponse<AuditSettings>>('/audit/settings', { retention_days })
+
+// 企业化：容灾恢复（配置备份）
+export interface BackupSettings {
+  enabled: boolean
+  interval_hours: number
+  keep: number
+  directory?: string
+  last_backup_at?: string
+  last_backup_file?: string
+  backup_count?: number
+}
+
+export interface BackupRecord {
+  id: string
+  filename: string
+  size_bytes: number
+  kind: string
+  created_at: string
+}
+
+export const getBackupSettings = () =>
+  api.get<APIResponse<BackupSettings>>('/backup/settings')
+
+export const updateBackupSettings = (settings: { enabled: boolean; interval_hours: number; keep: number }) =>
+  api.put<APIResponse<BackupSettings>>('/backup/settings', settings)
+
+export const createBackup = () =>
+  api.post<APIResponse<BackupRecord>>('/backup')
+
+export const getBackupList = () =>
+  api.get<APIResponse<BackupRecord[]>>('/backup/list')
+
+export const restoreBackup = (file: string, confirm: boolean) =>
+  api.post<APIResponse>('/backup/restore', { file, confirm })
+
+// 企业化：可观测性（健康检查）
+export interface HealthDetail {
+  status: string
+  version: string
+  uptime: number
+  go_version: string
+  goroutines: number
+  memory_alloc_mb: number
+  container_count: number
+  node_count: number
+  subuser_count: number
+  active_tasks: number
+  cpu_cores: number
+}
+
+export const getHealthDetail = () =>
+  api.get<APIResponse<HealthDetail>>('/health/detail')
+
+// 企业化：API 治理（限流 / 契约）
+export interface RateLimitSettings {
+  enabled: boolean
+  per_minute: number
+  scope?: string
+}
+
+export const getRateLimitSettings = () =>
+  api.get<APIResponse<RateLimitSettings>>('/rate-limit/settings')
+
+export const updateRateLimitSettings = (enabled: boolean, per_minute: number) =>
+  api.put<APIResponse<RateLimitSettings>>('/rate-limit/settings', { enabled, per_minute })
+
+// 企业化：多租户
+export interface Tenant {
+  id: string
+  name: string
+  description?: string
+  container_quota: number
+  vcpu_quota: number
+  ram_quota_mb: number
+  disk_quota_gb: number
+  enabled: boolean
+  created_at?: string
+  usage_containers?: number
+  usage_vcpu?: number
+  usage_ram_mb?: number
+  usage_disk_gb?: number
+}
+
+export const getTenants = () =>
+  api.get<APIResponse<Tenant[]>>('/tenants')
+
+export const createTenant = (tenant: Partial<Tenant>) =>
+  api.post<APIResponse>('/tenants', tenant)
+
+export const updateTenant = (id: string, tenant: Partial<Tenant>) =>
+  api.put<APIResponse>(`/tenants/${id}`, tenant)
+
+export const deleteTenant = (id: string) =>
+  api.delete<APIResponse>(`/tenants/${id}`)
 
 export interface TaskQueueSettings {
   concurrency: number

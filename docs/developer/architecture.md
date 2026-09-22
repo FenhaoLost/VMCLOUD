@@ -22,7 +22,7 @@ EyvesCloud 由 Go 后端、React 前端和宿主机虚拟化能力组成，并�
 
 ```text
 主控（Controller）              被控（Agent）
-clicd server                    clicd agent --controller=... --install-key=...
+eyvescloud server                    eyvescloud agent --controller=... --install-key=...
      │                                │
      ├─ /api/nodes (CRUD)             ├─ 注册: POST /api/nodes/register
      ├─ /api/nodes/{id}/install-script├─ 心跳: POST /api/nodes/{id}/heartbeat

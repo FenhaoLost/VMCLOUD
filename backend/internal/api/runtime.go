@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"clicd/internal/config"
-	"clicd/internal/kvm"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/kvm"
+	"eyvescloud/internal/lxc"
 )
 
 var kvmManager = kvm.NewManager()

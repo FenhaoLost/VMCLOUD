@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func HandleSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -136,14 +136,11 @@ func updateSnapshotQuota(w http.ResponseWriter, r *http.Request, containerID int
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Snapshot quota must be at least 1"})
 		return
 	}
-	c := config.FindContainer(containerID)
-	if c == nil {
+	updated, c := config.MutateContainerByID(containerID, func(c *config.Container) {
+		c.SnapshotLimit = req.SnapshotLimit
+	})
+	if !updated {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
-		return
-	}
-	c.SnapshotLimit = req.SnapshotLimit
-	if err := config.SaveConfig(); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save config"})
 		return
 	}
 	user := requestUser(r)

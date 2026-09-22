@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/lxc"
+	"eyvescloud/internal/lxc"
 )
 
 type HostInfo struct {

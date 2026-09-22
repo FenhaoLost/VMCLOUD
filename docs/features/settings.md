@@ -12,7 +12,7 @@
 
 - 可开启面板访问白名单，仅允许指定 IP/网段访问 Web 面板。
 - 可配置可信反向代理地址，避免代理环境下误拦截。
-- 与 `clicd access-policy` CLI 等效，保存后立即生效。
+- 与 `eyvescloud access-policy` CLI 等效，保存后立即生效。
 
 ## 通知推送
 

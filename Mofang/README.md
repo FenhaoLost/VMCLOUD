@@ -1,11 +1,11 @@
-# CLICD 魔方财务对接模块
+# EYVESCLOUD 魔方财务对接模块
 
-这是用于智简魔方 / IDCSMART 的 CLICD 服务器模块。模块通过 CLICD API 完成实例开通、删除、开关机、重启、重装、改密、资源变更、流量重置、NAT 端口映射管理、实例信息展示和 WebSSH 入口。
+这是用于智简魔方 / IDCSMART 的 EYVESCLOUD 服务器模块。模块通过 EYVESCLOUD API 完成实例开通、删除、开关机、重启、重装、改密、资源变更、流量重置、NAT 端口映射管理、实例信息展示和 WebSSH 入口。
 
 ## 文件结构
 
 ```text
-clicd.php
+eyvescloud.php
 README.md
 handlers/
   webssh.php
@@ -15,17 +15,17 @@ templates/
   nat.html
 ```
 
-安装时请保持目录结构不变，将整个 `clicd` 目录放入魔方服务器模块目录：
+安装时请保持目录结构不变，将整个 `eyvescloud` 目录放入魔方服务器模块目录：
 
 ```text
-public/plugins/servers/clicd/
+public/plugins/servers/eyvescloud/
 ```
 
 ## 服务器配置
 
-在魔方后台添加服务器时，模块名称选择 `clicd`。
+在魔方后台添加服务器时，模块名称选择 `eyvescloud`。
 
-CLICD 面板地址建议使用 HTTPS：
+EYVESCLOUD 面板地址建议使用 HTTPS：
 
 ```text
 主机名 = https://0.0.0.0:8999
@@ -46,11 +46,11 @@ Hash
 密码
 ```
 
-模块请求 CLICD 时会同时携带：
+模块请求 EYVESCLOUD 时会同时携带：
 
 ```text
-X-API-Key: clicd_sk_xxxx
-Authorization: Bearer clicd_sk_xxxx
+X-API-Key: eyvescloud_sk_xxxx
+Authorization: Bearer eyvescloud_sk_xxxx
 Content-Type: application/json
 ```
 
@@ -59,7 +59,7 @@ Content-Type: application/json
 | 字段 | 说明 |
 | --- | --- |
 | `virtualization` | 虚拟化类型，`lxc` 或 `kvm` |
-| `template_id` | CLICD 模板 / 镜像 ID |
+| `template_id` | EYVESCLOUD 模板 / 镜像 ID |
 | `vcpu` | CPU 核心数 |
 | `cpu_percent` | CPU 使用率限制，`0` 表示不额外限制 |
 | `ram_mb` | 内存，单位 MB |
@@ -74,21 +74,21 @@ Content-Type: application/json
 | `snapshot_limit` | 快照配额 |
 | `extra_ports` | 额外映射的容器端口，逗号分隔，例如 `80,443` |
 | `assign_ipv6` | 开通时是否自动分配 IPv6 |
-| `sync_expiry` | 是否同步魔方到期时间到 CLICD |
+| `sync_expiry` | 是否同步魔方到期时间到 EYVESCLOUD |
 
-客户产品的 `domain` 会作为 CLICD 容器名称。模块会自动把不适合作为容器名的字符替换为 `-`。
+客户产品的 `domain` 会作为 EYVESCLOUD 容器名称。模块会自动把不适合作为容器名的字符替换为 `-`。
 
 ## 开通后字段同步
 
-开通、同步、重装、改密后，模块会从 CLICD 容器详情拉取最新信息并写回魔方主机表：
+开通、同步、重装、改密后，模块会从 EYVESCLOUD 容器详情拉取最新信息并写回魔方主机表：
 
 | 魔方字段 | 写入内容 |
 | --- | --- |
 | `dedicatedip` | NAT 外网 IP，优先使用 API 返回的公网字段，否则使用服务器 IP |
 | `username` | 固定写入 `root` |
-| `password` | CLICD 返回的 SSH 密码，兼容魔方 `cmf_encrypt()` |
-| `port` | CLICD 返回的 `ssh_port` |
-| `domainstatus` | CLICD 状态为 `running` 时写 `Active`，否则写 `Suspended` |
+| `password` | EYVESCLOUD 返回的 SSH 密码，兼容魔方 `cmf_encrypt()` |
+| `port` | EYVESCLOUD 返回的 `ssh_port` |
+| `domainstatus` | EYVESCLOUD 状态为 `running` 时写 `Active`，否则写 `Suspended` |
 
 如果接口返回的密码是 `***` 这类脱敏值，模块不会覆盖魔方里已有密码。
 
@@ -128,7 +128,7 @@ WebSSH
 10 分钟
 ```
 
-也可以点击“立即刷新”手动刷新一次。当前 CLICD 用量接口返回的是实时值，不是历史数组；图表曲线由客户区前端持续采样生成。若需要打开页面立即显示历史曲线，需要 CLICD 额外提供历史指标接口。
+也可以点击“立即刷新”手动刷新一次。当前 EYVESCLOUD 用量接口返回的是实时值，不是历史数组；图表曲线由客户区前端持续采样生成。若需要打开页面立即显示历史曲线，需要 EYVESCLOUD 额外提供历史指标接口。
 
 流量显示支持智能单位，小流量会显示 B / KB / MB，大流量显示 GB，例如：
 
@@ -178,7 +178,7 @@ NAT 转发是独立页面，支持：
 
 删除端口映射时使用页面内确认弹窗，不使用浏览器自带确认框。
 
-使用的 CLICD API：
+使用的 EYVESCLOUD API：
 
 ```text
 GET    /api/v1/containers/{id|uuid|name}
@@ -211,11 +211,11 @@ DELETE /api/v1/containers/{id}/port-mappings/{index}
 - 删除规则
 - 单独启用 / 停用某条规则
 
-页面会先在前端修改规则列表和开关状态，点击“保存设置”后才统一同步到 CLICD。这样可以避免每次切换开关、修改默认动作或编辑规则时都立即请求后端，减少客户区卡顿。
+页面会先在前端修改规则列表和开关状态，点击“保存设置”后才统一同步到 EYVESCLOUD。这样可以避免每次切换开关、修改默认动作或编辑规则时都立即请求后端，减少客户区卡顿。
 
 注意：防火墙关闭时也可以保存规则；关闭只表示暂时不接管该容器流量，不代表规则必须清空。
 
-使用的 CLICD API：
+使用的 EYVESCLOUD API：
 
 ```text
 GET /api/v1/containers/{id}/firewall
@@ -277,29 +277,29 @@ POST /api/v1/ssh-ticket
 接口返回 60 秒有效票据后，模块会打开本地 handler：
 
 ```text
-/plugins/servers/clicd/handlers/webssh.php
+/plugins/servers/eyvescloud/handlers/webssh.php
 ```
 
-浏览器会从该页面直连 CLICD：
+浏览器会从该页面直连 EYVESCLOUD：
 
 ```text
 wss://0.0.0.0:8999/api/ssh?container=example-vm
 Sec-WebSocket-Protocol: eyvescloud-ticket.xxxxx
 ```
 
-注意：WebSSH 受浏览器安全策略和 CLICD 后端 Origin 校验影响。魔方客户区通常是 HTTPS，因此 CLICD 面板也必须启用 HTTPS/WSS。请把魔方服务器配置里的 `主机名` 改为 `https://0.0.0.0:8999`，或把 `secure` 设为 `开启`。
+注意：WebSSH 受浏览器安全策略和 EYVESCLOUD 后端 Origin 校验影响。魔方客户区通常是 HTTPS，因此 EYVESCLOUD 面板也必须启用 HTTPS/WSS。请把魔方服务器配置里的 `主机名` 改为 `https://0.0.0.0:8999`，或把 `secure` 设为 `开启`。
 
-新版 CLICD 已支持 WebSSH Origin 放行。部署时需要在 CLICD 后端把魔方财务客户区域名加入 WebSSH Origin 白名单，例如：
+新版 EYVESCLOUD 已支持 WebSSH Origin 放行。部署时需要在 EYVESCLOUD 后端把魔方财务客户区域名加入 WebSSH Origin 白名单，例如：
 
 ```text
 https://www.example.com
 ```
 
-如果 WebSSH 页面显示 `WebSocket error`、`Disconnected code=1006`，但直接以 CLICD 自身 Origin 测试能返回 `101 Switching Protocols`，通常说明 CLICD 后端未放行魔方客户区域名的 WebSocket Origin。此时请检查 CLICD 的 WebSSH Origin 白名单配置；前端页面无法伪造浏览器 Origin。
+如果 WebSSH 页面显示 `WebSocket error`、`Disconnected code=1006`，但直接以 EYVESCLOUD 自身 Origin 测试能返回 `101 Switching Protocols`，通常说明 EYVESCLOUD 后端未放行魔方客户区域名的 WebSocket Origin。此时请检查 EYVESCLOUD 的 WebSSH Origin 白名单配置；前端页面无法伪造浏览器 Origin。
 
 ## 支持的魔方操作
 
-| 魔方操作 | CLICD API |
+| 魔方操作 | EYVESCLOUD API |
 | --- | --- |
 | 连接测试 | `GET /api/v1/dashboard` |
 | 开通 | `POST /api/v1/containers` |
@@ -319,7 +319,7 @@ https://www.example.com
 
 ## 建议 API 权限
 
-API Key 至少需要以下权限，具体名称以 CLICD 后端实际权限系统为准：
+API Key 至少需要以下权限，具体名称以 EYVESCLOUD 后端实际权限系统为准：
 
 ```text
 dashboard:read
@@ -344,28 +344,28 @@ ssh-ticket:create
 连接测试：
 
 ```bash
-curl -H "X-API-Key: clicd_sk_xxxx" \
+curl -H "X-API-Key: eyvescloud_sk_xxxx" \
   https://0.0.0.0:8999/api/v1/dashboard
 ```
 
 容器详情：
 
 ```bash
-curl -H "X-API-Key: clicd_sk_xxxx" \
+curl -H "X-API-Key: eyvescloud_sk_xxxx" \
   https://0.0.0.0:8999/api/v1/containers/example-vm
 ```
 
 资源用量：
 
 ```bash
-curl -H "X-API-Key: clicd_sk_xxxx" \
+curl -H "X-API-Key: eyvescloud_sk_xxxx" \
   https://0.0.0.0:8999/api/v1/containers/example-vm/usage
 ```
 
 流量统计：
 
 ```bash
-curl -H "X-API-Key: clicd_sk_xxxx" \
+curl -H "X-API-Key: eyvescloud_sk_xxxx" \
   https://0.0.0.0:8999/api/v1/containers/example-vm/traffic
 ```
 
@@ -374,8 +374,8 @@ curl -H "X-API-Key: clicd_sk_xxxx" \
 ```bash
 curl --location --request PUT \
   "https://0.0.0.0:8999/api/v1/containers/10/port-mappings/1" \
-  --header "X-API-Key: clicd_sk_xxxx" \
-  --header "Authorization: Bearer clicd_sk_xxxx" \
+  --header "X-API-Key: eyvescloud_sk_xxxx" \
+  --header "Authorization: Bearer eyvescloud_sk_xxxx" \
   --header "Content-Type: application/json" \
   --data-raw '{"container_port":8081,"host_port":61320,"protocol":"tcp","description":"HTTP"}'
 ```
@@ -383,7 +383,7 @@ curl --location --request PUT \
 查询防火墙：
 
 ```bash
-curl -H "X-API-Key: clicd_sk_xxxx" \
+curl -H "X-API-Key: eyvescloud_sk_xxxx" \
   https://0.0.0.0:8999/api/v1/containers/10/firewall
 ```
 
@@ -392,7 +392,7 @@ curl -H "X-API-Key: clicd_sk_xxxx" \
 ```bash
 curl --location --request PUT \
   "https://0.0.0.0:8999/api/v1/containers/10/firewall" \
-  --header "X-API-Key: clicd_sk_xxxx" \
+  --header "X-API-Key: eyvescloud_sk_xxxx" \
   --header "Content-Type: application/json" \
   --data-raw '{"enabled":true,"default_action":"ACCEPT","rules":[{"id":"","network":"ipv4","direction":"in","protocol":"tcp","port":"22","source_ip":"","action":"ACCEPT","description":"Allow SSH","enabled":true}]}'
 ```
@@ -401,7 +401,7 @@ curl --location --request PUT \
 ```bash
 curl --location --request POST \
   "https://0.0.0.0:8999/api/v1/ssh-ticket" \
-  --header "X-API-Key: clicd_sk_xxxx" \
+  --header "X-API-Key: eyvescloud_sk_xxxx" \
   --header "Content-Type: application/json" \
   --data-raw '{"container_name":"example-vm"}'
 ```
@@ -418,17 +418,17 @@ Content-Type: application/json
 
 ### 防火墙获取提示“不支持的方法”
 
-请确认模块版本已经包含防火墙页签修复。客户区防火墙列表应通过模块公开的 `firewallList` 调用，再由模块向 CLICD 发起：
+请确认模块版本已经包含防火墙页签修复。客户区防火墙列表应通过模块公开的 `firewallList` 调用，再由模块向 EYVESCLOUD 发起：
 
 ```text
 GET /api/v1/containers/{id}/firewall
 ```
 
-如果页面或二开代码直接把读取请求改成 `POST /api/v1/containers/{id}/firewall`，CLICD 会返回“不支持的方法”。
+如果页面或二开代码直接把读取请求改成 `POST /api/v1/containers/{id}/firewall`，EYVESCLOUD 会返回“不支持的方法”。
 
 ### 防火墙保存后规则为空
 
-请确认更新接口最终发往 CLICD 的请求体是 JSON，并且包含 `rules` 数组。防火墙关闭时也可以保存规则，`enabled: false` 不应自动清空 `rules`。
+请确认更新接口最终发往 EYVESCLOUD 的请求体是 JSON，并且包含 `rules` 数组。防火墙关闭时也可以保存规则，`enabled: false` 不应自动清空 `rules`。
 
 正确请求体示例：
 
@@ -453,7 +453,7 @@ GET /api/v1/containers/{id}/firewall
 ```
 ### 图表刚打开只有一条横线
 
-CLICD 当前用量接口返回的是实时值，不是历史序列。页面刚打开时只有一个采样点，所以会显示当前值横线。选择 `10 秒` 自动刷新或点击“立即刷新”多采样几次后，会逐步形成折线。
+EYVESCLOUD 当前用量接口返回的是实时值，不是历史序列。页面刚打开时只有一个采样点，所以会显示当前值横线。选择 `10 秒` 自动刷新或点击“立即刷新”多采样几次后，会逐步形成折线。
 
 ### 流量显示为 0
 
@@ -471,11 +471,11 @@ CLICD 当前用量接口返回的是实时值，不是历史序列。页面刚�
 - 删除规则
 - 单独启用 / 停用某条规则
 
-页面会先在前端修改规则列表和开关状态，点击“保存设置”后才统一同步到 CLICD。这样可以避免每次切换开关、修改默认动作或编辑规则时都立即请求后端，减少客户区卡顿。
+页面会先在前端修改规则列表和开关状态，点击“保存设置”后才统一同步到 EYVESCLOUD。这样可以避免每次切换开关、修改默认动作或编辑规则时都立即请求后端，减少客户区卡顿。
 
 注意：防火墙关闭时也可以保存规则；关闭只表示暂时不接管该容器流量，不代表规则必须清空。
 
-使用的 CLICD API：
+使用的 EYVESCLOUD API：
 
 ```text
 GET /api/v1/containers/{id}/firewall
@@ -520,7 +520,7 @@ PUT /api/v1/containers/{id}/firewall
 IPv4 NAT 入站规则的端口按容器内部端口匹配，不是宿主机公网端口。例如公网 `22023 -> 容器 22`，防火墙规则端口应填写 `22`。
 ## WebSSH 打不开或提示不安全 WebSocket
 
-请确认 CLICD 面板已经启用 HTTPS/WSS，并且魔方服务器配置使用 HTTPS：
+请确认 EYVESCLOUD 面板已经启用 HTTPS/WSS，并且魔方服务器配置使用 HTTPS：
 
 ```text
 server_host = https://0.0.0.0:8999
@@ -528,7 +528,7 @@ server_host = https://0.0.0.0:8999
 
 如果仍然使用 `http://`，模块会生成 `ws://` 地址，HTTPS 客户区页面会被浏览器拦截。
 
-如果 WSS 证书正常但仍返回 `Forbidden` 或浏览器显示 `code=1006`，请检查 CLICD 的 WebSSH Origin 白名单。新版 CLICD 已支持放行魔方财务域名，需要把魔方客户区访问域名完整加入白名单，例如：
+如果 WSS 证书正常但仍返回 `Forbidden` 或浏览器显示 `code=1006`，请检查 EYVESCLOUD 的 WebSSH Origin 白名单。新版 EYVESCLOUD 已支持放行魔方财务域名，需要把魔方客户区访问域名完整加入白名单，例如：
 
 ```text
 https://www.example.com
@@ -538,7 +538,7 @@ https://www.example.com
 
 ### 开通后魔方里的 IP、端口、密码不对
 
-执行“同步状态”或重装 / 改密后，模块会重新拉取容器详情。请确认 CLICD 容器详情接口能返回：
+执行“同步状态”或重装 / 改密后，模块会重新拉取容器详情。请确认 EYVESCLOUD 容器详情接口能返回：
 
 ```text
 ssh_port

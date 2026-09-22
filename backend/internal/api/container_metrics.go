@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 type ContainerMetricPoint struct {

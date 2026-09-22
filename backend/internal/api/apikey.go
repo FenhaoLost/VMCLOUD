@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -114,13 +115,13 @@ func createApiKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate key: clicd_sk_ + 32 hex chars
+	// Generate key: eyvescloud_sk_ + 32 hex chars
 	rawBytes := make([]byte, 16)
 	if _, err := rand.Read(rawBytes); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to generate API key"})
 		return
 	}
-	rawKey := "clicd_sk_" + hex.EncodeToString(rawBytes)
+	rawKey := "eyvescloud_sk_" + hex.EncodeToString(rawBytes)
 
 	keyHash, err := hashAPIKey(rawKey)
 	if err != nil {
@@ -134,6 +135,7 @@ func createApiKey(w http.ResponseWriter, r *http.Request) {
 		ID:             generateShortID(),
 		Name:           strings.TrimSpace(req.Name),
 		KeyHash:        keyHash,
+		KeyFingerprint: apiKeyFingerprint(rawKey),
 		Prefix:         rawKey[:13] + "...",
 		IPWhitelist:    strings.TrimSpace(req.IPWhitelist),
 		CreatedAt:      now,
@@ -142,7 +144,7 @@ func createApiKey(w http.ResponseWriter, r *http.Request) {
 		Disabled:       req.Disabled,
 		ContainerUUIDs: normalizeStringSlice(req.ContainerUUIDs),
 	}
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.ApiKeys = append(cfg.ApiKeys, key)
 	})
 	auditRequest(r, "apikey.create", key.Name, "scopes="+strings.Join(key.Scopes, ","), true, "")
@@ -172,7 +174,7 @@ func updateApiKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var updated *config.ApiKeyConfig
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		for i := range cfg.ApiKeys {
 			if cfg.ApiKeys[i].ID != keyID {
 				continue
@@ -260,6 +262,13 @@ func hashAPIKey(key string) (string, error) {
 	return hashAPIKeyWithSalt(key, salt), nil
 }
 
+// apiKeyFingerprint returns an unsalted SHA-256 hex fingerprint of the raw key.
+// It is used only for O(1) existence pre-screening before paying for argon2.
+func apiKeyFingerprint(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
 func hashAPIKeyWithSalt(key string, salt []byte) string {
 	digest := argon2.IDKey([]byte(key), salt, apiKeyHashTime, apiKeyHashMemory, apiKeyHashThreads, apiKeyHashKeyLength)
 	return fmt.Sprintf("%s$v=19$m=%d,t=%d,p=%d$%s$%s",
@@ -307,9 +316,15 @@ func legacyHashKey(key string) string {
 
 func matchApiKey(rawKey string) (idx int, needsRehash bool) {
 	legacyHashed := legacyHashKey(rawKey)
+	finger := apiKeyFingerprint(rawKey)
 	config.AppConfigMu.RLock()
 	defer config.AppConfigMu.RUnlock()
 	for i, k := range config.AppConfig.ApiKeys {
+		// Fast O(1) pre-screen: if the key has a stored fingerprint and it does
+		// not match, skip the expensive argon2 verification entirely.
+		if k.KeyFingerprint != "" && k.KeyFingerprint != finger {
+			continue
+		}
 		if verifyAPIKeyHash(rawKey, k.KeyHash) {
 			return i, false
 		}
@@ -350,7 +365,7 @@ func validateApiKeyDetails(rawKey, clientIP string) (*config.ApiKeyConfig, bool)
 
 	if needsRehash {
 		if newHash, err := hashAPIKey(rawKey); err == nil {
-			config.MutateGlobal(func(cfg *config.ClicdConfig) {
+			config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 				if idx < len(cfg.ApiKeys) && cfg.ApiKeys[idx].ID == live.ID {
 					cfg.ApiKeys[idx].KeyHash = newHash
 				}
@@ -394,7 +409,7 @@ func apiKeyFromRequest(r *http.Request) string {
 		return apiKey
 	}
 	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer clicd_sk_") {
+	if strings.HasPrefix(auth, "Bearer eyvescloud_sk_") {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	return ""
@@ -459,7 +474,7 @@ func updateApiKeyLastUsedForKey(key *config.ApiKeyConfig, ip string) {
 		return
 	}
 	now := time.Now().Format("2006-01-02 15:04:05")
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		for i := range cfg.ApiKeys {
 			if cfg.ApiKeys[i].ID == key.ID {
 				cfg.ApiKeys[i].LastUsed = now

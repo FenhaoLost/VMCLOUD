@@ -10,6 +10,7 @@ interface AuthContextType {
   isReadOnly: boolean
   containerIdentifiers: string[]
   login: (username: string, password: string) => Promise<void>
+  loginWith2FA: (username: string, password: string, code: string) => Promise<void>
   accessCodeLogin: (code: string, password: string) => Promise<void>
   logout: () => void
   token: string | null
@@ -88,6 +89,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  const loginWith2FA = async (user: string, password: string, code: string) => {
+    const response = await apiLogin(user, password, code)
+    const data = response.data.data as LoginResponse
+    saveAuth(data.token, data.username, false, [])
+    navigate('/')
+  }
+
   const accessCodeLogin = async (code: string, password: string) => {
     const res = await api.post('/sub-user/access', { code, password })
     const data = res.data.data as { token: string; username: string; role?: string; container_uuids: string[] }
@@ -108,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, username, isSubUser, isReadOnly, containerIdentifiers, login, accessCodeLogin, logout, token }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, username, isSubUser, isReadOnly, containerIdentifiers, login, loginWith2FA, accessCodeLogin, logout, token }}>
       {children}
     </AuthContext.Provider>
   )

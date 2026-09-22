@@ -29,7 +29,7 @@ check_*.py
 reset_pass.py
 
 # Runtime/config data
-.clicd/
+.eyvescloud/
 config.json
 *.db
 *.sqlite
@@ -68,7 +68,7 @@ Thumbs.db
 linux.txt
 push-release.ps1
 deploy.ps1
-backend/clicd
+backend/eyvescloud
 api.md
 deploy-arm.ps1
 deploy-dhcp.ps1

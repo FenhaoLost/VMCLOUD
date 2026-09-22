@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func panelAccessMiddleware(next http.Handler) http.Handler {

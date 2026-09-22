@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // 主控（Controller）节点管理 API。
@@ -38,6 +38,7 @@ func HandleNodes(w http.ResponseWriter, r *http.Request) {
 		if !requireScope(w, r, "node:read") {
 			return
 		}
+		reconcileNodeOnlineStatuses()
 		config.AppConfigMu.RLock()
 		nodes := append([]config.Node(nil), config.AppConfig.Nodes...)
 		config.AppConfigMu.RUnlock()
@@ -271,7 +272,8 @@ func handleNodeInstallScript(w http.ResponseWriter, r *http.Request, nodeID stri
 	if controller == "" {
 		controller = "http://127.0.0.1:8999"
 	}
-	defaultAddr := defaultNodeAddress(r)
+	// 无需也无法在母侧确定子的真实地址：地址留空，由子端 agent 通过与母建连推算，或用脚本第 2 个参数显式指定。
+	defaultAddr := ""
 	script := buildAgentInstallScript(controller, node.InstallKey, node.Name, defaultAddr)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=eyvescloud-agent-%s.sh", node.Name))
@@ -305,23 +307,23 @@ fi
 command -v curl >/dev/null 2>&1 || { echo "缺少 curl，请先安装"; exit 1; }
 
 echo "==> [1/3] 下载 EyvesCloud 二进制"
-curl -fsSL -o /usr/local/bin/clicd "$CONTROLLER/api/nodes/binary"
-chmod +x /usr/local/bin/clicd
+curl -fsSL -o /usr/local/bin/eyvescloud "$CONTROLLER/api/nodes/binary"
+chmod +x /usr/local/bin/eyvescloud
 
 echo "==> [2/3] 注册被控节点"
-/usr/local/bin/clicd agent --controller="$CONTROLLER" --install-key="$INSTALL_KEY" --name="$NODE_NAME" --addr="$NODE_ADDR" || {
+/usr/local/bin/eyvescloud agent --controller="$CONTROLLER" --install-key="$INSTALL_KEY" --name="$NODE_NAME" --addr="$NODE_ADDR" || {
   echo "注册失败（已注册过的节点可忽略）";
 }
 
 echo "==> [3/3] 配置自启动服务"
-cat > /etc/systemd/system/clicd-agent.service <<'UNIT'
+cat > /etc/systemd/system/eyvescloud-agent.service <<'UNIT'
 [Unit]
 Description=EyvesCloud Agent
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/clicd agent --controller=%s --install-key=%s --name=%s --addr=%s
+ExecStart=/usr/local/bin/eyvescloud agent --controller=%s --install-key=%s --name=%s --addr=%s
 Restart=always
 RestartSec=5
 
@@ -329,7 +331,7 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now clicd-agent
+systemctl enable --now eyvescloud-agent
 
 echo ""
 echo "=============================================="
@@ -385,7 +387,7 @@ func HandleNodeBinary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename=clicd`)
+	w.Header().Set("Content-Disposition", `attachment; filename=eyvescloud`)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
 	_, _ = io.Copy(w, f)
 }
@@ -420,7 +422,8 @@ func handleNodeContainerAction(w http.ResponseWriter, r *http.Request, nodeID, r
 		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "节点未配置地址，无法代理访问"})
 		return
 	}
-	data, status, err := proxyNodeRequest(r, node, http.MethodPost, "/api/agent/containers/"+strings.TrimPrefix(rest, "/"), nil)
+	// 转发容器操作请求体（如重置密码的 {password}），供子端 agent 使用。
+	data, status, err := proxyNodeRequest(r, node, http.MethodPost, "/api/agent/containers/"+strings.TrimPrefix(rest, "/"), r.Body)
 	if err != nil {
 		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "代理请求被控节点失败: " + err.Error()})
 		return
@@ -428,6 +431,30 @@ func handleNodeContainerAction(w http.ResponseWriter, r *http.Request, nodeID, r
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+// nodeOnlineTimeout 心跳间隔为 10s；超过该窗口仍未心跳则视为离线。
+const nodeOnlineTimeout = 60 * time.Second
+
+// reconcileNodeOnlineStatuses 将超过心跳超时仍为 online 的节点置为 offline（离线检测）。
+// 在节点列表读取前调用；心跳续期由 handleNodeHeartbeat 负责。
+func reconcileNodeOnlineStatuses() {
+	now := time.Now()
+	var stale []config.Node
+	config.AppConfigMu.RLock()
+	for _, n := range config.AppConfig.Nodes {
+		if n.Status != "online" || n.LastSeen == "" {
+			continue
+		}
+		last, err := time.ParseInLocation("2006-01-02 15:04:05", n.LastSeen, time.Local)
+		if err == nil && now.Sub(last) > nodeOnlineTimeout {
+			stale = append(stale, n)
+		}
+	}
+	config.AppConfigMu.RUnlock()
+	for _, n := range stale {
+		config.UpdateNode(n.ID, func(x *config.Node) { x.Status = "offline" })
+	}
 }
 
 func splitNodeSubPath(path string) (nodeID, rest string, ok bool) {

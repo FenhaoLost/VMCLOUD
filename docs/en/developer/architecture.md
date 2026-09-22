@@ -22,7 +22,7 @@ The same binary distinguishes roles by startup arguments:
 
 ```text
 Controller                      Agent
-clicd server                    clicd agent --controller=... --install-key=...
+eyvescloud server                    eyvescloud agent --controller=... --install-key=...
      │                                │
      ├─ /api/nodes (CRUD)             ├─ Register: POST /api/nodes/register
      ├─ /api/nodes/{id}/install-script├─ Heartbeat: POST /api/nodes/{id}/heartbeat

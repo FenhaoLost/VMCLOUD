@@ -1,6 +1,6 @@
 # Container Management
 
-Container Management is the core CLICD module. It covers creation, lifecycle operations, resource limits, network mappings, traffic statistics, password resets, and console access.
+Container Management is the core EyvesCloud module. It covers creation, lifecycle operations, resource limits, network mappings, traffic statistics, password resets, and console access.
 
 ## Container List
 

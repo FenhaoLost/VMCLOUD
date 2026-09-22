@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/server"
-	"clicd/internal/version"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/server"
+	"eyvescloud/internal/version"
 )
 
 // agentConfig 是被控节点保存的注册信息。
@@ -28,7 +30,7 @@ type agentConfig struct {
 }
 
 // Run 启动被控节点 agent 模式：注册到主控、上报心跳、运行本地面板。
-// 用法: clicd agent --controller=http://master:18999 [--install-key=xxx] [--name=node1] [--addr=http://1.2.3.4:8999]
+// 用法: eyvescloud agent --controller=http://master:18999 [--install-key=xxx] [--name=node1] [--addr=http://1.2.3.4:8999]
 func Run(args []string) {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	controller := fs.String("controller", "", "主控地址，如 http://1.2.3.4:18999")
@@ -85,6 +87,10 @@ func register(controller, installKey, name, addr string) (*agentConfig, error) {
 	if name == "" {
 		host, _ := os.Hostname()
 		name = host
+	}
+	// 未显式指定本节点地址时，通过与主控建连的源地址推算本机可被主控访问的地址。
+	if strings.TrimSpace(addr) == "" {
+		addr = detectSelfAddress(controller)
 	}
 	payload := map[string]string{
 		"install_key": installKey,
@@ -243,4 +249,36 @@ func saveAgentConfig(path string, ac *agentConfig) {
 	}
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
 	_ = os.WriteFile(path, data, 0600)
+}
+
+// detectSelfAddress 推算本节点对主控可达的地址，优先使用面板监听端口。
+// 通过向主控发起 TCP 连接拿到本机出站源 IP（比直接读网卡更贴合主控可达性）。
+func detectSelfAddress(controller string) string {
+	u, err := url.Parse(controller)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Host
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		// controller 未带端口时补默认 80/443，仅用于取源 IP。
+		if u.Scheme == "https" {
+			host = net.JoinHostPort(u.Hostname(), "443")
+		} else {
+			host = net.JoinHostPort(u.Hostname(), "80")
+		}
+	}
+	conn, err := net.DialTimeout("tcp", host, 5*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	local, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok || local.IP == nil || local.IP.IsUnspecified() || local.IP.IsLoopback() {
+		return ""
+	}
+	port := 8999
+	if config.AppConfig != nil && config.AppConfig.Port > 0 {
+		port = config.AppConfig.Port
+	}
+	return fmt.Sprintf("http://%s:%d", local.IP.String(), port)
 }

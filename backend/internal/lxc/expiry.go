@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // IsExpired checks if a container has passed its expiration date

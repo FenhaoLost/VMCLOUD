@@ -15,32 +15,32 @@ The version must be kept in sync in:
 The install script downloads the Linux AMD64 or ARM64 artifact according to the host architecture:
 
 ```text
-clicd-linux-amd64.tar.gz
-clicd-linux-arm64.tar.gz
+eyvescloud-linux-amd64.tar.gz
+eyvescloud-linux-arm64.tar.gz
 ```
 
 In some scenarios it also tries to download the standalone binary:
 
 ```text
-clicd-linux-amd64
-clicd-linux-arm64
+eyvescloud-linux-amd64
+eyvescloud-linux-arm64
 ```
 
 ## Install Script Behavior
 
-- `CLICD_VERSION=latest`: uses GitHub `releases/latest`.
-- `CLICD_VERSION=vX.Y.Z`: downloads the Release artifact for the specified tag.
+- `EYVESCLOUD_VERSION=latest`: uses GitHub `releases/latest`.
+- `EYVESCLOUD_VERSION=vX.Y.Z`: downloads the Release artifact for the specified tag.
 
 Example:
 
 ```bash
-CLICD_VERSION=v1.1.29 sh install.sh
+EYVESCLOUD_VERSION=v1.1.29 sh install.sh
 ```
 
 ## Post-release Verification
 
 - The install script can download the new version.
-- `systemctl status clicd` is healthy.
+- `systemctl status eyvescloud` is healthy.
 - `/api/version` returns the new version.
 - The web panel can load frontend assets.
 - The container list, task queue, and API key pages open correctly.

@@ -5,8 +5,8 @@
 检查服务状态：
 
 ```bash
-systemctl status clicd
-journalctl -u clicd -n 100 --no-pager
+systemctl status eyvescloud
+journalctl -u eyvescloud -n 100 --no-pager
 ```
 
 检查端口监听：
@@ -56,7 +56,7 @@ ss -lntp | grep 8999
 
 ## 被控心跳失败（节点显示离线）
 
-- 检查被控的 `clicd-agent` 服务：`systemctl status clicd-agent`。
+- 检查被控的 `eyvescloud-agent` 服务：`systemctl status eyvescloud-agent`。
 - 检查被控能否访问主控 `:8999`。
 - 检查主控节点记录中的 token 是否与被控 `agent.json` 一致；不一致时删除被控 `agent.json` 重新注册。
 

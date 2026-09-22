@@ -8,7 +8,7 @@ The host report summarizes the host runtime environment, resource status, and vi
 - CPU, memory, disk, and Swap.
 - Network status.
 - LXC/KVM dependency status.
-- CLICD service status.
+- EyvesCloud service status.
 
 ## Related APIs
 

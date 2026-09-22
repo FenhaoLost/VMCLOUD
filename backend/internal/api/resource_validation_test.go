@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 func TestValidateRuntimeResourceRequest_DiskLimits(t *testing.T) {

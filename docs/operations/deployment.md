@@ -21,10 +21,10 @@ http://YOUR_SERVER_IP:8999
 常用命令：
 
 ```bash
-systemctl status clicd
-systemctl restart clicd
-systemctl enable clicd
-journalctl -u clicd -f
+systemctl status eyvescloud
+systemctl restart eyvescloud
+systemctl enable eyvescloud
+journalctl -u eyvescloud -f
 ```
 
 ## 主控-被控多节点部署
@@ -41,10 +41,10 @@ journalctl -u clicd -f
 bash eyvescloud-agent-node1.sh
 ```
 
-脚本会安装二进制、注册到主控并配置 `clicd-agent` systemd 服务。被控节点也可以直接手动安装面板后以 agent 模式启动：
+脚本会安装二进制、注册到主控并配置 `eyvescloud-agent` systemd 服务。被控节点也可以直接手动安装面板后以 agent 模式启动：
 
 ```bash
-clicd agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=node-1 --addr=http://NODE_IP:8999
+eyvescloud agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=node-1 --addr=http://NODE_IP:8999
 ```
 
 ### 网络要求

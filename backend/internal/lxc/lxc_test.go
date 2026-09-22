@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestRootfsCommandAddsSeparatorForAllowedCommand(t *testing.T) {
@@ -32,7 +32,7 @@ func TestRootfsCommandAddsSeparatorForAllowedCommand(t *testing.T) {
 func TestNormalizeCreateNATMappingsSupportsDifferentHostAndContainerPorts(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{NATPortStart: 20000, NATPortEnd: 65535}
+	config.AppConfig = &config.EyvescloudConfig{NATPortStart: 20000, NATPortEnd: 65535}
 
 	cfg := ContainerConfig{
 		PortMappingCount: 2,
@@ -74,7 +74,7 @@ func TestNormalizeCreateNATMappingsSupportsDifferentHostAndContainerPorts(t *tes
 func TestNormalizeCreateNATMappingsKeepsLegacyExtraPortsCompatible(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{NATPortStart: 20000, NATPortEnd: 65535}
+	config.AppConfig = &config.EyvescloudConfig{NATPortStart: 20000, NATPortEnd: 65535}
 
 	cfg := ContainerConfig{ExtraPorts: []int{30080, 30443}}
 	if err := cfg.NormalizeCreateNATMappings(); err != nil {
@@ -93,7 +93,7 @@ func TestNormalizeCreateNATMappingsKeepsLegacyExtraPortsCompatible(t *testing.T)
 func TestNormalizeCreateNATMappingsRejectsDuplicateHostPort(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{NATPortStart: 20000, NATPortEnd: 65535}
+	config.AppConfig = &config.EyvescloudConfig{NATPortStart: 20000, NATPortEnd: 65535}
 
 	cfg := ContainerConfig{NATPortMappings: []config.PortMapping{
 		{HostPort: 30080, ContainerPort: 80, Protocol: "tcp"},
@@ -107,7 +107,7 @@ func TestNormalizeCreateNATMappingsRejectsDuplicateHostPort(t *testing.T) {
 func TestNormalizeCreateNATMappingsRejectsManagementPortConflict(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{NATPortStart: 20000, NATPortEnd: 65535}
+	config.AppConfig = &config.EyvescloudConfig{NATPortStart: 20000, NATPortEnd: 65535}
 
 	cfg := ContainerConfig{
 		ManagementPort: 30022,
@@ -125,11 +125,11 @@ func TestNormalizeCreateNATMappingsRejectsManagementPortConflict(t *testing.T) {
 func TestTaggedRuleLineNumbersReturnsMatchingRulesDescending(t *testing.T) {
 	output := []byte(`Chain PREROUTING (policy ACCEPT)
 num  target prot opt source destination
-2 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30080 /* clicd-c12-any-30080 */
-7 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30081 /* clicd-c13-any-30081 */
-11 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30082 /* clicd-c12-any-30082 */
+2 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30080 /* eyvescloud-c12-any-30080 */
+7 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30081 /* eyvescloud-c13-any-30081 */
+11 DNAT tcp -- 0.0.0.0/0 0.0.0.0/0 tcp dpt:30082 /* eyvescloud-c12-any-30082 */
 `)
-	got := taggedRuleLineNumbers(output, "clicd-c12-")
+	got := taggedRuleLineNumbers(output, "eyvescloud-c12-")
 	want := []int{11, 2}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("taggedRuleLineNumbers() = %v, want %v", got, want)
@@ -138,11 +138,11 @@ num  target prot opt source destination
 
 func TestTaggedRuleSpecifications(t *testing.T) {
 	output := []byte(`-P PREROUTING ACCEPT
--A PREROUTING -p tcp -m tcp --dport 20010 -m comment --comment "clicd-c12-any-20010" -j DNAT --to-destination 10.0.3.5:20010
--A PREROUTING -p tcp -m tcp --dport 22010 -m comment --comment clicd-c13-any-22010 -j DNAT --to-destination 10.0.3.5:22
--A PREROUTING -p tcp -m tcp --dport 20011 -m comment --comment clicd-c12-any-20011 -j DNAT --to-destination 10.0.3.5:20011
+-A PREROUTING -p tcp -m tcp --dport 20010 -m comment --comment "eyvescloud-c12-any-20010" -j DNAT --to-destination 10.0.3.5:20010
+-A PREROUTING -p tcp -m tcp --dport 22010 -m comment --comment eyvescloud-c13-any-22010 -j DNAT --to-destination 10.0.3.5:22
+-A PREROUTING -p tcp -m tcp --dport 20011 -m comment --comment eyvescloud-c12-any-20011 -j DNAT --to-destination 10.0.3.5:20011
 `)
-	specs := taggedRuleSpecifications(output, "clicd-c12-")
+	specs := taggedRuleSpecifications(output, "eyvescloud-c12-")
 	if len(specs) != 2 {
 		t.Fatalf("taggedRuleSpecifications() returned %d specs, want 2", len(specs))
 	}
@@ -155,7 +155,7 @@ func TestTaggedRuleSpecifications(t *testing.T) {
 	// Check comment parsing (quotes stripped properly)
 	foundComment := false
 	for _, f := range specs[0] {
-		if f == "clicd-c12-any-20010" {
+		if f == "eyvescloud-c12-any-20010" {
 			foundComment = true
 		}
 	}
@@ -165,9 +165,9 @@ func TestTaggedRuleSpecifications(t *testing.T) {
 }
 
 func TestParseIPTablesRuleFields(t *testing.T) {
-	line := `-A PREROUTING -p tcp --dport 20000 -m comment --comment "clicd-c1-any-20000" -j DNAT`
+	line := `-A PREROUTING -p tcp --dport 20000 -m comment --comment "eyvescloud-c1-any-20000" -j DNAT`
 	fields := parseIPTablesRuleFields(line)
-	expected := []string{"-A", "PREROUTING", "-p", "tcp", "--dport", "20000", "-m", "comment", "--comment", "clicd-c1-any-20000", "-j", "DNAT"}
+	expected := []string{"-A", "PREROUTING", "-p", "tcp", "--dport", "20000", "-m", "comment", "--comment", "eyvescloud-c1-any-20000", "-j", "DNAT"}
 	if !reflect.DeepEqual(fields, expected) {
 		t.Fatalf("parseIPTablesRuleFields() = %v, want %v", fields, expected)
 	}
@@ -204,7 +204,7 @@ func TestPortMappingConntrackDeleteArgs(t *testing.T) {
 func TestUpdateSSHPortMappingKeepsIdentityAndSynchronizesSSHPort(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   65535,
 		Containers: []config.Container{{
@@ -246,7 +246,7 @@ func TestUpdateSSHPortMappingKeepsIdentityAndSynchronizesSSHPort(t *testing.T) {
 func TestReserveCreateNATPortsProtectsConcurrentTasks(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		NATPortStart: 20000,
 		NATPortEnd:   65535,
 		NextSSHPort:  22000,
@@ -307,7 +307,7 @@ func TestReserveCreateNATPortsProtectsConcurrentTasks(t *testing.T) {
 func TestReserveBatchCreateNATPortsPlansAllAutomaticPorts(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   30010,
 		NextSSHPort:  30001,
@@ -372,7 +372,7 @@ func TestReserveBatchCreateNATPortsPlansAllAutomaticPorts(t *testing.T) {
 func TestReserveBatchCreateNATPortsRejectsWholeConflictingBatch(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   30010,
 		NextSSHPort:  30001,

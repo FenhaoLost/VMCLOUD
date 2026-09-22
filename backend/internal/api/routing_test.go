@@ -6,11 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestHandleRoutingGetAllowsRoutingWriteScope(t *testing.T) {
-	config.AppConfig = &config.ClicdConfig{}
+	config.AppConfig = &config.EyvescloudConfig{}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/routing", nil)
 	req = withAuthContext(req, AuthContext{
@@ -29,7 +29,7 @@ func TestHandleRoutingGetAllowsRoutingWriteScope(t *testing.T) {
 func TestHandleRoutingGetReturnsConfiguredNextNATPort(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   35000,
 		NextSSHPort:  30000,

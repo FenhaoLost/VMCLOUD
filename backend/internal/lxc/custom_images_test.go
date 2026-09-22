@@ -5,13 +5,13 @@ import (
 	"runtime"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestGetTemplatesIncludesHostArchitectureCustomLXCImage(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{CustomLXCImages: []config.CustomLXCImage{
+	config.AppConfig = &config.EyvescloudConfig{CustomLXCImages: []config.CustomLXCImage{
 		{
 			ID: "custom-lxc-host", Name: "Host Rootfs", Distro: "alpine",
 			Release: "3.21", Arch: runtime.GOARCH, URL: "https://example.test/rootfs.tar.xz",
@@ -34,7 +34,7 @@ func TestGetTemplatesIncludesHostArchitectureCustomLXCImage(t *testing.T) {
 func TestCustomImagePathUsesAllowlistedID(t *testing.T) {
 	previous := config.AppConfig
 	t.Cleanup(func() { config.AppConfig = previous })
-	config.AppConfig = &config.ClicdConfig{}
+	config.AppConfig = &config.EyvescloudConfig{}
 
 	for _, id := range []string{"", ".", "..", "../../etc/passwd", "/absolute", "unknown"} {
 		got := filepath.ToSlash(CustomImagePath(id))

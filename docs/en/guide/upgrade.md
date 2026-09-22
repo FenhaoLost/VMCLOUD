@@ -26,22 +26,22 @@ Example response:
 The install script uses the latest Release by default:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh
 ```
 
 Pin a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.29 sh
 ```
 
 ## Upgrading Worker Nodes
 
-Worker nodes (Agent mode) can also be upgraded directly with the install script. After the upgrade, `clicd agent` reports the new version on the next heartbeat, and the Controller's "Node Management" page shows it automatically.
+Worker nodes (Agent mode) can also be upgraded directly with the install script. After the upgrade, `eyvescloud agent` reports the new version on the next heartbeat, and the Controller's "Node Management" page shows it automatically.
 
 ## Pre-upgrade Checklist
 
-- Make sure `/root/.clicd/` or the actual configuration directory is backed up.
+- Make sure `/root/.eyvescloud/` or the actual configuration directory is backed up.
 - Make sure the system service is not running critical tasks.
 - If an image download or snapshot restore is in progress, wait for it to finish before upgrading.
-- After upgrading, check `systemctl status clicd` and the version shown in the web panel.
+- After upgrading, check `systemctl status eyvescloud` and the version shown in the web panel.

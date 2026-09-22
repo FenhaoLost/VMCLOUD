@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // Template represents an LXC image template

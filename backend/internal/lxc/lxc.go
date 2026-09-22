@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // Manager handles LXC container operations
@@ -72,7 +72,7 @@ func (m *Manager) StartUsageMonitor() {
 }
 
 // WarmRunningContainersSSH prepares sshd for containers that were already running
-// when clicd started, such as after host boot or service restart.
+// when eyvescloud started, such as after host boot or service restart.
 func (m *Manager) WarmRunningContainersSSH() {
 	containers := append([]config.Container(nil), config.AppConfig.Containers...)
 	for _, container := range containers {
@@ -100,7 +100,7 @@ func (m *Manager) WarmRunningContainersSSH() {
 }
 
 // StartSSHWarmupScanner repeatedly scans during service startup so containers
-// that autostart slightly after clicd still get prepared before WebSSH opens.
+// that autostart slightly after eyvescloud still get prepared before WebSSH opens.
 func (m *Manager) StartSSHWarmupScanner() {
 	go func() {
 		for i := 0; i < 12; i++ {
@@ -270,6 +270,7 @@ type ContainerConfig struct {
 	SSHPassword          string                     `json:"ssh_password,omitempty"`
 	SSHPublicKey         string                     `json:"ssh_public_key,omitempty"`
 	CloudInitUserData    string                     `json:"cloud_init_user_data,omitempty"`
+	Tenant               string                     `json:"tenant,omitempty"`
 	ExpiresAt            string                     `json:"expires_at"`
 	Progress             func(stage, detail string) `json:"-"`
 }
@@ -735,6 +736,7 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		CreatedAt:            now,
 		ExpiresAt:            cfg.ExpiresAt,
 		CloudInitUserData:    cfg.CloudInitUserData,
+		Tenant:               cfg.Tenant,
 	}
 	container.NormalizeNetworkAssignments()
 	cfg.ReportProgress("metadata", "保存容器配置")
@@ -814,7 +816,7 @@ func (m *Manager) configureCustomLXCBase(lxcName string, tmpl *Template) error {
 	}
 
 	base := []string{
-		"# CLICD custom rootfs base configuration",
+		"# EYVESCLOUD custom rootfs base configuration",
 		"lxc.include = /usr/share/lxc/config/common.conf",
 		"lxc.arch = " + arch,
 		"lxc.rootfs.path = dir:" + rootfsPath,
@@ -1184,7 +1186,7 @@ func (m *Manager) applyResourceLimits(lxcName string, cfg ContainerConfig) error
 	var newLines []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if !strings.Contains(trimmed, "# clicd managed") &&
+		if !strings.Contains(trimmed, "# eyvescloud managed") &&
 			!strings.HasPrefix(trimmed, "lxc.cgroup2.memory.max") &&
 			!strings.HasPrefix(trimmed, "lxc.cgroup2.cpuset.cpus") &&
 			!strings.HasPrefix(trimmed, "lxc.cgroup2.cpu.max") &&
@@ -1213,9 +1215,9 @@ func (m *Manager) applyResourceLimits(lxcName string, cfg ContainerConfig) error
 		return err
 	}
 
-	newLines = append(newLines, "", "# clicd managed: lxcfs virtualized /proc")
+	newLines = append(newLines, "", "# eyvescloud managed: lxcfs virtualized /proc")
 	newLines = append(newLines, "lxc.mount.auto = proc:mixed sys:mixed cgroup:mixed")
-	newLines = append(newLines, "", "# clicd managed: mandatory unprivileged container hardening")
+	newLines = append(newLines, "", "# eyvescloud managed: mandatory unprivileged container hardening")
 	newLines = append(newLines, fmt.Sprintf("lxc.idmap = u 0 %d 65536", uidBase))
 	newLines = append(newLines, fmt.Sprintf("lxc.idmap = g 0 %d 65536", gidBase))
 	newLines = append(newLines, fmt.Sprintf("lxc.apparmor.profile = %s", apparmorProfile))
@@ -1225,7 +1227,7 @@ func (m *Manager) applyResourceLimits(lxcName string, cfg ContainerConfig) error
 	// All capabilities are already confined to the container's user namespace.
 	newLines = append(newLines, "lxc.cap.drop = mac_admin mac_override sys_module sys_rawio sys_time sys_boot sys_nice sys_resource sys_ptrace sys_pacct mknod audit_control audit_read")
 	newLines = append(newLines, managedPrlimitLines()...)
-	newLines = append(newLines, "", "# clicd managed resource limits (cgroup v2)")
+	newLines = append(newLines, "", "# eyvescloud managed resource limits (cgroup v2)")
 
 	if cfg.VCPU > 0 {
 		cpuPct := cfg.CPUPercent
@@ -1642,7 +1644,7 @@ func applyXFSProjectQuota(rootfsPath, lxcName string, diskGB float64) error {
 		return err
 	}
 	projectID := projectQuotaID(lxcName)
-	projectName := "clicd-" + lxcName
+	projectName := "eyvescloud-" + lxcName
 	if err := ensureProjectQuotaFiles(projectID, projectName, rootfsPath); err != nil {
 		return err
 	}
@@ -1760,11 +1762,11 @@ func findSeccompProfile() (string, error) {
 	return "", errors.New("required LXC seccomp profile not found")
 }
 
-const clicdSeccompProfileDir = "/var/lib/clicd/security/seccomp"
-const clicdCVE202643499SeccompProfile = clicdSeccompProfileDir + "/lxc-cve-2026-43499.profile"
+const eyvescloudSeccompProfileDir = "/var/lib/eyvescloud/security/seccomp"
+const eyvescloudCVE202643499SeccompProfile = eyvescloudSeccompProfileDir + "/lxc-cve-2026-43499.profile"
 
 var cve202643499FutexSeccompRules = []string{
-	"# clicd managed: mitigate CVE-2026-43499 from LXC guests by blocking PI futex operations",
+	"# eyvescloud managed: mitigate CVE-2026-43499 from LXC guests by blocking PI futex operations",
 	"futex errno 1 [1,0x6,SCMP_CMP_MASKED_EQ,0x7f]",
 	"futex errno 1 [1,0x7,SCMP_CMP_MASKED_EQ,0x7f]",
 	"futex errno 1 [1,0x8,SCMP_CMP_MASKED_EQ,0x7f]",
@@ -1782,14 +1784,14 @@ func ensureCVE202643499SeccompProfile(basePath string) (string, error) {
 	if !isLXCVDenylistSeccompProfile(content) {
 		return "", fmt.Errorf("LXC seccomp profile %s is not a v2 denylist profile; cannot apply CVE-2026-43499 futex mitigation safely", basePath)
 	}
-	if err := os.MkdirAll(clicdSeccompProfileDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create CLICD seccomp directory: %v", err)
+	if err := os.MkdirAll(eyvescloudSeccompProfileDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create EYVESCLOUD seccomp directory: %v", err)
 	}
 	hardened := appendMissingSeccompRules(content, cve202643499FutexSeccompRules)
-	if err := os.WriteFile(clicdCVE202643499SeccompProfile, []byte(hardened), 0644); err != nil {
-		return "", fmt.Errorf("failed to write CLICD seccomp profile: %v", err)
+	if err := os.WriteFile(eyvescloudCVE202643499SeccompProfile, []byte(hardened), 0644); err != nil {
+		return "", fmt.Errorf("failed to write EYVESCLOUD seccomp profile: %v", err)
 	}
-	return clicdCVE202643499SeccompProfile, nil
+	return eyvescloudCVE202643499SeccompProfile, nil
 }
 
 func isLXCVDenylistSeccompProfile(content string) bool {
@@ -1963,7 +1965,7 @@ func (m *Manager) shiftRootfsForUnprivileged(lxcName string) error {
 		return err
 	}
 	rootfsPath := filepath.Join(m.LxcPath, lxcName, "rootfs")
-	marker := filepath.Join(rootfsPath, ".clicd-unprivileged-shifted")
+	marker := filepath.Join(rootfsPath, ".eyvescloud-unprivileged-shifted")
 	if err := m.ensureUnprivilegedLXCPathAccess(lxcName); err != nil {
 		return err
 	}
@@ -2101,7 +2103,7 @@ func (m *Manager) unmountRootfsChildMounts(rootfsPath string) {
 }
 
 func (m *Manager) rootfsShifted(lxcName string) bool {
-	marker := filepath.Join(m.LxcPath, lxcName, "rootfs", ".clicd-unprivileged-shifted")
+	marker := filepath.Join(m.LxcPath, lxcName, "rootfs", ".eyvescloud-unprivileged-shifted")
 	_, err := os.Stat(marker)
 	return err == nil
 }
@@ -2229,8 +2231,8 @@ func (m *Manager) StartContainer(id int) error {
 }
 
 func (m *Manager) startLXCContainerDaemon(lxcName string) (string, string, []byte, error) {
-	logFile := filepath.Join(os.TempDir(), "clicd-"+lxcName+"-start.log")
-	consoleLog := filepath.Join(os.TempDir(), "clicd-"+lxcName+"-console.log")
+	logFile := filepath.Join(os.TempDir(), "eyvescloud-"+lxcName+"-start.log")
+	consoleLog := filepath.Join(os.TempDir(), "eyvescloud-"+lxcName+"-console.log")
 	os.Remove(logFile)
 	os.Remove(consoleLog)
 	cmd := exec.Command("lxc-start", "-n", lxcName, "-d", "--logfile", logFile, "--logpriority", "DEBUG", "--console-log", consoleLog)
@@ -2365,20 +2367,34 @@ func (m *Manager) cleanupBandwidthLimit(lxcName string) {
 
 func (m *Manager) getContainerVethByNS(lxcName string) string {
 	pid := m.getContainerInitPID(lxcName)
-	if pid == "" {
+	// 仅允许纯数字，杜绝把外部输出拼进 shell 的命令注入。
+	if !isAllDigits(pid) {
 		return ""
 	}
 	cmd := exec.Command("sh", "-c",
 		fmt.Sprintf("nsenter -t %s -n ip -o link show 2>/dev/null | grep -oP 'eth0@if\\K[0-9]+'", pid))
 	out, _ := cmd.Output()
 	ifIdx := strings.TrimSpace(string(out))
-	if ifIdx == "" {
+	if !isAllDigits(ifIdx) {
 		return ""
 	}
 	cmd2 := exec.Command("sh", "-c",
 		fmt.Sprintf("ip -o link show | grep '^%s:' | grep -oP 'veth[^:@]+'", ifIdx))
 	out2, _ := cmd2.Output()
 	return strings.TrimSpace(string(out2))
+}
+
+// isAllDigits 判断字符串是否由 1 到多个数字组成。
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // StopContainer stops an LXC container by its ID
@@ -2770,7 +2786,7 @@ if [ -L /etc/resolv.conf ] 2>/dev/null; then
 fi
 # Also try resolvectl for systemd-resolved setups
 if command -v resolvectl >/dev/null 2>&1; then
-	resolvectl dns eth0 __CLICD_LXC_GATEWAY__ 2>/dev/null || true
+	resolvectl dns eth0 __EYVESCLOUD_LXC_GATEWAY__ 2>/dev/null || true
 	resolvectl dns eth0 8.8.8.8 2>/dev/null || true
 	resolvectl domain eth0 '~.' 2>/dev/null || true
 fi
@@ -2778,7 +2794,7 @@ fi
 # Avoid the trap where systemd stub resolver puts "nameserver 127.0.0.53"
 # but doesn't actually resolve anything.
 if ! grep -q '^nameserver [1-9]' /etc/resolv.conf 2>/dev/null; then
-	echo "nameserver __CLICD_LXC_GATEWAY__" > /etc/resolv.conf
+	echo "nameserver __EYVESCLOUD_LXC_GATEWAY__" > /etc/resolv.conf
 	echo "nameserver 8.8.8.8" >> /etc/resolv.conf
 fi
 export DEBIAN_FRONTEND=noninteractive
@@ -2850,7 +2866,7 @@ set_sshd_option() {
 	key="$1"
 	value="$2"
 	file=/etc/ssh/sshd_config
-	tmp="${file}.clicd"
+	tmp="${file}.eyvescloud"
 	touch "$file"
 	awk -v key="$key" -v value="$value" '
 		BEGIN { done=0; inmatch=0 }
@@ -2876,9 +2892,9 @@ mkdir -p /etc/ssh /etc/ssh/sshd_config.d
 ensure_sshd_runtime_dir
 ssh-keygen -A >/dev/null 2>&1 || true
 
-cat >/etc/ssh/sshd_config.d/99-clicd.conf <<'EOF'
+cat >/etc/ssh/sshd_config.d/99-eyvescloud.conf <<'EOF'
 PermitRootLogin yes
-PubkeyAuthentication __CLICD_PUBKEY_AUTH__
+PubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__
 PasswordAuthentication yes
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
@@ -2886,7 +2902,7 @@ UsePAM no
 EOF
 
 set_sshd_option PermitRootLogin yes
-set_sshd_option PubkeyAuthentication __CLICD_PUBKEY_AUTH__
+set_sshd_option PubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__
 set_sshd_option PasswordAuthentication yes
 set_sshd_option KbdInteractiveAuthentication no
 set_sshd_option ChallengeResponseAuthentication no
@@ -2909,13 +2925,13 @@ fi
 
 SSHD_BIN="$(sshd_path)" || exit 32
 ensure_sshd_runtime_dir
-"$SSHD_BIN" -t -f /etc/ssh/sshd_config >/tmp/clicd-sshd-test.log 2>&1 || {
-	cat /tmp/clicd-sshd-test.log
+"$SSHD_BIN" -t -f /etc/ssh/sshd_config >/tmp/eyvescloud-sshd-test.log 2>&1 || {
+	cat /tmp/eyvescloud-sshd-test.log
 	exit 32
 }
 `
-	script = strings.ReplaceAll(script, "__CLICD_PUBKEY_AUTH__", pubkeyValue)
-	script = strings.ReplaceAll(script, "__CLICD_LXC_GATEWAY__", config.LXCNATNetwork().Gateway)
+	script = strings.ReplaceAll(script, "__EYVESCLOUD_PUBKEY_AUTH__", pubkeyValue)
+	script = strings.ReplaceAll(script, "__EYVESCLOUD_LXC_GATEWAY__", config.LXCNATNetwork().Gateway)
 	if !startService {
 		return script
 	}
@@ -3012,7 +3028,7 @@ func (m *Manager) rootfsCommand(rootfsPath string, args ...string) (*exec.Cmd, e
 		return nil, err
 	}
 
-	marker := filepath.Join(cleanRootfsPath, ".clicd-unprivileged-shifted")
+	marker := filepath.Join(cleanRootfsPath, ".eyvescloud-unprivileged-shifted")
 	if _, err := os.Stat(marker); err == nil {
 		uidBase, gidBase, mapErr := unprivilegedIDMap()
 		if mapErr == nil {
@@ -3135,15 +3151,15 @@ func safeRootfsCommandArgs(args []string) ([]string, error) {
 		if len(args) != 3 || args[1] != "-c" {
 			return nil, fmt.Errorf("unsupported rootfs shell invocation")
 		}
-		if !isCLICDManagedRootfsScript(args[2]) {
+		if !isEYVESCLOUDManagedRootfsScript(args[2]) {
 			return nil, fmt.Errorf("refusing unmanaged rootfs shell script")
 		}
 	}
 	return append([]string(nil), args...), nil
 }
 
-func isCLICDManagedRootfsScript(script string) bool {
-	return strings.Contains(script, "99-clicd.conf") &&
+func isEYVESCLOUDManagedRootfsScript(script string) bool {
+	return strings.Contains(script, "99-eyvescloud.conf") &&
 		strings.Contains(script, "install_sshd") &&
 		!strings.Contains(script, "ROOT_PASSWORD") &&
 		!strings.Contains(script, "chpasswd")
@@ -3430,10 +3446,10 @@ func (m *Manager) ListContainers() ([]config.Container, error) {
 	return containers, nil
 }
 
-// ImportExistingClicdContainers imports existing LXC containers into the CLICD
-// config. Native CLICD containers keep ct-{id}; arbitrary LXC names are stored
+// ImportExistingEyvescloudContainers imports existing LXC containers into the EYVESCLOUD
+// config. Native EYVESCLOUD containers keep ct-{id}; arbitrary LXC names are stored
 // in Container.LXCName so Web and CLI can manage the same imported container.
-func (m *Manager) ImportExistingClicdContainers() ([]config.Container, error) {
+func (m *Manager) ImportExistingEyvescloudContainers() ([]config.Container, error) {
 	entries, err := os.ReadDir(m.LxcPath)
 	if err != nil {
 		return nil, err
@@ -3542,7 +3558,7 @@ func (m *Manager) replaceRootfsFromTemplate(lxcName string, tmpl *Template) erro
 	if tmpl == nil {
 		return fmt.Errorf("template is nil")
 	}
-	tmpName := fmt.Sprintf("clicd-reinstall-%s-%s", lxcName, generateRandomString(8))
+	tmpName := fmt.Sprintf("eyvescloud-reinstall-%s-%s", lxcName, generateRandomString(8))
 	tmpDir := filepath.Join(m.LxcPath, tmpName)
 	if err := os.RemoveAll(tmpDir); err != nil {
 		return fmt.Errorf("failed to clean temporary reinstall directory: %v", err)

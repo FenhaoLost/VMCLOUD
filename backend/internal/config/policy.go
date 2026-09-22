@@ -91,7 +91,7 @@ func SavePolicyRules() error {
 }
 
 // loadPolicyState reads policy rules and trigger history from app_meta.
-func loadPolicyState(cfg *ClicdConfig, meta map[string]string) {
+func loadPolicyState(cfg *EyvescloudConfig, meta map[string]string) {
 	if raw := strings.TrimSpace(meta["policy_rules"]); raw != "" {
 		var rules []PolicyRule
 		if err := json.Unmarshal([]byte(raw), &rules); err == nil {

@@ -8,6 +8,64 @@ if ($protocol === '' && $ticket !== '') {
     $protocol = 'eyvescloud-ticket.' . $ticket;
 }
 
+// 可信主机列表：当前请求域名 + 环境变量 EYVESCLOUD_WS_ALLOW（逗号分隔）。
+function webssh_allowed_hosts()
+{
+    $hosts = array();
+    $self = isset($_SERVER['HTTP_HOST']) ? trim($_SERVER['HTTP_HOST']) : '';
+    if ($self !== '') {
+        $p = parse_url('http://' . $self);
+        if ($p && !empty($p['host'])) {
+            $hosts[] = strtolower($p['host']);
+        }
+    }
+    $env = getenv('EYVESCLOUD_WS_ALLOW') ?: '';
+    foreach (explode(',', $env) as $h) {
+        $h = strtolower(trim($h));
+        if ($h !== '') {
+            $hosts[] = $h;
+        }
+    }
+    return $hosts;
+}
+
+function webssh_reserved_ip($ip)
+{
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+}
+
+// 校验 WebSocket 目标，阻止把本页面用作任意内网/公网目标的反向代理。
+function webssh_validate_target($ws)
+{
+    $parts = parse_url($ws);
+    if (!$parts || empty($parts['scheme']) || empty($parts['host'])) {
+        return 'Invalid WebSSH target URL';
+    }
+    $scheme = strtolower($parts['scheme']);
+    if ($scheme !== 'ws' && $scheme !== 'wss') {
+        return 'WebSSH target must use ws:// or wss://';
+    }
+    $target = strtolower(trim($parts['host'], '[]'));
+    foreach (webssh_allowed_hosts() as $h) {
+        if ($h !== '' && $target === $h) {
+            return ''; // 可信主机放行
+        }
+    }
+    if (filter_var($target, FILTER_VALIDATE_IP) !== false && webssh_reserved_ip($target)) {
+        return 'WebSSH target is not allowed (private/loopback/reserved)';
+    }
+    return 'WebSSH target host is not in the allowlist';
+}
+
+// 安全校验：只允许转发到可信主机，避免把该页面当作任意内网/公网目标的反向代理（SSRF）。
+$wsTargetError = webssh_validate_target($ws);
+if ($wsTargetError !== '') {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo $wsTargetError . "\n";
+    exit;
+}
+
 if ($ws === '') {
     http_response_code(400);
     header('Content-Type: text/plain; charset=utf-8');

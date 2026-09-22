@@ -4,6 +4,7 @@ import {
   Cpu,
   Eye,
   HardDrive,
+  KeyRound,
   Loader2,
   MemoryStick,
   Monitor,
@@ -158,6 +159,27 @@ export default function NodeManagement() {
     setBusyId(`${container.id}:${action}`)
     try {
       await nodeContainerAction(detailNode.id, container.id, action)
+      await loadDetail(detailNode)
+    } catch (e: any) {
+      await alert(t('操作失败'), e?.response?.data?.message || String(e))
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  // 重置子容器 SSH 密码：母面板下发指令，子端自动生成新密码并回传。
+  const resetNodePassword = async (container: Container) => {
+    if (!detailNode) return
+    setBusyId(`${container.id}:reset-password`)
+    try {
+      const res = await nodeContainerAction(detailNode.id, container.id, 'reset-password')
+      const password = (res.data?.data as { password?: string } | undefined)?.password || ''
+      await alert(
+        t('SSH 密码已重置'),
+        password
+          ? `${t('容器')} ${container.name} 的新 SSH 密码为：\n\n${password}\n\n${t('请立即复制保存，关闭后不再显示。')}`
+          : `${container.name} 的 SSH 密码已重置`
+      )
       await loadDetail(detailNode)
     } catch (e: any) {
       await alert(t('操作失败'), e?.response?.data?.message || String(e))
@@ -458,6 +480,14 @@ export default function NodeManagement() {
                           title={t('重启')}
                         >
                           <RotateCw className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => resetNodePassword(container)}
+                          disabled={busyId === `${container.id}:reset-password`}
+                          className="rounded-md border border-gray-200 p-1.5 text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300"
+                          title={t('重置 SSH 密码')}
+                        >
+                          <KeyRound className="h-3.5 w-3.5" />
                         </button>
                       </div>
                     </div>

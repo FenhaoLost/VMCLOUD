@@ -41,10 +41,10 @@ func TestParseNATNetworkRejectsUnsafeRanges(t *testing.T) {
 }
 
 func TestNormalizeNATNetworkDefaultsUsesEnvironment(t *testing.T) {
-	t.Setenv("CLICD_LXC_SUBNET", "172.30.8.0/24")
-	t.Setenv("CLICD_KVM_SUBNET", "10.230.0.0/20")
+	t.Setenv("EYVESCLOUD_LXC_SUBNET", "172.30.8.0/24")
+	t.Setenv("EYVESCLOUD_KVM_SUBNET", "10.230.0.0/20")
 	previous := AppConfig
-	AppConfig = &ClicdConfig{}
+	AppConfig = &EyvescloudConfig{}
 	t.Cleanup(func() { AppConfig = previous })
 
 	if !normalizeNATNetworkDefaults() {

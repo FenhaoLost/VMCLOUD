@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/kvm"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/kvm"
+	"eyvescloud/internal/lxc"
 )
 
 // CaptureRuntimeRestoreState records which managed workloads are actually
-// running before the CLICD service exits. On the next host boot, only those
+// running before the EYVESCLOUD service exits. On the next host boot, only those
 // workloads are started again.
 func CaptureRuntimeRestoreState() {
 	if config.AppConfig == nil {

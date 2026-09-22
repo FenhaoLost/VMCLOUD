@@ -2,19 +2,19 @@
 
 ## 安装脚本默认安装哪个版本？
 
-默认安装 GitHub Releases 的最新版本。脚本中默认值是 `CLICD_VERSION=latest`，会按宿主架构下载 `releases/latest` 下的 Linux AMD64 或 ARM64 产物。
+默认安装 GitHub Releases 的最新版本。脚本中默认值是 `EYVESCLOUD_VERSION=latest`，会按宿主架构下载 `releases/latest` 下的 Linux AMD64 或 ARM64 产物。
 
 ## 可以固定安装某个版本吗？
 
 可以：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.29 sh
 ```
 
 ## 主控和被控是什么关系？
 
-主控是运行面板的服务器，负责统一管理多台被控。被控是安装了 `clicd agent` 的服务器，注册到主控后自动上报心跳，主控可以直接查看和操作被控的容器。同一份二进制既可以是主控，也可以是被控。
+主控是运行面板的服务器，负责统一管理多台被控。被控是安装了 `eyvescloud agent` 的服务器，注册到主控后自动上报心跳，主控可以直接查看和操作被控的容器。同一份二进制既可以是主控，也可以是被控。
 
 ## 被控节点一直显示“待接入”怎么办？
 

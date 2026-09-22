@@ -5,12 +5,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestPanelAccessMiddleware(t *testing.T) {
 	previous := config.AppConfig
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		PanelAccessPolicy: config.PanelAccessPolicy{
 			Enabled:        true,
 			AllowedSources: []string{"192.0.2.0/24"},

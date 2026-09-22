@@ -1,13 +1,13 @@
 name: Feature Request / 功能建议
-description: 为 CLICD 提出新功能、改进建议或优化设想 / Suggest an idea or enhancement for CLICD
+description: 为 EYVESCLOUD 提出新功能、改进建议或优化设想 / Suggest an idea or enhancement for EYVESCLOUD
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        感谢为 CLICD 提出建设性意见！请尽可能详细阐述你的需求背景与设想。
-        Thank you for suggesting an idea! Please explain the problem you're trying to solve and how CLICD can help.
+        感谢为 EYVESCLOUD 提出建设性意见！请尽可能详细阐述你的需求背景与设想。
+        Thank you for suggesting an idea! Please explain the problem you're trying to solve and how EYVESCLOUD can help.
 
   - type: textarea
     id: problem-statement

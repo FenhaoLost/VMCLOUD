@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/ssh"

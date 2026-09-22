@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 type Image struct {
@@ -234,7 +234,7 @@ func ImagePath(id string) string {
 			return candidate
 		}
 	}
-	legacy := filepath.Join("/var/lib/clicd/kvm/images", fileName)
+	legacy := filepath.Join("/var/lib/eyvescloud/kvm/images", fileName)
 	if info, err := os.Stat(legacy); err == nil && !info.IsDir() {
 		return legacy
 	}

@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/kvm"
-	"clicd/internal/lxc"
-	"clicd/internal/safehttp"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/kvm"
+	"eyvescloud/internal/lxc"
+	"eyvescloud/internal/safehttp"
 )
 
 // ImageInfo represents a template image with its download/enable status.
@@ -315,7 +315,7 @@ func executeLXCImageDownload(task *lxcImageDownloadTask) {
 }
 
 func lxcImageDownloadTempName(id string) string {
-	return fmt.Sprintf("clicd-img-dl-%s", id)
+	return fmt.Sprintf("eyvescloud-img-dl-%s", id)
 }
 
 func cleanupLXCImageDownloadTemp(id string) {
@@ -401,7 +401,10 @@ func lxcTemplateDownloadedInfo(template lxc.Template) (bool, int64) {
 // If none have been explicitly set, all templates are enabled by default.
 func getEnabledImageSet() map[string]bool {
 	set := make(map[string]bool)
-	if len(config.AppConfig.EnabledImages) == 0 {
+	config.AppConfigMu.RLock()
+	enabled := append([]string(nil), config.AppConfig.EnabledImages...)
+	config.AppConfigMu.RUnlock()
+	if len(enabled) == 0 {
 		for _, t := range lxc.GetTemplates() {
 			set[t.ID] = true
 		}
@@ -409,7 +412,7 @@ func getEnabledImageSet() map[string]bool {
 			set[t.ID] = true
 		}
 	} else {
-		for _, id := range config.AppConfig.EnabledImages {
+		for _, id := range enabled {
 			set[id] = true
 		}
 	}
@@ -950,7 +953,7 @@ func ensureLXCImageCachePool(pool config.StoragePool) error {
 		return fmt.Errorf("failed to migrate LXC image cache: %v, output: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	tempLink := fmt.Sprintf("%s.clicd-new-%d", cachePath, time.Now().UnixNano())
+	tempLink := fmt.Sprintf("%s.eyvescloud-new-%d", cachePath, time.Now().UnixNano())
 	if err := os.Symlink(targetAbs, tempLink); err != nil {
 		return err
 	}
@@ -965,7 +968,7 @@ func ensureLXCImageCachePool(pool config.StoragePool) error {
 		return nil
 	}
 
-	backupPath := fmt.Sprintf("%s.clicd-backup-%d", cachePath, time.Now().UnixNano())
+	backupPath := fmt.Sprintf("%s.eyvescloud-backup-%d", cachePath, time.Now().UnixNano())
 	if err := os.Rename(cachePath, backupPath); err != nil {
 		_ = os.Remove(tempLink)
 		return fmt.Errorf("failed to prepare LXC image cache migration: %v", err)
@@ -988,7 +991,7 @@ func isManagedLXCImageCachePath(path string) bool {
 			return true
 		}
 	}
-	return path == filepath.Clean("/var/lib/clicd/images/lxc")
+	return path == filepath.Clean("/var/lib/eyvescloud/images/lxc")
 }
 
 // HandleImageCancel cancels an in-progress image download.
@@ -1099,7 +1102,7 @@ func HandleImageDelete(w http.ResponseWriter, r *http.Request) {
 	// Remove cache directory
 	cachePath, ok := officialLXCImageCachePath(tmpl.ID)
 	if !ok {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Template cache path is not managed by CLICD"})
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Template cache path is not managed by EYVESCLOUD"})
 		return
 	}
 	if err := os.RemoveAll(cachePath); err != nil {
@@ -1282,56 +1285,52 @@ func hostKVMAvailable() bool {
 }
 
 func ensureImageEnabled(id string) {
-	// If the enabled list is empty, all templates are currently enabled by default.
-	// We must populate the list with all template IDs first so that explicit toggles stick.
-	if len(config.AppConfig.EnabledImages) == 0 {
-		for _, t := range lxc.GetTemplates() {
-			config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+		// If the enabled list is empty, all templates are currently enabled by default.
+		// We must populate the list with all template IDs first so explicit toggles stick.
+		if len(cfg.EnabledImages) == 0 {
+			for _, t := range lxc.GetTemplates() {
+				cfg.EnabledImages = append(cfg.EnabledImages, t.ID)
+			}
+			for _, t := range kvm.GetImages() {
+				cfg.EnabledImages = append(cfg.EnabledImages, t.ID)
+			}
+			return // Already contains all IDs including this one
 		}
-		for _, t := range kvm.GetImages() {
-			config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
+		for _, eid := range cfg.EnabledImages {
+			if eid == id {
+				return
+			}
 		}
-		config.SaveConfig()
-		return // Already contains all IDs including this one
-	}
-	found := false
-	for _, eid := range config.AppConfig.EnabledImages {
-		if eid == id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, id)
-		config.SaveConfig()
-	}
+		cfg.EnabledImages = append(cfg.EnabledImages, id)
+	})
 }
 
 func removeImageEnabled(id string) {
-	// If the enabled list is empty, populate it first with all templates,
-	// then remove the one being disabled.
-	if len(config.AppConfig.EnabledImages) == 0 {
-		for _, t := range lxc.GetTemplates() {
-			if t.ID != id {
-				config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+		// If the enabled list is empty, populate it first with all templates,
+		// then remove the one being disabled.
+		if len(cfg.EnabledImages) == 0 {
+			for _, t := range lxc.GetTemplates() {
+				if t.ID != id {
+					cfg.EnabledImages = append(cfg.EnabledImages, t.ID)
+				}
+			}
+			for _, t := range kvm.GetImages() {
+				if t.ID != id {
+					cfg.EnabledImages = append(cfg.EnabledImages, t.ID)
+				}
+			}
+			return
+		}
+		filtered := make([]string, 0, len(cfg.EnabledImages))
+		for _, eid := range cfg.EnabledImages {
+			if eid != id {
+				filtered = append(filtered, eid)
 			}
 		}
-		for _, t := range kvm.GetImages() {
-			if t.ID != id {
-				config.AppConfig.EnabledImages = append(config.AppConfig.EnabledImages, t.ID)
-			}
+		if len(filtered) != len(cfg.EnabledImages) {
+			cfg.EnabledImages = filtered
 		}
-		config.SaveConfig()
-		return
-	}
-	filtered := make([]string, 0, len(config.AppConfig.EnabledImages))
-	for _, eid := range config.AppConfig.EnabledImages {
-		if eid != id {
-			filtered = append(filtered, eid)
-		}
-	}
-	if len(filtered) != len(config.AppConfig.EnabledImages) {
-		config.AppConfig.EnabledImages = filtered
-		config.SaveConfig()
-	}
+	})
 }

@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestNormalizePolicyRule(t *testing.T) {

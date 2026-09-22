@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
-	"clicd/internal/version"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
+	"eyvescloud/internal/version"
 )
 
 var lxcManager = lxc.NewManager()
@@ -359,6 +359,11 @@ func createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := checkTenantQuota(cfg.Tenant, cfg.VCPU, cfg.RAMMB, cfg.DiskGB); err != nil {
+		jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+
 	if err := createByRuntime(cfg); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
@@ -407,13 +412,16 @@ func updateExpiry(w http.ResponseWriter, r *http.Request, id int) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request"})
 		return
 	}
-	c := config.FindContainer(id)
-	if c == nil {
+	if ok := config.MutateContainerNoSave(id, func(c *config.Container) {
+		c.ExpiresAt = req.ExpiresAt
+	}); !ok {
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
 		return
 	}
-	c.ExpiresAt = req.ExpiresAt
-	config.SaveConfig()
+	if err := config.SaveConfig(); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to save config"})
+		return
+	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Expiry updated"})
 }
 
@@ -502,12 +510,19 @@ func updateResourceLimit(w http.ResponseWriter, r *http.Request, id int) {
 		}
 	}
 
-	c.VCPU = nextVCPU
-	c.RAMMB = nextRAMMB
-	applyNetworkLimitPatch(c, req.BWMbps, req.NetworkDownMbps, req.NetworkUpMbps)
-	applyIOLimitPatch(c, req.IOMBps, req.IOReadMBps, req.IOWriteMBps)
-	config.NormalizeContainerResourceAliases(c)
-	config.SaveConfig()
+	// 在写锁下原子更新容器限流字段并持久化，避免与指标采样/策略引擎并发读写共享切片。
+	var ok bool
+	ok, c = config.MutateContainerByID(id, func(cc *config.Container) {
+		cc.VCPU = nextVCPU
+		cc.RAMMB = nextRAMMB
+		applyNetworkLimitPatch(cc, req.BWMbps, req.NetworkDownMbps, req.NetworkUpMbps)
+		applyIOLimitPatch(cc, req.IOMBps, req.IOReadMBps, req.IOWriteMBps)
+		config.NormalizeContainerResourceAliases(cc)
+	})
+	if !ok {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Container not found"})
+		return
+	}
 
 	// Re-apply persisted/runtime limits. LXC also uses this path to migrate
 	// old managed config lines such as lxc.prlimit.nproc.
@@ -859,7 +874,7 @@ func deletePortMapping(w http.ResponseWriter, r *http.Request, id int, indexStr 
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: mappings})
 }
 
-// HandleVersion returns the current CLICD version.
+// HandleVersion returns the current EYVESCLOUD version.
 func HandleVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})

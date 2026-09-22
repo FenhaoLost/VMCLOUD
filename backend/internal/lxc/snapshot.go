@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 var snapshotMu sync.Mutex
@@ -238,7 +238,7 @@ func (m *Manager) runDueSnapshotSchedules() {
 			fmt.Printf("Warning: scheduled snapshot failed for %s: %v\n", c.Name, err)
 			continue
 		}
-		if current := config.FindContainer(c.ID); current != nil {
+		if !config.MutateContainerNoSave(c.ID, func(current *config.Container) {
 			interval := current.SnapshotScheduleIntervalHours
 			if interval < 24 {
 				interval = 24
@@ -249,8 +249,10 @@ func (m *Manager) runDueSnapshotSchedules() {
 			}
 			current.SnapshotScheduleLastRun = now.Format(time.RFC3339)
 			current.SnapshotScheduleNextRun = next.Format(time.RFC3339)
-			config.SaveConfig()
+		}) {
+			continue
 		}
+		config.SaveConfig()
 	}
 }
 

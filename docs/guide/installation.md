@@ -6,7 +6,7 @@ EyvesCloud 提供一键安装脚本。脚本默认安装 GitHub Releases 的最�
 
 - Linux x86_64/amd64 或 ARM64/aarch64 宿主机。
 - root 权限。
-- systemd。
+- systemd（或 OpenRC）。
 - 网络可访问 GitHub Release 下载地址。
 - 如果要使用 LXC，需要宿主机支持 LXC 运行环境。
 - 如果要使用 KVM，需要宿主机开启虚拟化并安装 libvirt/QEMU。
@@ -14,17 +14,19 @@ EyvesCloud 提供一键安装脚本。脚本默认安装 GitHub Releases 的最�
 ## 安装最新版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo sh
 ```
 
-安装器会分别询问 LXC 与 KVM 的 NAT 私网网段。直接回车时，脚本会扫描宿主机路由、网卡、网桥和 libvirt 网络，自动选择未冲突的 RFC1918 `/24` 网段；也可以输入 `172.28.40.0/24` 这类 CIDR。非交互安装可设置 `CLICD_LXC_SUBNET` 和 `CLICD_KVM_SUBNET`。
+> 说明：`install.sh` 默认从本仓库 Release（`FenhaoLost/VMCLOUD`）拉取发行版；如需覆盖来源，可设置 `EYVESCLOUD_REPO`。
 
-脚本当前默认使用 `CLICD_VERSION=latest`，会按宿主架构下载 `releases/latest` 对应的 `clicd-linux-amd64.tar.gz` 或 `clicd-linux-arm64.tar.gz`。
+安装器会分别询问 LXC 与 KVM 的 NAT 私网网段。直接回车时，脚本会扫描宿主机路由、网卡、网桥和 libvirt 网络，自动选择未冲突的 RFC1918 `/24` 网段；也可以输入 `172.28.40.0/24` 这类 CIDR。非交互安装可设置 `EYVESCLOUD_LXC_SUBNET` 和 `EYVESCLOUD_KVM_SUBNET`。
+
+脚本默认 `EYVESCLOUD_VERSION=latest`，会按宿主架构下载 `releases/latest` 对应的 `eyvescloud-linux-amd64.tar.gz` 或 `eyvescloud-linux-arm64.tar.gz`。
 
 ## 安装指定版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.29 sh
 ```
 
 把 `v1.1.29` 替换成需要安装的 Release 标签即可。
@@ -45,14 +47,14 @@ http://YOUR_SERVER_IP:8999
 
 | 模式 | 说明 |
 | --- | --- |
-| 面板模式（默认） | 直接运行 `clicd server` 或安装后由 systemd 托管，作为独立面板。 |
+| 面板模式（默认） | 直接运行 `eyvescloud server` 或安装后由 systemd 托管，作为独立面板。 |
 | 主控模式 | 同样是面板模式，额外进入「节点管理」页面生成被控安装脚本。任何面板都可以是主控。 |
-| 被控模式（Agent） | 在主控「节点管理」里执行一键安装脚本后，被控以 `clicd agent` 方式运行，自动注册到主控并上报心跳。 |
+| 被控模式（Agent） | 在主控「节点管理」里执行一键安装脚本后，被控以 `eyvescloud agent` 方式运行，自动注册到主控并上报心跳。 |
 
 手动以被控模式启动：
 
 ```bash
-clicd agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=node-1 --addr=http://THIS_IP:8999
+eyvescloud agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=node-1 --addr=http://THIS_IP:8999
 ```
 
 参数说明：
@@ -65,7 +67,9 @@ clicd agent --controller=http://MASTER_IP:8999 --install-key=INSTALL_KEY --name=
 ## 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo sh -s -- uninstall
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh -s -- uninstall
+# 非交互卸载
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_UNINSTALL_CONFIRM=1 sh -s -- uninstall
 ```
 
 卸载前请确认是否需要保留容器、镜像缓存、数据库和配置文件。

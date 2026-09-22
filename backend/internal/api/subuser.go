@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -96,7 +96,7 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 		su       config.SubUser
 	}
 	var found *existingResult
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		for i := range cfg.SubUsers {
 			su := &cfg.SubUsers[i]
 			matched := false
@@ -167,7 +167,7 @@ func HandleSubUserCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:            time.Now().Format("2006-01-02 15:04:05"),
 	}
 
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.SubUsers = append(cfg.SubUsers, subUser)
 	})
 	config.AddAuditLog("创建子用户", containerName, fmt.Sprintf("用户: %s", username), "admin")
@@ -316,6 +316,8 @@ func newSubUserTokenWithRole(username string, containerUUIDs []string, role stri
 		"container_uuids": containerUUIDs,
 		"role":            subUserRole(role),
 		"token_version":   tokenVersion,
+		"iss":             jwtIssuer,
+		"aud":             jwtAudience,
 		"exp":             expiresAt.Unix(),
 		"iat":             time.Now().Unix(),
 	})
@@ -990,7 +992,7 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var updated config.SubUser
-		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			for i := range cfg.SubUsers {
 				if cfg.SubUsers[i].ID != subUserID {
 					continue
@@ -1047,7 +1049,7 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var updated config.SubUser
-		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			for i := range cfg.SubUsers {
 				if cfg.SubUsers[i].ID != subUserID {
 					continue
@@ -1078,7 +1080,7 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		role := subUserRole(req.Role)
 		var updated config.SubUser
-		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			for i := range cfg.SubUsers {
 				if cfg.SubUsers[i].ID != subUserID {
 					continue
@@ -1108,7 +1110,7 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 		}
 		tenant := strings.TrimSpace(req.Tenant)
 		var updated config.SubUser
-		config.MutateGlobal(func(cfg *config.ClicdConfig) {
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			for i := range cfg.SubUsers {
 				if cfg.SubUsers[i].ID != subUserID {
 					continue
@@ -1138,7 +1140,7 @@ func filterSubUserAuditLogs(username string) []config.AuditLog {
 	result := make([]config.AuditLog, 0)
 	for i := len(logs) - 1; i >= 0; i-- {
 		log := logs[i]
-		if log.User == username || strings.HasPrefix(log.User, "user:") && strings.Contains(log.User, username) {
+		if log.User == username || log.User == "user:"+username {
 			result = append(result, log)
 		}
 	}

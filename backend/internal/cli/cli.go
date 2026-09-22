@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
-	"clicd/internal/version"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
+	"eyvescloud/internal/version"
 )
 
 var manager = lxc.NewManager()
 
 const (
-	clicdBackupDir              = "/root/clicd-backups"
-	clicdNewBinaryPath          = "/usr/local/bin/clicd.new"
-	libvirtDefaultNetworkMarker = "/var/lib/clicd/kvm/default-network.created"
+	eyvescloudBackupDir              = "/root/eyvescloud-backups"
+	eyvescloudNewBinaryPath          = "/usr/local/bin/eyvescloud.new"
+	libvirtDefaultNetworkMarker = "/var/lib/eyvescloud/kvm/default-network.created"
 )
 
 var cliEnglish = detectCLIEnglish()
@@ -52,8 +52,8 @@ var cliTranslations = map[string]string{
 	"启动":                "Start",
 	"停止":                "Stop",
 	"导入现有 LXC 容器":       "Import existing LXC containers",
-	"检查并升级 CLICD":       "Check and upgrade CLICD",
-	"卸载 CLICD":          "Uninstall CLICD",
+	"检查并升级 EYVESCLOUD":       "Check and upgrade EYVESCLOUD",
+	"卸载 EYVESCLOUD":          "Uninstall EYVESCLOUD",
 	"面板访问白名单":           "Panel access allowlist",
 	"系统信息":              "System info",
 	"退出":                "Exit",
@@ -122,8 +122,8 @@ var cliTranslations = map[string]string{
 	"Web 面板已停止，LXC 容器不会受影响。": "Web panel stopped. LXC containers are not affected.",
 	"启动 Web 面板失败":            "Failed to start web panel",
 	"Web 面板已启动":              "Web panel started",
-	"升级只会替换 /usr/local/bin/clicd，并保留 /root/.clicd 里的配置、容器数据和任务记录。": "The upgrade only replaces /usr/local/bin/clicd and keeps configuration, container data, and task records under /root/.clicd.",
-	"升级需要 root 权限。请使用: sudo clicd cli":                             "Upgrade requires root privileges. Use: sudo clicd cli",
+	"升级只会替换 /usr/local/bin/eyvescloud，并保留 /root/.eyvescloud 里的配置、容器数据和任务记录。": "The upgrade only replaces /usr/local/bin/eyvescloud and keeps configuration, container data, and task records under /root/.eyvescloud.",
+	"升级需要 root 权限。请使用: sudo eyvescloud cli":                             "Upgrade requires root privileges. Use: sudo eyvescloud cli",
 	"检查仓库":             "Checking repository",
 	"检查 GitHub 最新版本失败": "Failed to check the latest GitHub version",
 	"GitHub Release 没有 tag_name，无法判断最新版本。": "GitHub Release has no tag_name, so the latest version cannot be determined.",
@@ -153,25 +153,25 @@ var cliTranslations = map[string]string{
 	"停止 Web 服务失败，继续尝试替换":                    "Failed to stop web service; continuing replacement attempt",
 	"二进制已替换，但重启 Web 服务失败":                   "Binary was replaced, but restarting the web service failed",
 	"下载失败，HTTP":                             "Download failed, HTTP",
-	"升级包内未找到 clicd 二进制":                     "No clicd binary found in the upgrade package",
-	"将 /var/lib/lxc 里的容器导入 CLICD 配置。":       "Import containers under /var/lib/lxc into CLICD configuration.",
+	"升级包内未找到 eyvescloud 二进制":                     "No eyvescloud binary found in the upgrade package",
+	"将 /var/lib/lxc 里的容器导入 EYVESCLOUD 配置。":       "Import containers under /var/lib/lxc into EYVESCLOUD configuration.",
 	"导入后会保留真实 LXC 名称，Web 和 CLI 都能管理同一个容器。": "After import, real LXC names are kept and both Web and CLI can manage the same containers.",
 	"导入失败":            "Import failed",
 	"没有发现新的 ct-* 容器。": "No new ct-* containers found.",
 	"已导入":             "Imported",
 	"个容器":             "containers",
-	"将删除 CLICD 服务和 /usr/local/bin/clicd。": "This will remove the CLICD service and /usr/local/bin/clicd.",
-	"同时会删除 /root/.clicd、/var/lib/lxc、/var/lib/clicd、镜像缓存、备份、临时文件、/swapfile 和 CLICD 网络规则。": "It will also remove /root/.clicd, /var/lib/lxc, /var/lib/clicd, image caches, backups, temporary files, /swapfile, and CLICD network rules.",
+	"将删除 EYVESCLOUD 服务和 /usr/local/bin/eyvescloud。": "This will remove the EYVESCLOUD service and /usr/local/bin/eyvescloud.",
+	"同时会删除 /root/.eyvescloud、/var/lib/lxc、/var/lib/eyvescloud、镜像缓存、备份、临时文件、/swapfile 和 EYVESCLOUD 网络规则。": "It will also remove /root/.eyvescloud, /var/lib/lxc, /var/lib/eyvescloud, image caches, backups, temporary files, /swapfile, and EYVESCLOUD network rules.",
 	"卸载需要 root 权限。":                "Uninstall requires root privileges.",
-	"请运行: sudo clicd cli --no-web": "Run: sudo clicd cli --no-web",
+	"请运行: sudo eyvescloud cli --no-web": "Run: sudo eyvescloud cli --no-web",
 	"输入 uninstall 继续卸载":            "Type uninstall to continue uninstalling",
-	"CLICD 已卸载。":                   "CLICD has been uninstalled.",
-	"服务、二进制、配置、容器/虚拟机、本地镜像、缓存、备份、临时文件和 CLICD 网络规则均已删除。":         "Service, binary, configuration, containers/VMs, local images, cache, backups, temporary files, and CLICD network rules have been removed.",
-	"检测到非 CLICD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。": "Non-CLICD VMs are still using the libvirt default network, so default/virbr0 has been kept.",
+	"EYVESCLOUD 已卸载。":                   "EYVESCLOUD has been uninstalled.",
+	"服务、二进制、配置、容器/虚拟机、本地镜像、缓存、备份、临时文件和 EYVESCLOUD 网络规则均已删除。":         "Service, binary, configuration, containers/VMs, local images, cache, backups, temporary files, and EYVESCLOUD network rules have been removed.",
+	"检测到非 EYVESCLOUD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。": "Non-EYVESCLOUD VMs are still using the libvirt default network, so default/virbr0 has been kept.",
 	"Web 面板重载跳过":        "Web panel reload skipped",
 	"Web 面板已重载并应用配置变更。": "Web panel reloaded and configuration changes applied.",
 	"读取容器状态失败":          "Failed to read container status",
-	"CLICD 版本":          "CLICD version",
+	"EYVESCLOUD 版本":          "EYVESCLOUD version",
 	"Web 端口":            "Web port",
 	"LXC 版本":            "LXC version",
 	"暂无可用容器":            "No available containers",
@@ -312,8 +312,8 @@ func printMenu() {
 	cliPrintln("  8. 重置 Web 管理员密码")
 	cliPrintf("  9. %s Web 面板\n", webStatus)
 	cliPrintln("  10. 导入现有 LXC 容器")
-	cliPrintln("  11. 检查并升级 CLICD")
-	cliPrintln("  12. 卸载 CLICD")
+	cliPrintln("  11. 检查并升级 EYVESCLOUD")
+	cliPrintln("  12. 卸载 EYVESCLOUD")
 	cliPrintln("  13. 面板访问白名单")
 	cliPrintln("  0. 系统信息")
 	cliPrintln("  l. 切换语言")
@@ -416,7 +416,7 @@ func cliSwitchLanguage(reader *bufio.Reader) {
 		cliPrintf("保存语言失败: %v\n", err)
 		return
 	}
-	_ = os.Setenv("CLICD_LANG", next)
+	_ = os.Setenv("EYVESCLOUD_LANG", next)
 	refreshCLILanguage()
 	cliPrintf("%s: %s\n", cliT("语言已切换为"), cliLanguageLabel(next))
 	if isWebPanelRunning() {
@@ -612,7 +612,7 @@ func cliResetPassword(reader *bufio.Reader) {
 
 func cliToggleWebPanel() {
 	if isWebPanelRunning() {
-		if err := stopService("clicd"); err != nil {
+		if err := stopService("eyvescloud"); err != nil {
 			cliPrintf("停止 Web 面板失败: %v\n", err)
 			return
 		}
@@ -620,7 +620,7 @@ func cliToggleWebPanel() {
 		return
 	}
 
-	if err := startService("clicd"); err != nil {
+	if err := startService("eyvescloud"); err != nil {
 		cliPrintf("启动 Web 面板失败: %v\n", err)
 		return
 	}
@@ -639,14 +639,14 @@ type githubRelease struct {
 
 func cliUpgradeSystem(reader *bufio.Reader) {
 	cliPrintln("\n--- 检查并升级 EyvesCloud ---")
-	cliPrintln("升级只会替换 /usr/local/bin/clicd，并保留 /root/.clicd 里的配置、容器数据和任务记录。")
+	cliPrintln("升级只会替换 /usr/local/bin/eyvescloud，并保留 /root/.eyvescloud 里的配置、容器数据和任务记录。")
 
 	if os.Geteuid() != 0 {
-		cliPrintln("升级需要 root 权限。请使用: sudo clicd cli")
+		cliPrintln("升级需要 root 权限。请使用: sudo eyvescloud cli")
 		return
 	}
 
-	repo := strings.TrimSpace(os.Getenv("CLICD_REPO"))
+	repo := strings.TrimSpace(os.Getenv("EYVESCLOUD_REPO"))
 	if repo == "" {
 		repo = version.Repo
 	}
@@ -748,7 +748,7 @@ func fetchLatestReleaseFallback(repo, assetName string) (*githubRelease, error) 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
+	req.Header.Set("User-Agent", "eyvescloud-updater/"+version.Current())
 
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
@@ -795,8 +795,8 @@ func latestTagFromPath(path string) string {
 }
 
 func setGitHubRequestHeaders(req *http.Request) {
-	req.Header.Set("User-Agent", "clicd-updater/"+version.Current())
-	token := strings.TrimSpace(os.Getenv("CLICD_GITHUB_TOKEN"))
+	req.Header.Set("User-Agent", "eyvescloud-updater/"+version.Current())
+	token := strings.TrimSpace(os.Getenv("EYVESCLOUD_GITHUB_TOKEN"))
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv("GITHUB_TOKEN"))
 	}
@@ -808,7 +808,7 @@ func setGitHubRequestHeaders(req *http.Request) {
 func releaseArchiveAssetName(goarch string) (string, error) {
 	switch goarch {
 	case "amd64", "arm64":
-		return fmt.Sprintf("clicd-linux-%s.tar.gz", goarch), nil
+		return fmt.Sprintf("eyvescloud-linux-%s.tar.gz", goarch), nil
 	default:
 		return "", fmt.Errorf("unsupported architecture: %s", goarch)
 	}
@@ -824,7 +824,7 @@ func findReleaseAsset(release *githubRelease, name string) string {
 }
 
 func upgradeFromReleaseAsset(assetURL, latest, assetName string) error {
-	tmpDir, err := os.MkdirTemp("", "clicd-upgrade-*")
+	tmpDir, err := os.MkdirTemp("", "eyvescloud-upgrade-*")
 	if err != nil {
 		return err
 	}
@@ -841,18 +841,18 @@ func upgradeFromReleaseAsset(assetURL, latest, assetName string) error {
 		return fmt.Errorf("解压失败: %v, output: %s", err, string(out))
 	}
 
-	newBinary, err := findFile(tmpDir, "clicd")
+	newBinary, err := findFile(tmpDir, "eyvescloud")
 	if err != nil {
 		return err
 	}
 
-	backupDir := clicdBackupDir
+	backupDir := eyvescloudBackupDir
 	if err := os.MkdirAll(backupDir, 0700); err != nil {
 		return err
 	}
-	backupName := fmt.Sprintf("clicd.%s.%s", safeReleaseBackupComponent(latest), time.Now().Format("20060102-150405"))
-	if _, err := os.Stat("/usr/local/bin/clicd"); err == nil {
-		backupPath, err := copyFileToBackup("/usr/local/bin/clicd", backupName, 0755)
+	backupName := fmt.Sprintf("eyvescloud.%s.%s", safeReleaseBackupComponent(latest), time.Now().Format("20060102-150405"))
+	if _, err := os.Stat("/usr/local/bin/eyvescloud"); err == nil {
+		backupPath, err := copyFileToBackup("/usr/local/bin/eyvescloud", backupName, 0755)
 		if err != nil {
 			return fmt.Errorf("备份旧二进制失败: %w", err)
 		}
@@ -860,21 +860,21 @@ func upgradeFromReleaseAsset(assetURL, latest, assetName string) error {
 	}
 
 	cliPrintln("正在替换二进制...")
-	if err := stopService("clicd"); err != nil {
+	if err := stopService("eyvescloud"); err != nil {
 		cliPrintf("停止 Web 服务失败，继续尝试替换: %v\n", err)
 	}
-	tmpBin := clicdNewBinaryPath
+	tmpBin := eyvescloudNewBinaryPath
 	if err := copyFileToUpgradeTemp(newBinary, 0755); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpBin, "/usr/local/bin/clicd"); err != nil {
+	if err := os.Rename(tmpBin, "/usr/local/bin/eyvescloud"); err != nil {
 		return err
 	}
-	if err := os.Chmod("/usr/local/bin/clicd", 0755); err != nil {
+	if err := os.Chmod("/usr/local/bin/eyvescloud", 0755); err != nil {
 		return err
 	}
 
-	if err := restartService("clicd"); err != nil {
+	if err := restartService("eyvescloud"); err != nil {
 		return fmt.Errorf("二进制已替换，但重启 Web 服务失败: %w", err)
 	}
 	return nil
@@ -924,7 +924,7 @@ func findFile(root, name string) (string, error) {
 		return "", err
 	}
 	if found == "" {
-		return "", fmt.Errorf("升级包内未找到 clicd 二进制")
+		return "", fmt.Errorf("升级包内未找到 eyvescloud 二进制")
 	}
 	return found, nil
 }
@@ -933,7 +933,7 @@ func copyFileToBackup(src, fileName string, mode os.FileMode) (string, error) {
 	if fileName == "" || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") || strings.Contains(fileName, "..") {
 		return "", fmt.Errorf("unsafe backup file name: %s", fileName)
 	}
-	dst := filepath.Join(clicdBackupDir, fileName)
+	dst := filepath.Join(eyvescloudBackupDir, fileName)
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return "", err
@@ -945,7 +945,7 @@ func copyFileToBackup(src, fileName string, mode os.FileMode) (string, error) {
 }
 
 func copyFileToUpgradeTemp(src string, mode os.FileMode) error {
-	out, err := os.OpenFile(clicdNewBinaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	out, err := os.OpenFile(eyvescloudNewBinaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
@@ -1002,14 +1002,14 @@ func sameVersion(current, latest string) bool {
 
 func isWebPanelRunning() bool {
 	if commandExists("systemctl") {
-		cmd := exec.Command("systemctl", "is-active", "clicd")
+		cmd := exec.Command("systemctl", "is-active", "eyvescloud")
 		output, err := cmd.Output()
 		if err == nil && strings.TrimSpace(string(output)) == "active" {
 			return true
 		}
 	}
 	if commandExists("rc-service") {
-		cmd := exec.Command("rc-service", "clicd", "status")
+		cmd := exec.Command("rc-service", "eyvescloud", "status")
 		return cmd.Run() == nil
 	}
 	return false
@@ -1017,10 +1017,10 @@ func isWebPanelRunning() bool {
 
 func cliImportExistingContainers() {
 	cliPrintln("\n--- 导入现有 LXC 容器 ---")
-	cliPrintln("将 /var/lib/lxc 里的容器导入 CLICD 配置。")
+	cliPrintln("将 /var/lib/lxc 里的容器导入 EYVESCLOUD 配置。")
 	cliPrintln("导入后会保留真实 LXC 名称，Web 和 CLI 都能管理同一个容器。")
 
-	imported, err := manager.ImportExistingClicdContainers()
+	imported, err := manager.ImportExistingEyvescloudContainers()
 	if err != nil {
 		cliPrintf("导入失败: %v\n", err)
 		return
@@ -1039,12 +1039,12 @@ func cliImportExistingContainers() {
 
 func cliUninstall(reader *bufio.Reader) {
 	cliPrintln("\n--- 卸载 EyvesCloud ---")
-	cliPrintln("将删除 CLICD 服务和 /usr/local/bin/clicd。")
-	cliPrintln("同时会删除 /root/.clicd、/var/lib/lxc、/var/lib/clicd、镜像缓存、备份、临时文件、/swapfile 和 CLICD 网络规则。")
+	cliPrintln("将删除 EYVESCLOUD 服务和 /usr/local/bin/eyvescloud。")
+	cliPrintln("同时会删除 /root/.eyvescloud、/var/lib/lxc、/var/lib/eyvescloud、镜像缓存、备份、临时文件、/swapfile 和 EYVESCLOUD 网络规则。")
 
 	if os.Geteuid() != 0 {
 		cliPrintln("卸载需要 root 权限。")
-		cliPrintln("请运行: sudo clicd cli --no-web")
+		cliPrintln("请运行: sudo eyvescloud cli --no-web")
 		return
 	}
 
@@ -1056,29 +1056,29 @@ func cliUninstall(reader *bufio.Reader) {
 
 	destroyAllLXCContainers()
 	destroyAllKVMDomains()
-	removeCLICDLibvirtDefaultNetwork()
-	cleanupCLICDNetworking()
-	removeCLICDHostHooks()
-	removeCLICDQuotaRecords()
+	removeEYVESCLOUDLibvirtDefaultNetwork()
+	cleanupEYVESCLOUDNetworking()
+	removeEYVESCLOUDHostHooks()
+	removeEYVESCLOUDQuotaRecords()
 	stopAndRemoveService()
-	removePath("/usr/local/bin/clicd")
-	removePath("/etc/sysctl.d/99-clicd.conf")
-	removePath("/var/log/clicd.log")
-	removePath("/var/log/clicd.err")
-	removePath("/root/.clicd")
+	removePath("/usr/local/bin/eyvescloud")
+	removePath("/etc/sysctl.d/99-eyvescloud.conf")
+	removePath("/var/log/eyvescloud.log")
+	removePath("/var/log/eyvescloud.err")
+	removePath("/root/.eyvescloud")
 	removePath("/var/lib/lxc")
-	removePath("/var/lib/clicd")
+	removePath("/var/lib/eyvescloud")
 	removePath("/var/cache/lxc")
-	removePath("/var/cache/clicd")
-	removePath("/root/clicd-backups")
-	removeCLICDTmpFiles()
-	removeCLICDSwapfile()
+	removePath("/var/cache/eyvescloud")
+	removePath("/root/eyvescloud-backups")
+	removeEYVESCLOUDTmpFiles()
+	removeEYVESCLOUDSwapfile()
 
 	reloadSysctl()
 
 	fmt.Println()
-	cliPrintln("CLICD 已卸载。")
-	cliPrintln("服务、二进制、配置、容器/虚拟机、本地镜像、缓存、备份、临时文件和 CLICD 网络规则均已删除。")
+	cliPrintln("EYVESCLOUD 已卸载。")
+	cliPrintln("服务、二进制、配置、容器/虚拟机、本地镜像、缓存、备份、临时文件和 EYVESCLOUD 网络规则均已删除。")
 }
 
 func destroyAllLXCContainers() {
@@ -1109,13 +1109,13 @@ func destroyAllKVMDomains() {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
-		if isCLICDKVMDomain(name) {
+		if isEYVESCLOUDKVMDomain(name) {
 			removeKVMDomain(name)
 		}
 	}
 }
 
-func isCLICDKVMDomain(name string) bool {
+func isEYVESCLOUDKVMDomain(name string) bool {
 	if !strings.HasPrefix(name, "vm-") || len(name) <= len("vm-") {
 		return false
 	}
@@ -1124,11 +1124,11 @@ func isCLICDKVMDomain(name string) bool {
 			return false
 		}
 	}
-	if dirExists("/var/lib/clicd/kvm/instances/" + name) {
+	if dirExists("/var/lib/eyvescloud/kvm/instances/" + name) {
 		return true
 	}
 	out, err := exec.Command("virsh", "dumpxml", name).Output()
-	return err == nil && strings.Contains(string(out), "/var/lib/clicd/kvm/")
+	return err == nil && strings.Contains(string(out), "/var/lib/eyvescloud/kvm/")
 }
 
 func removeKVMDomain(name string) {
@@ -1143,21 +1143,21 @@ func removeKVMDomain(name string) {
 	runQuiet("virsh", "undefine", name)
 }
 
-func removeCLICDLibvirtDefaultNetwork() {
+func removeEYVESCLOUDLibvirtDefaultNetwork() {
 	if !commandExists("virsh") || !fileExists(libvirtDefaultNetworkMarker) {
 		return
 	}
-	if libvirtDefaultUsedByNonCLICDDomain() {
-		cliPrintln("检测到非 CLICD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。")
+	if libvirtDefaultUsedByNonEYVESCLOUDDomain() {
+		cliPrintln("检测到非 EYVESCLOUD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。")
 		return
 	}
-	fmt.Println("Removing CLICD-created libvirt default network...")
+	fmt.Println("Removing EYVESCLOUD-created libvirt default network...")
 	runQuiet("virsh", "net-destroy", "default")
 	runQuiet("virsh", "net-undefine", "default")
 	removePath(libvirtDefaultNetworkMarker)
 }
 
-func libvirtDefaultUsedByNonCLICDDomain() bool {
+func libvirtDefaultUsedByNonEYVESCLOUDDomain() bool {
 	if !commandExists("virsh") {
 		return false
 	}
@@ -1167,7 +1167,7 @@ func libvirtDefaultUsedByNonCLICDDomain() bool {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		name := strings.TrimSpace(line)
-		if name == "" || isCLICDKVMDomain(name) {
+		if name == "" || isEYVESCLOUDKVMDomain(name) {
 			continue
 		}
 		if usesLibvirtDefaultNetwork(name) {
@@ -1193,10 +1193,10 @@ func usesLibvirtDefaultNetwork(domain string) bool {
 	return false
 }
 
-func cleanupCLICDNetworking() {
-	removeCLICDNATRules()
-	cleanupCLICDIPv6Runtime()
-	cleanupCLICDIPv6BridgeRoutes()
+func cleanupEYVESCLOUDNetworking() {
+	removeEYVESCLOUDNATRules()
+	cleanupEYVESCLOUDIPv6Runtime()
+	cleanupEYVESCLOUDIPv6BridgeRoutes()
 	for _, bridge := range []string{"lxcbr0", "virbr0"} {
 		deleteFilterRule("FORWARD", "-i", bridge, "-j", "ACCEPT")
 		deleteFilterRule("FORWARD", "-o", bridge, "-j", "ACCEPT")
@@ -1205,16 +1205,16 @@ func cleanupCLICDNetworking() {
 	}
 }
 
-func cleanupCLICDIPv6Runtime() {
+func cleanupEYVESCLOUDIPv6Runtime() {
 	if config.AppConfig == nil {
 		return
 	}
 	for _, c := range config.AppConfig.Containers {
-		cleanupCLICDContainerIPv6(c)
+		cleanupEYVESCLOUDContainerIPv6(c)
 	}
 }
 
-func cleanupCLICDContainerIPv6(c config.Container) {
+func cleanupEYVESCLOUDContainerIPv6(c config.Container) {
 	bridge := "lxcbr0"
 	if c.IsKVM() {
 		bridge = "virbr0"
@@ -1250,7 +1250,7 @@ func cleanupCLICDContainerIPv6(c config.Container) {
 	}
 }
 
-func cleanupCLICDIPv6BridgeRoutes() {
+func cleanupEYVESCLOUDIPv6BridgeRoutes() {
 	if !commandExists("ip") {
 		return
 	}
@@ -1322,10 +1322,10 @@ func deleteIP6NATSource(source string) {
 	}
 }
 
-func removeCLICDNATRules() {
+func removeEYVESCLOUDNATRules() {
 	if commandExists("iptables") {
 		for {
-			out, err := exec.Command("sh", "-c", "iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep 'clicd-' | awk '{print $1}' | head -n 1").Output()
+			out, err := exec.Command("sh", "-c", "iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep 'eyvescloud-' | awk '{print $1}' | head -n 1").Output()
 			line := strings.TrimSpace(string(out))
 			if err != nil || line == "" {
 				break
@@ -1374,18 +1374,18 @@ func deleteIP6TablesBridgeRules(bridge string) {
 	}
 }
 
-func removeCLICDHostHooks() {
-	runQuiet("systemctl", "stop", "clicd-kvm-ipv6.service")
-	runQuiet("systemctl", "disable", "clicd-kvm-ipv6.service")
-	runQuiet("rc-service", "clicd-kvm-ipv6", "stop")
-	runQuiet("rc-update", "del", "clicd-kvm-ipv6", "default")
-	removePath("/usr/local/sbin/clicd-kvm-ipv6-init")
-	removePath("/etc/systemd/system/clicd-kvm-ipv6.service")
-	removePath("/etc/local.d/clicd-kvm-ipv6.start")
-	removePath("/etc/network/if-up.d/clicd-kvm-ipv6")
+func removeEYVESCLOUDHostHooks() {
+	runQuiet("systemctl", "stop", "eyvescloud-kvm-ipv6.service")
+	runQuiet("systemctl", "disable", "eyvescloud-kvm-ipv6.service")
+	runQuiet("rc-service", "eyvescloud-kvm-ipv6", "stop")
+	runQuiet("rc-update", "del", "eyvescloud-kvm-ipv6", "default")
+	removePath("/usr/local/sbin/eyvescloud-kvm-ipv6-init")
+	removePath("/etc/systemd/system/eyvescloud-kvm-ipv6.service")
+	removePath("/etc/local.d/eyvescloud-kvm-ipv6.start")
+	removePath("/etc/network/if-up.d/eyvescloud-kvm-ipv6")
 }
 
-func removeCLICDQuotaRecords() {
+func removeEYVESCLOUDQuotaRecords() {
 	for _, path := range []string{"/etc/projects", "/etc/projid"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1393,7 +1393,7 @@ func removeCLICDQuotaRecords() {
 		}
 		var kept []string
 		for _, line := range strings.Split(string(data), "\n") {
-			if strings.TrimSpace(line) == "" || strings.Contains(line, "clicd-") {
+			if strings.TrimSpace(line) == "" || strings.Contains(line, "eyvescloud-") {
 				continue
 			}
 			kept = append(kept, line)
@@ -1402,8 +1402,8 @@ func removeCLICDQuotaRecords() {
 	}
 }
 
-func removeCLICDTmpFiles() {
-	for _, pattern := range []string{"/tmp/clicd-*", "/tmp/clicd.*"} {
+func removeEYVESCLOUDTmpFiles() {
+	for _, pattern := range []string{"/tmp/eyvescloud-*", "/tmp/eyvescloud.*"} {
 		matches, _ := filepath.Glob(pattern)
 		for _, path := range matches {
 			removePath(path)
@@ -1411,7 +1411,7 @@ func removeCLICDTmpFiles() {
 	}
 }
 
-func removeCLICDSwapfile() {
+func removeEYVESCLOUDSwapfile() {
 	if !fileExists("/swapfile") {
 		return
 	}
@@ -1481,20 +1481,20 @@ func detachLoopDevices(path string) {
 
 func stopAndRemoveService() {
 	if commandExists("systemctl") {
-		runQuiet("systemctl", "stop", "clicd")
-		runQuiet("systemctl", "disable", "clicd")
-		removePath("/etc/systemd/system/clicd.service")
+		runQuiet("systemctl", "stop", "eyvescloud")
+		runQuiet("systemctl", "disable", "eyvescloud")
+		removePath("/etc/systemd/system/eyvescloud.service")
 		runQuiet("systemctl", "daemon-reload")
-		runQuiet("systemctl", "reset-failed", "clicd")
+		runQuiet("systemctl", "reset-failed", "eyvescloud")
 	}
 
 	if commandExists("rc-service") {
-		runQuiet("rc-service", "clicd", "stop")
+		runQuiet("rc-service", "eyvescloud", "stop")
 	}
 	if commandExists("rc-update") {
-		runQuiet("rc-update", "del", "clicd", "default")
+		runQuiet("rc-update", "del", "eyvescloud", "default")
 	}
-	removePath("/etc/init.d/clicd")
+	removePath("/etc/init.d/eyvescloud")
 }
 
 func removePath(path string) {
@@ -1542,7 +1542,7 @@ func shellQuote(value string) string {
 }
 
 func restartWebPanelForConfigChange() {
-	if err := restartService("clicd"); err != nil {
+	if err := restartService("eyvescloud"); err != nil {
 		cliPrintf("Web 面板重载跳过: %v\n", err)
 		return
 	}
@@ -1594,7 +1594,7 @@ func cliShowInfo() {
 	}
 
 	cliPrintln("\n--- 系统信息 ---")
-	cliPrintf("CLICD 版本: %s\n", version.Current())
+	cliPrintf("EYVESCLOUD 版本: %s\n", version.Current())
 	cliPrintf("Web 端口: %d\n", config.AppConfig.Port)
 	cliPrintf("管理员用户: %s\n", config.AppConfig.AdminUser)
 	cliPrintf("容器总数: %d\n", total)
@@ -1700,7 +1700,7 @@ func promptPortList(reader *bufio.Reader, label string) []int {
 }
 
 func detectCLIEnglish() bool {
-	lang := strings.ToLower(strings.TrimSpace(os.Getenv("CLICD_LANG")))
+	lang := strings.ToLower(strings.TrimSpace(os.Getenv("EYVESCLOUD_LANG")))
 	if lang == "en" || strings.HasPrefix(lang, "en_") || strings.HasPrefix(lang, "en-") {
 		return true
 	}

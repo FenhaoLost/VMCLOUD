@@ -28,9 +28,9 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/lxc"
-	"clicd/internal/safehttp"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
+	"eyvescloud/internal/safehttp"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -40,7 +40,7 @@ type Manager struct {
 }
 
 const ipv6GatewayLinkLocal = "fe80::1"
-const libvirtDefaultNetworkMarker = "/var/lib/clicd/kvm/default-network.created"
+const libvirtDefaultNetworkMarker = "/var/lib/eyvescloud/kvm/default-network.created"
 
 type usageSample struct {
 	CPUUsec    uint64
@@ -100,7 +100,7 @@ func BaseDir() string {
 	if pool := config.PreferredStoragePoolForContent(config.StorageContentKVM); pool != nil {
 		return filepath.Join(pool.Path, "kvm")
 	}
-	return "/var/lib/clicd/kvm"
+	return "/var/lib/eyvescloud/kvm"
 }
 
 func NewManager() *Manager {
@@ -646,6 +646,7 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		CreatedAt:            now,
 		ExpiresAt:            cfg.ExpiresAt,
 		CloudInitUserData:    cfg.CloudInitUserData,
+		Tenant:               cfg.Tenant,
 	}
 	container.NormalizeNetworkAssignments()
 	cfg.ReportProgress("metadata", "保存虚拟机配置")
@@ -917,7 +918,7 @@ func (m *Manager) ResetSSHPassword(id int, password string) (string, error) {
 		return "", fmt.Errorf("container not found: %d", id)
 	}
 	if IsWindowsImage(c.Template) {
-		return "", fmt.Errorf("Windows KVM administrator password cannot be reset from CLICD yet; change it inside Windows or reinstall to generate a new password")
+		return "", fmt.Errorf("Windows KVM administrator password cannot be reset from EYVESCLOUD yet; change it inside Windows or reinstall to generate a new password")
 	}
 	if c.Status != "running" {
 		return "", fmt.Errorf("KVM VM must be running before password reset")
@@ -1747,7 +1748,7 @@ func ensureDefaultNetwork() error {
     </dhcp>
   </ip>
 </network>`, network.Gateway, network.Netmask, network.DHCPStart, network.DHCPEnd)
-		tmpFile := filepath.Join(os.TempDir(), "clicd-default-net.xml")
+		tmpFile := filepath.Join(os.TempDir(), "eyvescloud-default-net.xml")
 		if err := os.WriteFile(tmpFile, []byte(netXML), 0644); err != nil {
 			return fmt.Errorf("failed to write default network XML: %v", err)
 		}
@@ -1756,7 +1757,7 @@ func ensureDefaultNetwork() error {
 			return fmt.Errorf("failed to define libvirt default network: %v, output: %s", err, string(out))
 		}
 		if err := os.MkdirAll(filepath.Dir(libvirtDefaultNetworkMarker), 0755); err == nil {
-			_ = os.WriteFile(libvirtDefaultNetworkMarker, []byte("created-by-clicd\n"), 0644)
+			_ = os.WriteFile(libvirtDefaultNetworkMarker, []byte("created-by-eyvescloud\n"), 0644)
 		}
 	}
 	// Start and autostart the default network
@@ -1861,8 +1862,8 @@ func createWindowsUnattendISO(target, hostname, adminPassword, mac string, ipv6s
 
 	answerPath := filepath.Join(dir, "Autounattend.xml")
 	setupScriptsDir := filepath.Join(dir, "$OEM$", "$$", "Setup", "Scripts")
-	clicdDir := filepath.Join(dir, "$OEM$", "$1", "CLICD")
-	for _, path := range []string{setupScriptsDir, clicdDir} {
+	eyvescloudDir := filepath.Join(dir, "$OEM$", "$1", "EYVESCLOUD")
+	for _, path := range []string{setupScriptsDir, eyvescloudDir} {
 		if err := os.MkdirAll(path, 0700); err != nil {
 			return err
 		}
@@ -1873,7 +1874,7 @@ func createWindowsUnattendISO(target, hostname, adminPassword, mac string, ipv6s
 	if err := os.WriteFile(filepath.Join(setupScriptsDir, "SetupComplete.cmd"), []byte(windowsSetupCompleteCMD()), 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(clicdDir, "FirstLogon.ps1"), []byte(windowsFirstLogonPowerShell(adminPassword, mac, ipv6s, ipv4s)), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(eyvescloudDir, "FirstLogon.ps1"), []byte(windowsFirstLogonPowerShell(adminPassword, mac, ipv6s, ipv4s)), 0600); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "SetupComplete.cmd"), []byte(windowsSetupCompleteCMD()), 0600); err != nil {
@@ -1907,10 +1908,10 @@ func firstAvailableCommand(names ...string) string {
 
 func windowsAutounattendXML(hostname, adminPassword string, windows11 bool) string {
 	if strings.TrimSpace(hostname) == "" {
-		hostname = "clicd-win"
+		hostname = "eyvescloud-win"
 	}
 	hostname = sanitizeWindowsComputerName(hostname)
-	setupCommand := `cmd.exe /c if exist C:\CLICD\FirstLogon.ps1 (powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CLICD\FirstLogon.ps1) else (for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File %d:\FirstLogon.ps1)`
+	setupCommand := `cmd.exe /c if exist C:\EYVESCLOUD\FirstLogon.ps1 (powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\EYVESCLOUD\FirstLogon.ps1) else (for %d in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %d:\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File %d:\FirstLogon.ps1)`
 	compatibilityCommands := ""
 	if windows11 {
 		compatibilityCommands = `
@@ -1946,8 +1947,8 @@ func windowsAutounattendXML(hostname, adminPassword string, windows11 bool) stri
       </ImageInstall>
       <UserData>
         <AcceptEula>true</AcceptEula>
-        <FullName>CLICD</FullName>
-        <Organization>CLICD</Organization>
+        <FullName>EYVESCLOUD</FullName>
+        <Organization>EYVESCLOUD</Organization>
       </UserData>%s
     </component>
   </settings>
@@ -1965,7 +1966,7 @@ func windowsAutounattendXML(hostname, adminPassword string, windows11 bool) stri
       <AutoLogon><Password><Value>%s</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><Username>Administrator</Username><LogonCount>1</LogonCount></AutoLogon>
       <UserAccounts><AdministratorPassword><Value>%s</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
       <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOEMRegistrationScreen>true</HideOEMRegistrationScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
-      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>CLICD Windows initialization</Description><CommandLine>%s</CommandLine></SynchronousCommand></FirstLogonCommands>
+      <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>EYVESCLOUD Windows initialization</Description><CommandLine>%s</CommandLine></SynchronousCommand></FirstLogonCommands>
     </component>
   </settings>
 </unattend>
@@ -2004,7 +2005,7 @@ func sanitizeWindowsComputerName(name string) string {
 	}
 	result := strings.Trim(b.String(), "-")
 	if result == "" {
-		return "clicd-win"
+		return "eyvescloud-win"
 	}
 	if len(result) > 15 {
 		result = result[:15]
@@ -2014,8 +2015,8 @@ func sanitizeWindowsComputerName(name string) string {
 
 func windowsSetupCompleteCMD() string {
 	return `@echo off
-if not exist C:\CLICD mkdir C:\CLICD
-if exist C:\CLICD\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CLICD\FirstLogon.ps1
+if not exist C:\EYVESCLOUD mkdir C:\EYVESCLOUD
+if exist C:\EYVESCLOUD\FirstLogon.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\EYVESCLOUD\FirstLogon.ps1
 exit /b 0
 `
 }
@@ -2024,15 +2025,15 @@ func windowsFirstLogonPowerShell(adminPassword, mac string, ipv6s []string, ipv4
 	commands := []string{
 		"$ErrorActionPreference='Continue'",
 		"$ProgressPreference='SilentlyContinue'",
-		"New-Item -ItemType Directory -Force -Path 'C:\\CLICD' | Out-Null",
-		"Start-Transcript -Path 'C:\\CLICD\\init.log' -Append | Out-Null",
+		"New-Item -ItemType Directory -Force -Path 'C:\\EYVESCLOUD' | Out-Null",
+		"Start-Transcript -Path 'C:\\EYVESCLOUD\\init.log' -Append | Out-Null",
 		"try {",
 		"net user Administrator " + shellQuoteWindows(adminPassword) + " /active:yes",
 		"Set-LocalUser -Name 'Administrator' -PasswordNeverExpires $true -ErrorAction SilentlyContinue",
 		"Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force",
 		windowsAdapterDiscoveryPowerShell(mac),
-		"$iface=Wait-ClicdNetworkAdapter",
-		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-ClicdNetworkAdapter }",
+		"$iface=Wait-EyvescloudNetworkAdapter",
+		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-EyvescloudNetworkAdapter }",
 		"if ($iface) { Set-NetIPInterface -InterfaceIndex $iface.ifIndex -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue }",
 		"if ($iface) { Set-DnsClientServerAddress -InterfaceIndex $iface.ifIndex -ResetServerAddresses -ErrorAction SilentlyContinue }",
 		"Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private -ErrorAction SilentlyContinue",
@@ -2043,8 +2044,8 @@ func windowsFirstLogonPowerShell(adminPassword, mac string, ipv6s []string, ipv4
 		"Enable-NetFirewallRule -Name 'RemoteDesktop*' -ErrorAction SilentlyContinue",
 		"Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue",
 		"netsh advfirewall firewall set rule group=\"remote desktop\" new enable=Yes | Out-Null",
-		"New-NetFirewallRule -DisplayName 'CLICD RDP TCP 3389' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
-		"New-NetFirewallRule -DisplayName 'CLICD RDP UDP 3389' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
+		"New-NetFirewallRule -DisplayName 'EYVESCLOUD RDP TCP 3389' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
+		"New-NetFirewallRule -DisplayName 'EYVESCLOUD RDP UDP 3389' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3389 -Profile Any -ErrorAction SilentlyContinue | Out-Null",
 		"$virtio=Get-Volume | Where-Object DriveType -eq 'CD-ROM' | ForEach-Object { $d=$_.DriveLetter; if ($d) { Get-ChildItem ($d+':\\') -Recurse -Filter 'qemu-ga-*.msi' -ErrorAction SilentlyContinue | Select-Object -First 1 } } | Select-Object -First 1",
 		"if ($virtio) { Start-Process msiexec.exe -ArgumentList '/i', $virtio.FullName, '/qn' -Wait }",
 		"Get-Service QEMU-GA,qemu-ga -ErrorAction SilentlyContinue | Set-Service -StartupType Automatic",
@@ -2063,13 +2064,13 @@ func windowsFirstLogonPowerShell(adminPassword, mac string, ipv6s []string, ipv4
 		networkScript := strings.Join(append([]string{
 			"$ErrorActionPreference='Continue'",
 			"$ProgressPreference='SilentlyContinue'",
-			"New-Item -ItemType Directory -Force -Path 'C:\\CLICD' | Out-Null",
+			"New-Item -ItemType Directory -Force -Path 'C:\\EYVESCLOUD' | Out-Null",
 		}, networkCommands...), "\r\n") + "\r\n"
 		commands = append(commands, windowsPersistentNetworkTaskPowerShell(networkScript))
 		commands = append(commands, networkCommands...)
 	}
 	commands = append(commands,
-		"New-Item -ItemType File -Force -Path 'C:\\CLICD\\init.done' | Out-Null",
+		"New-Item -ItemType File -Force -Path 'C:\\EYVESCLOUD\\init.done' | Out-Null",
 		"} finally { Stop-Transcript | Out-Null }",
 	)
 	return strings.Join(commands, "\r\n") + "\r\n"
@@ -2077,34 +2078,34 @@ func windowsFirstLogonPowerShell(adminPassword, mac string, ipv6s []string, ipv4
 
 func windowsPersistentNetworkTaskPowerShell(script string) string {
 	return strings.Join([]string{
-		"$clicdNetworkScript=@'",
+		"$eyvescloudNetworkScript=@'",
 		strings.TrimRight(script, "\r\n"),
 		"'@",
-		"Set-Content -Path 'C:\\CLICD\\ApplyNetwork.ps1' -Value $clicdNetworkScript -Encoding UTF8",
-		"$clicdNetworkAction=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\\CLICD\\ApplyNetwork.ps1'",
-		"$clicdNetworkTrigger=New-ScheduledTaskTrigger -AtStartup",
-		"Register-ScheduledTask -TaskName 'CLICD Network Init' -Action $clicdNetworkAction -Trigger $clicdNetworkTrigger -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null",
+		"Set-Content -Path 'C:\\EYVESCLOUD\\ApplyNetwork.ps1' -Value $eyvescloudNetworkScript -Encoding UTF8",
+		"$eyvescloudNetworkAction=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\\EYVESCLOUD\\ApplyNetwork.ps1'",
+		"$eyvescloudNetworkTrigger=New-ScheduledTaskTrigger -AtStartup",
+		"Register-ScheduledTask -TaskName 'EYVESCLOUD Network Init' -Action $eyvescloudNetworkAction -Trigger $eyvescloudNetworkTrigger -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null",
 	}, "\r\n")
 }
 
 func windowsAdapterDiscoveryPowerShell(mac string) string {
 	targetMAC := strings.ToUpper(strings.NewReplacer(":", "", "-", "", " ", "").Replace(strings.TrimSpace(mac)))
 	return strings.Join([]string{
-		"$clicdTargetMac=" + powerShellSingleQuote(targetMAC),
-		"function Get-ClicdNetworkAdapter {",
+		"$eyvescloudTargetMac=" + powerShellSingleQuote(targetMAC),
+		"function Get-EyvescloudNetworkAdapter {",
 		"  $adapters=@(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Disabled' })",
-		"  if ($clicdTargetMac) {",
-		"    $matched=$adapters | Where-Object { (($_.MacAddress -replace '[-:]','').ToUpperInvariant()) -eq $clicdTargetMac } | Sort-Object ifIndex | Select-Object -First 1",
+		"  if ($eyvescloudTargetMac) {",
+		"    $matched=$adapters | Where-Object { (($_.MacAddress -replace '[-:]','').ToUpperInvariant()) -eq $eyvescloudTargetMac } | Sort-Object ifIndex | Select-Object -First 1",
 		"    if ($matched) { return $matched }",
 		"  }",
 		"  $up=$adapters | Where-Object { $_.Status -eq 'Up' } | Sort-Object ifIndex | Select-Object -First 1",
 		"  if ($up) { return $up }",
 		"  return $adapters | Sort-Object ifIndex | Select-Object -First 1",
 		"}",
-		"function Wait-ClicdNetworkAdapter {",
+		"function Wait-EyvescloudNetworkAdapter {",
 		"  param([int]$Retries=90,[int]$DelaySeconds=4)",
 		"  for ($i=0; $i -lt $Retries; $i++) {",
-		"    $adapter=Get-ClicdNetworkAdapter",
+		"    $adapter=Get-EyvescloudNetworkAdapter",
 		"    if ($adapter) { return $adapter }",
 		"    Start-Sleep -Seconds $DelaySeconds",
 		"  }",
@@ -2124,11 +2125,11 @@ func windowsIPv6PowerShell(ipv6s []string, mac string) string {
 	}
 	return strings.Join([]string{
 		windowsAdapterDiscoveryPowerShell(mac),
-		"if (-not $iface) { $iface=Wait-ClicdNetworkAdapter }",
-		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-ClicdNetworkAdapter }",
-		"$clicdIPv6=@(" + strings.Join(quoted, ",") + ")",
+		"if (-not $iface) { $iface=Wait-EyvescloudNetworkAdapter }",
+		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-EyvescloudNetworkAdapter }",
+		"$eyvescloudIPv6=@(" + strings.Join(quoted, ",") + ")",
 		"if ($iface) {",
-		"  foreach ($ip in $clicdIPv6) {",
+		"  foreach ($ip in $eyvescloudIPv6) {",
 		"    Get-NetIPAddress -InterfaceIndex $iface.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue",
 		"    New-NetIPAddress -IPAddress $ip -PrefixLength 128 -InterfaceIndex $iface.ifIndex -SkipAsSource:$false -ErrorAction SilentlyContinue | Out-Null",
 		"  }",
@@ -2150,11 +2151,11 @@ func windowsIPv4PowerShell(ipv4s []string, mac string) string {
 	}
 	return strings.Join([]string{
 		windowsAdapterDiscoveryPowerShell(mac),
-		"if (-not $iface) { $iface=Wait-ClicdNetworkAdapter }",
-		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-ClicdNetworkAdapter }",
-		"$clicdIPv4=@(" + strings.Join(quoted, ",") + ")",
+		"if (-not $iface) { $iface=Wait-EyvescloudNetworkAdapter }",
+		"if ($iface) { Enable-NetAdapter -Name $iface.Name -Confirm:$false -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; $iface=Get-EyvescloudNetworkAdapter }",
+		"$eyvescloudIPv4=@(" + strings.Join(quoted, ",") + ")",
 		"if ($iface) {",
-		"  foreach ($ip in $clicdIPv4) {",
+		"  foreach ($ip in $eyvescloudIPv4) {",
 		"    Get-NetIPAddress -InterfaceIndex $iface.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ip } | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue",
 		"    New-NetIPAddress -IPAddress $ip -PrefixLength 32 -InterfaceIndex $iface.ifIndex -SkipAsSource:$false -ErrorAction SilentlyContinue | Out-Null",
 		"  }",
@@ -2882,9 +2883,9 @@ if command -v apk >/dev/null 2>&1; then
 	fi
 fi
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-clicd-root.conf <<'EOF'
+cat > /etc/ssh/sshd_config.d/99-eyvescloud-root.conf <<'EOF'
 PermitRootLogin yes
-PubkeyAuthentication __CLICD_PUBKEY_AUTH__
+PubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 ChallengeResponseAuthentication yes
@@ -2892,8 +2893,8 @@ EOF
 if [ -f /etc/ssh/sshd_config ]; then
 	grep -q '^PermitRootLogin ' /etc/ssh/sshd_config && sed -i 's/^PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config || printf '\nPermitRootLogin yes\n' >> /etc/ssh/sshd_config
 	grep -q '^#PermitRootLogin ' /etc/ssh/sshd_config && sed -i 's/^#PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config || true
-	grep -q '^PubkeyAuthentication ' /etc/ssh/sshd_config && sed -i 's/^PubkeyAuthentication .*/PubkeyAuthentication __CLICD_PUBKEY_AUTH__/' /etc/ssh/sshd_config || printf '\nPubkeyAuthentication __CLICD_PUBKEY_AUTH__\n' >> /etc/ssh/sshd_config
-	grep -q '^#PubkeyAuthentication ' /etc/ssh/sshd_config && sed -i 's/^#PubkeyAuthentication .*/PubkeyAuthentication __CLICD_PUBKEY_AUTH__/' /etc/ssh/sshd_config || true
+	grep -q '^PubkeyAuthentication ' /etc/ssh/sshd_config && sed -i 's/^PubkeyAuthentication .*/PubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__/' /etc/ssh/sshd_config || printf '\nPubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__\n' >> /etc/ssh/sshd_config
+	grep -q '^#PubkeyAuthentication ' /etc/ssh/sshd_config && sed -i 's/^#PubkeyAuthentication .*/PubkeyAuthentication __EYVESCLOUD_PUBKEY_AUTH__/' /etc/ssh/sshd_config || true
 	grep -q '^PasswordAuthentication ' /etc/ssh/sshd_config && sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || printf '\nPasswordAuthentication yes\n' >> /etc/ssh/sshd_config
 	grep -q '^#PasswordAuthentication ' /etc/ssh/sshd_config && sed -i 's/^#PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true
 	grep -q '^KbdInteractiveAuthentication ' /etc/ssh/sshd_config && sed -i 's/^KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config || printf '\nKbdInteractiveAuthentication yes\n' >> /etc/ssh/sshd_config
@@ -2908,7 +2909,7 @@ if [ -n "$SSH_PUBLIC_KEY" ]; then
 	chown -R root:root /root/.ssh 2>/dev/null || true
 fi
 if command -v chpasswd >/dev/null 2>&1; then
-	printf 'root:%s\n' "$ROOT_PASSWORD" | chpasswd 2>/tmp/clicd-chpasswd.log && echo "root password set via chpasswd" || echo "WARNING: chpasswd failed: $(cat /tmp/clicd-chpasswd.log 2>/dev/null)"
+	printf 'root:%s\n' "$ROOT_PASSWORD" | chpasswd 2>/tmp/eyvescloud-chpasswd.log && echo "root password set via chpasswd" || echo "WARNING: chpasswd failed: $(cat /tmp/eyvescloud-chpasswd.log 2>/dev/null)"
 elif command -v openssl >/dev/null 2>&1 && command -v usermod >/dev/null 2>&1; then
 	HASH=$(echo "$ROOT_PASSWORD" | openssl passwd -6 -stdin 2>/dev/null)
 	[ -n "$HASH" ] && usermod -p "$HASH" root 2>/dev/null && echo "root password set via openssl/usermod" || echo "WARNING: openssl/usermod failed"
@@ -2934,10 +2935,10 @@ if command -v chvt >/dev/null 2>&1; then
 	chvt 1 >/dev/null 2>&1 || true
 fi
 if [ -w /dev/tty1 ]; then
-	printf '\nCLICD VNC console is ready. Press Enter for login prompt.\n' >/dev/tty1 || true
+	printf '\nEYVESCLOUD VNC console is ready. Press Enter for login prompt.\n' >/dev/tty1 || true
 fi
 `
-	script = strings.ReplaceAll(script, "__CLICD_PUBKEY_AUTH__", pubkeyValue)
+	script = strings.ReplaceAll(script, "__EYVESCLOUD_PUBKEY_AUTH__", pubkeyValue)
 	return script
 }
 
@@ -2956,28 +2957,28 @@ func kvmDesktopSetupScript(image Image) string {
 	}
 	return `if command -v apt-get >/dev/null 2>&1; then
 	{
-		exec >>/var/log/clicd-desktop-setup.log 2>&1
-		echo "CLICD XFCE setup started at $(date -Is)"
+		exec >>/var/log/eyvescloud-desktop-setup.log 2>&1
+		echo "EYVESCLOUD XFCE setup started at $(date -Is)"
 		export DEBIAN_FRONTEND=noninteractive
 		export APT_LISTCHANGES_FRONTEND=none
 		apt-get update || true
 		apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold ` + packages + ` || apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold xfce4 lightdm lightdm-gtk-greeter dbus-x11 xorg || true
-		if command -v useradd >/dev/null 2>&1 && ! id clicd >/dev/null 2>&1; then
-			useradd -m -s /bin/bash clicd || true
+		if command -v useradd >/dev/null 2>&1 && ! id eyvescloud >/dev/null 2>&1; then
+			useradd -m -s /bin/bash eyvescloud || true
 		fi
-		if command -v chpasswd >/dev/null 2>&1 && id clicd >/dev/null 2>&1; then
-			printf 'clicd:%s\n' "$ROOT_PASSWORD" | chpasswd || true
+		if command -v chpasswd >/dev/null 2>&1 && id eyvescloud >/dev/null 2>&1; then
+			printf 'eyvescloud:%s\n' "$ROOT_PASSWORD" | chpasswd || true
 		fi
-		usermod -aG sudo clicd >/dev/null 2>&1 || true
-		usermod -aG autologin clicd >/dev/null 2>&1 || true
-		if id clicd >/dev/null 2>&1; then
-			printf 'startxfce4\n' >/home/clicd/.xsession || true
-			chown clicd:clicd /home/clicd/.xsession >/dev/null 2>&1 || true
+		usermod -aG sudo eyvescloud >/dev/null 2>&1 || true
+		usermod -aG autologin eyvescloud >/dev/null 2>&1 || true
+		if id eyvescloud >/dev/null 2>&1; then
+			printf 'startxfce4\n' >/home/eyvescloud/.xsession || true
+			chown eyvescloud:eyvescloud /home/eyvescloud/.xsession >/dev/null 2>&1 || true
 		fi
 		mkdir -p /etc/lightdm/lightdm.conf.d
-		cat >/etc/lightdm/lightdm.conf.d/50-clicd-autologin.conf <<'EOF'
+		cat >/etc/lightdm/lightdm.conf.d/50-eyvescloud-autologin.conf <<'EOF'
 [Seat:*]
-autologin-user=clicd
+autologin-user=eyvescloud
 autologin-user-timeout=0
 user-session=xfce
 greeter-session=lightdm-gtk-greeter
@@ -2993,7 +2994,7 @@ EOF
 			systemctl restart lightdm.service >/dev/null 2>&1 || systemctl start lightdm.service >/dev/null 2>&1 || true
 		fi
 		apt-get clean || true
-		echo "CLICD XFCE setup finished at $(date -Is)"
+		echo "EYVESCLOUD XFCE setup finished at $(date -Is)"
 	} || true
 fi
 `
@@ -3960,7 +3961,7 @@ for IPV6_ADDR in $IPV6_ADDRS; do
 done
 ip -6 route replace default via "$IPV6_GW" dev "$IFACE" onlink metric 100
 mkdir -p /usr/local/sbin /etc/systemd/system /etc/network/if-up.d /etc/local.d
-cat > /usr/local/sbin/clicd-kvm-ipv6-init <<'EOF'
+cat > /usr/local/sbin/eyvescloud-kvm-ipv6-init <<'EOF'
 #!/bin/sh
 set -eu
 IPV6_ADDRS="` + strings.Join(ipv6s, " ") + `"
@@ -3978,38 +3979,38 @@ for IPV6_ADDR in $IPV6_ADDRS; do
 done
 ip -6 route replace default via "$IPV6_GW" dev "$IFACE" onlink metric 100
 EOF
-chmod +x /usr/local/sbin/clicd-kvm-ipv6-init
-cat > /etc/systemd/system/clicd-kvm-ipv6.service <<'EOF'
+chmod +x /usr/local/sbin/eyvescloud-kvm-ipv6-init
+cat > /etc/systemd/system/eyvescloud-kvm-ipv6.service <<'EOF'
 [Unit]
-Description=CLICD KVM IPv6 setup
+Description=EYVESCLOUD KVM IPv6 setup
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/clicd-kvm-ipv6-init
+ExecStart=/usr/local/sbin/eyvescloud-kvm-ipv6-init
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl enable --now clicd-kvm-ipv6.service >/dev/null 2>&1 || true
-cat > /etc/local.d/clicd-kvm-ipv6.start <<'EOF'
+systemctl enable --now eyvescloud-kvm-ipv6.service >/dev/null 2>&1 || true
+cat > /etc/local.d/eyvescloud-kvm-ipv6.start <<'EOF'
 #!/bin/sh
-/usr/local/sbin/clicd-kvm-ipv6-init || true
+/usr/local/sbin/eyvescloud-kvm-ipv6-init || true
 EOF
-chmod +x /etc/local.d/clicd-kvm-ipv6.start
+chmod +x /etc/local.d/eyvescloud-kvm-ipv6.start
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add local default >/dev/null 2>&1 || true
 	rc-service local restart >/dev/null 2>&1 || true
 fi
-cat > /etc/network/if-up.d/clicd-kvm-ipv6 <<'EOF'
+cat > /etc/network/if-up.d/eyvescloud-kvm-ipv6 <<'EOF'
 #!/bin/sh
 [ "$IFACE" = "lo" ] && exit 0
-/usr/local/sbin/clicd-kvm-ipv6-init || true
+/usr/local/sbin/eyvescloud-kvm-ipv6-init || true
 EOF
-chmod +x /etc/network/if-up.d/clicd-kvm-ipv6
+chmod +x /etc/network/if-up.d/eyvescloud-kvm-ipv6
 `
 }
 

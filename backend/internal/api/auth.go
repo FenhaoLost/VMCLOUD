@@ -3,19 +3,21 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	TwoFACode string `json:"twofa_code"`
 }
 
 type LoginResponse struct {
@@ -45,6 +47,10 @@ const (
 	authTypeAdmin   = "admin"
 	authTypeSubUser = "sub_user"
 	authTypeAPIKey  = "api_key"
+
+	// jwtIssuer / jwtAudience 用于校验令牌签发方与用途，防止跨服务令牌重放。
+	jwtIssuer   = "eyvescloud"
+	jwtAudience = "eyvescloud-panel"
 )
 
 func withAuthContext(r *http.Request, auth AuthContext) *http.Request {
@@ -183,8 +189,8 @@ func claimsFromToken(tokenString string) (jwt.MapClaims, bool) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
-		return []byte(config.AppConfig.JWTSecret), nil
-	})
+		return []byte(config.GetJWTSecret()), nil
+	}, jwt.WithIssuer(jwtIssuer), jwt.WithAudience(jwtAudience))
 	if err != nil || !token.Valid {
 		return nil, false
 	}
@@ -301,10 +307,40 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	loginLimiter.reset(rateKey)
 	RecordLoginLog(req.Username, ip, ua, true)
 
+	// 两步验证：若已启用，必须在密码正确后提供动态口令或一次性备份码。
+	config.AppConfigMu.RLock()
+	totpSecret := config.AppConfig.AdminTOTPSecret
+	totpEnabled := config.AppConfig.AdminTOTPEnabled
+	backupHashes := append([]string(nil), config.AppConfig.AdminBackupCodes...)
+	config.AppConfigMu.RUnlock()
+	if totpEnabled {
+		// 未提供验证码时，明确告知前端需进入两步验证步骤。
+		if strings.TrimSpace(req.TwoFACode) == "" {
+			jsonResponse(w, http.StatusUnauthorized, APIResponse{
+				Success: false, Message: "Two-factor verification required",
+				Data: map[string]bool{"twofa_required": true},
+			})
+			return
+		}
+		passed, consumed := adminVerify2FA(totpSecret, totpEnabled, req.TwoFACode, backupHashes)
+		if !passed {
+			loginLimiter.recordFail(rateKey)
+			RecordLoginLog(req.Username, ip, ua, false)
+			jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Two-factor verification failed"})
+			return
+		}
+		// 若使用了备份码，持久化消费后的哈希列表。
+		if len(consumed) != len(backupHashes) && consumed != nil {
+			_ = config.MutateGlobal(func(cfg *config.EyvescloudConfig) { cfg.AdminBackupCodes = consumed })
+		}
+	}
+
 	// Generate JWT token
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"username":      req.Username,
 		"token_version": adminTokenVersion,
+		"iss":           jwtIssuer,
+		"aud":           jwtAudience,
 		"exp":           time.Now().Add(24 * time.Hour).Unix(),
 		"iat":           time.Now().Unix(),
 	})
@@ -340,8 +376,8 @@ func HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.NewPassword) < 8 {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "New password must be at least 8 characters"})
+	if err := validateStrongPassword(req.NewPassword); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
 
@@ -356,7 +392,7 @@ func HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config.MutateGlobal(func(cfg *config.ClicdConfig) {
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		cfg.AdminPassHash = string(hash)
 		cfg.AdminTokenVersion++ // invalidate all previously issued admin tokens
 	})
@@ -416,4 +452,25 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	})
+}
+
+// validateStrongPassword 企业级密码策略：至少 10 位，且同时包含字母与数字。
+func validateStrongPassword(password string) error {
+	if len(password) < 10 {
+		return fmt.Errorf("密码长度至少 10 位")
+	}
+	hasLetter := false
+	hasDigit := false
+	for _, r := range password {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		}
+	}
+	if !hasLetter || !hasDigit {
+		return fmt.Errorf("密码必须同时包含字母和数字")
+	}
+	return nil
 }

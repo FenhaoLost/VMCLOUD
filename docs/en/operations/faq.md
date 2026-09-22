@@ -2,19 +2,19 @@
 
 ## Which version does the install script install by default?
 
-The latest version from GitHub Releases. The script defaults to `CLICD_VERSION=latest` and downloads the Linux AMD64 or ARM64 artifact from `releases/latest` according to the host architecture.
+The latest version from GitHub Releases. The script defaults to `EYVESCLOUD_VERSION=latest` and downloads the Linux AMD64 or ARM64 artifact from `releases/latest` according to the host architecture.
 
 ## Can I pin a specific version?
 
 Yes:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EyvesCloud/EyvesCloud/main/install.sh | sudo CLICD_VERSION=v1.1.29 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.29 sh
 ```
 
 ## What is the relationship between the Controller and workers?
 
-The Controller is the server running the panel that centrally manages multiple workers. A worker is a server running `clicd agent`; after registering with the Controller, it reports heartbeats automatically, and the Controller can view and operate the worker's containers directly. The same binary can be either a Controller or a worker.
+The Controller is the server running the panel that centrally manages multiple workers. A worker is a server running `eyvescloud agent`; after registering with the Controller, it reports heartbeats automatically, and the Controller can view and operate the worker's containers directly. The same binary can be either a Controller or a worker.
 
 ## A worker node keeps showing "Pending". What should I do?
 

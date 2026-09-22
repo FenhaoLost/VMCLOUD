@@ -12,7 +12,7 @@ The System Settings page centralizes panel-level configuration, with the followi
 
 - Enables the panel access allowlist, allowing only specified IPs/networks to reach the web panel.
 - Configures trusted reverse proxy addresses to avoid false blocks behind a proxy.
-- Equivalent to the `clicd access-policy` CLI; takes effect immediately after saving.
+- Equivalent to the `eyvescloud access-policy` CLI; takes effect immediately after saving.
 
 ## Notifications
 

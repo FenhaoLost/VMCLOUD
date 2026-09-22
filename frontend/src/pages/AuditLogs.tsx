@@ -27,6 +27,11 @@ export default function AuditLogs() {
     return () => window.clearInterval(timer)
   }, [fetchData])
 
+  // Clamp the active page when the log list shrinks after a refresh.
+  useEffect(() => {
+    setPage(p => Math.min(p, Math.max(1, Math.ceil(logs.length / PAGE_SIZE))))
+  }, [logs.length])
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -36,7 +41,8 @@ export default function AuditLogs() {
   }
 
   const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE))
-  const pageLogs = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const safePage = Math.min(page, totalPages)
+  const pageLogs = logs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
 
   return (
     <div className="space-y-4">

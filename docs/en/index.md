@@ -19,7 +19,7 @@ features:
   - title: Controller-Agent Multi-node
     details: The Controller generates a one-line install script; the Agent auto-registers after running it, and its containers can be viewed and operated from the Controller.
   - title: Web and CLI in Parallel
-    details: Administrators can use the web panel or drop into the clicd CLI for maintenance tasks.
+    details: Administrators can use the web panel or drop into the eyvescloud CLI for maintenance tasks.
   - title: Automation Friendly
     details: /api/v1 provides management APIs for containers, images, snapshots, security, logs, sub-users, and API keys.
   - title: Policies and Quotas

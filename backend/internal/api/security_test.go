@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 func TestDetectReflectionAbuseIgnoresSingleDNSResolver(t *testing.T) {
@@ -140,7 +140,7 @@ func TestCancelPendingSecurityStops(t *testing.T) {
 }
 
 func resetSecurityTestConfig() {
-	config.AppConfig = &config.ClicdConfig{
+	config.AppConfig = &config.EyvescloudConfig{
 		Containers: []config.Container{},
 		AuditLogs:  []config.AuditLog{},
 		Tasks:      []config.SavedTask{},

@@ -298,6 +298,7 @@ func ensureSchema() error {
 			id TEXT PRIMARY KEY,
 			name TEXT,
 			key_hash TEXT,
+			key_fingerprint TEXT,
 			prefix TEXT,
 			ip_whitelist TEXT,
 			created_at TEXT,
@@ -450,6 +451,7 @@ func ensureSchemaMigrations() error {
 		{"api_keys", "disabled", "INTEGER"},
 		{"api_keys", "container_uuids", "TEXT"},
 		{"api_keys", "last_used_ip", "TEXT"},
+		{"api_keys", "key_fingerprint", "TEXT"},
 		{"tasks", "ip", "TEXT"},
 		{"tasks", "user_agent", "TEXT"},
 		{"tasks", "cfg_network_down_mbps", "INTEGER NOT NULL DEFAULT 0"},
@@ -589,7 +591,7 @@ func ensureColumn(table, name, def string) (bool, error) {
 	return err == nil, err
 }
 
-func loadConfigFromDB() (*ClicdConfig, bool, error) {
+func loadConfigFromDB() (*EyvescloudConfig, bool, error) {
 	meta := map[string]string{}
 	rows, err := db.Query("SELECT key, value FROM app_meta")
 	if err != nil {
@@ -610,9 +612,11 @@ func loadConfigFromDB() (*ClicdConfig, bool, error) {
 		return nil, false, nil
 	}
 
-	cfg := &ClicdConfig{
+	cfg := &EyvescloudConfig{
 		AdminUser:            meta["admin_user"],
 		AdminPassHash:        meta["admin_pass_hash"],
+		AdminTOTPSecret:      meta["admin_totp_secret"],
+		AdminTOTPEnabled:     atob(meta["admin_totp_enabled"]),
 		JWTSecret:            meta["jwt_secret"],
 		Port:                 atoi(meta["port"]),
 		DataDir:              meta["data_dir"],
@@ -627,6 +631,22 @@ func loadConfigFromDB() (*ClicdConfig, bool, error) {
 		SecurityAutoShutdown: atob(meta["security_auto_shutdown"]),
 		TaskConcurrency:      atoi(meta["task_concurrency"]),
 		Language:             meta["language"],
+		AuditRetentionDays:   atoi(meta["audit_retention_days"]),
+	}
+	if raw := strings.TrimSpace(meta["backup_settings"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.BackupSettings)
+	}
+	if raw := strings.TrimSpace(meta["backups"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.Backups)
+	}
+	if raw := strings.TrimSpace(meta["api_rate_limit"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.APIRateLimit)
+	}
+	if raw := strings.TrimSpace(meta["tenants"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.Tenants)
+	}
+	if raw := strings.TrimSpace(meta["admin_backup_codes"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.AdminBackupCodes)
 	}
 	if raw := strings.TrimSpace(meta["ssl"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.SSL)
@@ -769,9 +789,17 @@ func saveMeta(tx *sql.Tx) error {
 	policyRulesJSON, _ := json.Marshal(AppConfig.PolicyRules)
 	policyHistoryJSON, _ := json.Marshal(AppConfig.PolicyHistory)
 	nodesJSON, _ := json.Marshal(AppConfig.Nodes)
+	nCIbackup, _ := json.Marshal(AppConfig.AdminBackupCodes)
+	backupSettingsJSON, _ := json.Marshal(AppConfig.BackupSettings)
+	backupsJSON, _ := json.Marshal(AppConfig.Backups)
+	rateLimitJSON, _ := json.Marshal(AppConfig.APIRateLimit)
+	tenantsJSON, _ := json.Marshal(AppConfig.Tenants)
 	values := map[string]string{
 		"admin_user":             AppConfig.AdminUser,
 		"admin_pass_hash":        AppConfig.AdminPassHash,
+		"admin_totp_secret":      AppConfig.AdminTOTPSecret,
+		"admin_totp_enabled":     btoa(AppConfig.AdminTOTPEnabled),
+		"admin_backup_codes":     string(nCIbackup),
 		"jwt_secret":             AppConfig.JWTSecret,
 		"port":                   strconv.Itoa(AppConfig.Port),
 		"data_dir":               AppConfig.DataDir,
@@ -799,6 +827,11 @@ func saveMeta(tx *sql.Tx) error {
 		"policy_rules":           string(policyRulesJSON),
 		"policy_history":         string(policyHistoryJSON),
 		"nodes":                  string(nodesJSON),
+		"audit_retention_days":   strconv.Itoa(AppConfig.AuditRetentionDays),
+		"backup_settings":        string(backupSettingsJSON),
+		"backups":                string(backupsJSON),
+		"api_rate_limit":         string(rateLimitJSON),
+		"tenants":                string(tenantsJSON),
 		"schema_version":         "1",
 		"updated_at":             time.Now().Format("2006-01-02 15:04:05"),
 	}
@@ -892,8 +925,8 @@ func saveAPIKeys(tx *sql.Tx) error {
 	for _, k := range AppConfig.ApiKeys {
 		scopes := encodeStringSlice(k.Scopes)
 		containerUUIDs := encodeStringSlice(k.ContainerUUIDs)
-		if _, err := tx.Exec(`INSERT INTO api_keys(id, name, key_hash, prefix, ip_whitelist, created_at, last_used, scopes, expires_at, disabled, container_uuids, last_used_ip)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, k.Name, k.KeyHash, k.Prefix, k.IPWhitelist, k.CreatedAt, k.LastUsed, scopes, k.ExpiresAt, boolInt(k.Disabled), containerUUIDs, k.LastUsedIP); err != nil {
+		if _, err := tx.Exec(`INSERT INTO api_keys(id, name, key_hash, key_fingerprint, prefix, ip_whitelist, created_at, last_used, scopes, expires_at, disabled, container_uuids, last_used_ip)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, k.ID, k.Name, k.KeyHash, k.KeyFingerprint, k.Prefix, k.IPWhitelist, k.CreatedAt, k.LastUsed, scopes, k.ExpiresAt, boolInt(k.Disabled), containerUUIDs, k.LastUsedIP); err != nil {
 			return err
 		}
 	}
@@ -1264,7 +1297,7 @@ func loadStringList(table, valueColumn, keyColumn, key string) ([]string, error)
 }
 
 func loadAPIKeys() ([]ApiKeyConfig, error) {
-	rows, err := db.Query(`SELECT id, name, key_hash, prefix, ip_whitelist, created_at, last_used, scopes, expires_at, disabled, container_uuids, last_used_ip FROM api_keys ORDER BY created_at, id`)
+	rows, err := db.Query(`SELECT id, name, key_hash, key_fingerprint, prefix, ip_whitelist, created_at, last_used, scopes, expires_at, disabled, container_uuids, last_used_ip FROM api_keys ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1272,11 +1305,12 @@ func loadAPIKeys() ([]ApiKeyConfig, error) {
 	result := []ApiKeyConfig{}
 	for rows.Next() {
 		var k ApiKeyConfig
-		var scopes, expiresAt, containerUUIDs, lastUsedIP sql.NullString
+		var keyFingerprint, scopes, expiresAt, containerUUIDs, lastUsedIP sql.NullString
 		var disabled sql.NullInt64
-		if err := rows.Scan(&k.ID, &k.Name, &k.KeyHash, &k.Prefix, &k.IPWhitelist, &k.CreatedAt, &k.LastUsed, &scopes, &expiresAt, &disabled, &containerUUIDs, &lastUsedIP); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.KeyHash, &keyFingerprint, &k.Prefix, &k.IPWhitelist, &k.CreatedAt, &k.LastUsed, &scopes, &expiresAt, &disabled, &containerUUIDs, &lastUsedIP); err != nil {
 			return nil, err
 		}
+		k.KeyFingerprint = keyFingerprint.String
 		k.Scopes = decodeStringSlice(scopes.String)
 		k.ExpiresAt = expiresAt.String
 		k.Disabled = disabled.Valid && disabled.Int64 != 0
@@ -1489,7 +1523,7 @@ func loadSnapshots() ([]Snapshot, error) {
 	return result, rows.Err()
 }
 
-func loadLegacyJSONConfig(path string) (*ClicdConfig, bool, error) {
+func loadLegacyJSONConfig(path string) (*EyvescloudConfig, bool, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil, false, nil
@@ -1497,7 +1531,7 @@ func loadLegacyJSONConfig(path string) (*ClicdConfig, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to read legacy config: %v", err)
 	}
-	cfg := &ClicdConfig{}
+	cfg := &EyvescloudConfig{}
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, false, fmt.Errorf("failed to parse legacy config: %v", err)
 	}

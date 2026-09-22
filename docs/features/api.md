@@ -1,6 +1,6 @@
 # API 集成
 
-CLICD 继续兼容旧版 `/api` 接口，已有对接无需修改。新接入推荐使用 `/api/v1` 接口，下面的清单均为 v1；容器列表推荐 `GET /api/v1/containers`。
+EYVESCLOUD 继续兼容旧版 `/api` 接口，已有对接无需修改。新接入推荐使用 `/api/v1` 接口，下面的清单均为 v1；容器列表推荐 `GET /api/v1/containers`。
 
 ## 认证
 
@@ -420,6 +420,91 @@ print(resp.json())
 | POST | `/api/v1/api-keys` | 创建 API Key |
 | PATCH | `/api/v1/api-keys/{id}` | 更新 API Key |
 | DELETE | `/api/v1/api-keys/{id}` | 删除 API Key |
+
+## 企业化开发接口
+
+面向企业级部署开放的账号与安全、多租户、容灾备份、审计合规、可观测性与 API 治理接口。除 `health` 外均需管理员权限（`admin:access` scope 的 API Key 或管理员登录态）。
+
+### 账号两步验证（TOTP）
+
+按 RFC 6238 实现的双因素认证。只有**管理员登录态**或持有 `admin:access` 的 Key 可调；接口位于 `/api/2fa/*`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/2fa/status` | 两步验证状态：`{ enabled, has_secret }` |
+| POST | `/api/2fa/setup` | 生成新的 TOTP 密钥（仅未启用时），返回 `{ secret, otpauth_uri }` |
+| POST | `/api/2fa/enable` | 携带 `{ code, backup_codes_count? }` 启用，返回明文备份码 `{ backup_codes }` |
+| POST | `/api/2fa/disable` | 携带 `{ code }`（动态码或备份码）关闭 |
+| POST | `/api/2fa/regenerate-backup-codes` | 携带 `{ code }` 换发一批新备份码 |
+
+```json
+// POST /api/2fa/enable   body: { "code": "123456", "backup_codes_count": 8 }
+{ "success": true, "data": { "backup_codes": ["abc-def-ghi-jkl", "..."] } }
+```
+
+> 登录流程：仅密码提交后，若已启用两步验证，后端返回 `401` 且 `data.twofa_required=true`；再提交动态口令或备份码完成登录。
+
+### 多租户
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/tenants` | 租户列表（含容器/配额用量统计） |
+| POST | `/api/v1/tenants` | 创建租户；body: `{ id, name, description?, container_quota?, vcpu_quota?, ram_quota_mb?, disk_quota_gb? }` |
+| PUT | `/api/v1/tenants/{id}` | 更新租户（局部字段覆盖） |
+| DELETE | `/api/v1/tenants/{id}` | 删除租户（仅允许空租户） |
+| PUT | `/api/v1/containers/{id}/tenant` | 设置容器所属租户；body: `{ "tenant": "tenant-id" }` |
+| PUT | `/api/v1/sub-users/{id}/tenant` | 设置子用户所属租户；body: `{ "tenant": "tenant-id" }` |
+
+```json
+// GET /api/v1/tenants
+{ "success": true, "data": [ { "id": "reseller-a", "name": "Reseller A",
+  "container_quota": 20, "vcpu_quota": 16, "ram_quota_mb": 16384, "disk_quota_gb": 500,
+  "enabled": true, "usage_containers": 3, "usage_vcpu": 3, "usage_ram_mb": 1536, "usage_disk_gb": 90 } ] }
+```
+
+### 容灾恢复（配置备份）
+
+备份内容为完整配置 JSON，存放**固定安全目录**；下载/还原仅允许已登记的真实备份文件，防止任意文件读写。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/backup/settings` | 备份设置：`{ enabled, interval_hours, keep, directory, last_backup_at, last_backup_file, backup_count }` |
+| PUT | `/api/v1/backup/settings` | 更新：`{ enabled, interval_hours, keep }`（目录由后端固定） |
+| POST | `/api/v1/backup` | 立即创建一份备份 |
+| GET | `/api/v1/backup/list` | 备份记录列表 |
+| GET | `/api/v1/backup/download?file={filename}` | 下载备份（**鉴权下载**，取回原始 JSON 文件） |
+| POST | `/api/v1/backup/restore` | 还原：`{ file, confirm: true }`（破坏性，必须显式确认） |
+
+### 审计合规
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/audit/settings` | 审计保留设置：`{ retention_days, audit_log_count, retention_notes }` |
+| PUT | `/api/v1/audit/settings` | 更新：`{ retention_days }`（0-3650，0 表示永久保留） |
+| GET | `/api/v1/audit-logs/export?format=csv\|json` | 导出审计日志（**鉴权下载**，需 `admin:access`） |
+
+### 外部告警通知
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/notifications` | 推送设置：`{ security_alerts_enabled, min_severity, webhook_url, smtp_enabled, smtp_server, smtp_port, smtp_user, smtp_from, smtp_to, smtp_password_set }` |
+| PUT | `/api/v1/notifications` | 更新设置（SMTP 密码传空表示保留原值；webhook 仅允许 http/https 且不得内嵌凭据） |
+| POST | `/api/v1/notifications/test` | 通过已配置通道发送一条测试告警 |
+
+### API 治理（限流）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/rate-limit/settings` | 限流设置：`{ enabled, per_minute, scope: "/api/v1", notes }` |
+| PUT | `/api/v1/rate-limit/settings` | 更新：`{ enabled, per_minute }`（按客户端 IP 在 1 分钟窗口内限制版本化接口请求） |
+
+### 可观测性与契约
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/health` | **公开**存活探针：`{ status, version, uptime, time }`（供负载均衡/监控使用） |
+| GET | `/api/v1/health/detail` | 管理员可见的运行时指标（goroutine、内存、容器/节点/子用户数、任务数等） |
+| GET | `/api/v1/openapi.json` | 精简 API 契约描述 |
 
 ## 返回样例
 
@@ -918,17 +1003,17 @@ print(resp.json())
   "GET /api/v1/api-keys": {
     "success": true,
     "data": [
-      { "id": "c271023f", "name": "Test", "prefix": "clicd_sk_dd9d...", "ip_whitelist": "", "created_at": "2026-06-08 15:44:40", "last_used": "2026-06-08 15:46:10", "scopes": ["*"], "expires_at": "", "disabled": false, "container_uuids": [], "last_used_ip": "198.51.100.23" }
+      { "id": "c271023f", "name": "Test", "prefix": "eyvescloud_sk_dd9d...", "ip_whitelist": "", "created_at": "2026-06-08 15:44:40", "last_used": "2026-06-08 15:46:10", "scopes": ["*"], "expires_at": "", "disabled": false, "container_uuids": [], "last_used_ip": "198.51.100.23" }
     ]
   },
   "POST /api/v1/api-keys": {
     "success": true,
     "message": "API key created. Save this key now - it won't be shown again.",
-    "data": { "id": "a1b2c3d4", "name": "Automation", "key": "clicd_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "prefix": "clicd_sk_xxxx...", "ip_whitelist": "198.51.100.23", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
+    "data": { "id": "a1b2c3d4", "name": "Automation", "key": "eyvescloud_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "prefix": "eyvescloud_sk_xxxx...", "ip_whitelist": "198.51.100.23", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
   },
   "PATCH /api/v1/api-keys/{id}": {
     "success": true,
-    "data": { "id": "a1b2c3d4", "name": "Automation", "prefix": "clicd_sk_xxxx...", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
+    "data": { "id": "a1b2c3d4", "name": "Automation", "prefix": "eyvescloud_sk_xxxx...", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
   },
   "DELETE /api/v1/api-keys/{id}": {
     "success": true,

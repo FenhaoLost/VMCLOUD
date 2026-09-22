@@ -1,14 +1,32 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useState } from 'react'
-import { Bell, Clock, Globe, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Terminal, Upload, UserCog } from 'lucide-react'
+import { Bell, Clock, Copy, Database, Download, Gauge, Globe, KeyRound, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Smartphone, Terminal, Trash2, Upload, UserCog } from 'lucide-react'
 import {
+  BackupRecord,
   changePassword,
   changeUsername,
+  createBackup,
+  disable2FA,
+  enable2FA,
+  get2FAStatus,
+  getAuditSettings,
+  getBackupList,
+  getBackupSettings,
+  getHealthDetail,
   getLoginLogs,
   getNotificationSettings,
   getPanelAccessPolicy,
+  getRateLimitSettings,
   getSSLSettings,
   getTaskQueueSettings,
   getWebSSHOriginSettings,
+  HealthDetail,
+  regenerate2FABackupCodes,
+  restoreBackup,
+  setup2FA,
+  TwoFAStatus,
+  updateAuditSettings,
+  updateBackupSettings,
+  updateRateLimitSettings,
   LoginLog,
   NotificationSettings,
   PanelAccessPolicy,
@@ -26,11 +44,15 @@ import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 
-type SettingsSection = 'tasks' | 'account' | 'access' | 'webssh' | 'ssl' | 'logs' | 'notify'
+type SettingsSection = 'tasks' | 'account' | 'security' | 'audit' | 'backup' | 'ratelimit' | 'access' | 'webssh' | 'ssl' | 'logs' | 'notify'
 
 const settingsSections = [
   { id: 'tasks', label: '任务队列', icon: ListTodo },
   { id: 'account', label: '账号设置', icon: UserCog },
+  { id: 'security', label: '两步验证', icon: Smartphone },
+  { id: 'audit', label: '审计合规', icon: Clock },
+  { id: 'backup', label: '容灾备份', icon: Database },
+  { id: 'ratelimit', label: 'API 限流', icon: Gauge },
   { id: 'access', label: '访问来源', icon: Shield },
   { id: 'webssh', label: 'WebSSH 访问', icon: Terminal },
   { id: 'ssl', label: 'SSL 证书', icon: ShieldCheck },
@@ -72,6 +94,33 @@ export default function Settings() {
   const [trustedProxiesText, setTrustedProxiesText] = useState('')
   const [savingAccessPolicy, setSavingAccessPolicy] = useState(false)
   const [activeSection, setActiveSection] = useState<SettingsSection>('tasks')
+
+  // 两步验证 (TOTP)
+  const [twoFA, setTwoFA] = useState<TwoFAStatus | null>(null)
+  const [twoFASetup, setTwoFASetup] = useState<{ secret: string; otpauth_uri: string } | null>(null)
+  const [twoFACode, setTwoFACode] = useState('')
+  const [backupCodes, setBackupCodes] = useState<string[]>([])
+  const [verifyCode, setVerifyCode] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+
+  // 审计合规
+  const [auditDays, setAuditDays] = useState(90)
+  const [savingAudit, setSavingAudit] = useState(false)
+
+  // 容灾备份
+  const [backupEnabled, setBackupEnabled] = useState(false)
+  const [backupInterval, setBackupInterval] = useState(24)
+  const [backupKeep, setBackupKeep] = useState(14)
+  const [backups, setBackups] = useState<BackupRecord[]>([])
+  const [creatingBackup, setCreatingBackup] = useState(false)
+
+  // API 限流
+  const [rateLimitEnabled, setRateLimitEnabled] = useState(false)
+  const [rateLimitPerMinute, setRateLimitPerMinute] = useState(120)
+  const [savingRateLimit, setSavingRateLimit] = useState(false)
+
+  // 健康详情
+  const [health, setHealth] = useState<HealthDetail | null>(null)
 
   // 告警推送
   const [notify, setNotify] = useState<NotificationSettings | null>(null)
@@ -174,6 +223,68 @@ export default function Settings() {
     }
   }, [])
 
+  const fetch2FA = useCallback(async () => {
+    try {
+      const res = await get2FAStatus()
+      const data = res.data.data
+      if (data) setTwoFA(data)
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
+  const fetchAudit = useCallback(async () => {
+    try {
+      const res = await getAuditSettings()
+      const data = res.data.data
+      if (data) setAuditDays(data.retention_days)
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
+  const fetchBackup = useCallback(async () => {
+    try {
+      const res = await getBackupSettings()
+      const data = res.data.data
+      if (data) {
+        setBackupEnabled(data.enabled)
+        setBackupInterval(data.interval_hours)
+        setBackupKeep(data.keep)
+      }
+    } catch (err) {
+      console.error(err)
+    }
+    try {
+      const res2 = await getBackupList()
+      if (res2.data.data) setBackups(res2.data.data)
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
+  const fetchRateLimit = useCallback(async () => {
+    try {
+      const res = await getRateLimitSettings()
+      const data = res.data.data
+      if (data) {
+        setRateLimitEnabled(data.enabled)
+        setRateLimitPerMinute(data.per_minute)
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await getHealthDetail()
+      if (res.data.data) setHealth(res.data.data)
+    } catch (err) {
+      console.error(err)
+    }
+  }, [])
+
   useEffect(() => {
     fetchLogs()
     fetchSSL()
@@ -181,13 +292,18 @@ export default function Settings() {
     fetchTaskQueue()
     fetchAccessPolicy()
     fetchNotifications()
+    fetch2FA()
+    fetchAudit()
+    fetchBackup()
+    fetchRateLimit()
+    fetchHealth()
     const logTimer = setInterval(fetchLogs, 15000)
     const taskTimer = setInterval(fetchTaskQueue, 5000)
     return () => {
       clearInterval(logTimer)
       clearInterval(taskTimer)
     }
-  }, [fetchAccessPolicy, fetchLogs, fetchNotifications, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
+  }, [fetch2FA, fetchAccessPolicy, fetchAudit, fetchBackup, fetchHealth, fetchLogs, fetchNotifications, fetchRateLimit, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
 
   const handleSaveTaskQueue = async () => {
     const concurrency = Math.max(1, Math.min(16, Math.round(taskConcurrency || 1)))
@@ -233,7 +349,7 @@ export default function Settings() {
         setCertPEM('')
         setKeyPEM('')
       }
-      dialog.alert('完成', applyNow ? 'SSL 设置已保存，服务正在重启。稍后请用新的协议重新打开面板。' : 'SSL 设置已保存，重启 clicd 服务后生效。')
+      dialog.alert('完成', applyNow ? 'SSL 设置已保存，服务正在重启。稍后请用新的协议重新打开面板。' : 'SSL 设置已保存，重启 eyvescloud 服务后生效。')
     } catch (err: unknown) {
       const e = err as { response?: { data?: { message?: string } } }
       dialog.alert('失败', e.response?.data?.message || 'SSL 设置保存失败')
@@ -379,6 +495,134 @@ export default function Settings() {
     }
   }
 
+  const apiError = (err: unknown) => {
+    const e = err as { response?: { data?: { message?: string } } }
+    return e.response?.data?.message || '操作失败'
+  }
+
+  const handle2FASetup = async () => {
+    setTwoFASetup(null)
+    setBackupCodes([])
+    try {
+      const res = await setup2FA()
+      setTwoFASetup(res.data.data ?? null)
+      dialog.alert('开始设置', '请在身份验证器中扫描或手动输入密钥，然后输入 6 位动态口令完成启用。')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handle2FAEnable = async () => {
+    if (!verifyCode.trim()) {
+      dialog.alert('提示', '请输入身份验证器中的 6 位动态口令')
+      return
+    }
+    try {
+      const res = await enable2FA(verifyCode)
+      setTwoFA({ enabled: true, has_secret: true })
+      setBackupCodes(res.data.data?.backup_codes || [])
+      setTwoFASetup(null)
+      setVerifyCode('')
+      dialog.alert('已启用', '两步验证已启用，请务必保存下方的一次性备份码。')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handle2FARegenerate = async () => {
+    if (!twoFACode.trim()) {
+      dialog.alert('提示', '请输入当前动态口令以确认')
+      return
+    }
+    try {
+      const res = await regenerate2FABackupCodes(twoFACode)
+      setBackupCodes(res.data.data?.backup_codes || [])
+      setTwoFACode('')
+      dialog.alert('完成', '已生成一批新的备份码，请妥善保存。')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handle2FADisable = async () => {
+    if (!disableCode.trim()) {
+      dialog.alert('提示', '请输入动态口令或一次性备份码以确认关闭')
+      return
+    }
+    try {
+      await disable2FA(disableCode)
+      setTwoFA({ enabled: false, has_secret: false })
+      setDisableCode('')
+      setBackupCodes([])
+      dialog.alert('已关闭', '两步验证已关闭。')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handleSaveAudit = async () => {
+    const days = Math.max(0, Math.min(3650, Math.round(auditDays || 0)))
+    setSavingAudit(true)
+    try {
+      await updateAuditSettings(days)
+      setAuditDays(days)
+      dialog.alert('完成', '审计保留期已保存，超期日志将被后台定时清理')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    } finally {
+      setSavingAudit(false)
+    }
+  }
+
+  const handleSaveBackup = async () => {
+    try {
+      await updateBackupSettings({
+        enabled: backupEnabled,
+        interval_hours: Math.max(1, Math.round(backupInterval || 24)),
+        keep: Math.max(1, Math.round(backupKeep || 14)),
+      })
+      dialog.alert('完成', backupEnabled ? '自动备份已启用' : '自动备份已关闭')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handleCreateBackup = async () => {
+    setCreatingBackup(true)
+    try {
+      const res = await createBackup()
+      if (res.data.data) setBackups((items) => [res.data.data as BackupRecord, ...items])
+      dialog.alert('完成', '配置备份已创建')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    } finally {
+      setCreatingBackup(false)
+    }
+  }
+
+  const handleRestoreBackup = async (filename: string) => {
+    const ok = window.confirm('还原会以备份内容覆盖当前全部配置，且为破坏性操作。确认继续？')
+    if (!ok) return
+    try {
+      const res = await restoreBackup(filename, true)
+      dialog.alert(res.data.success ? '完成' : '失败', res.data.message || '配置已还原')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    }
+  }
+
+  const handleSaveRateLimit = async () => {
+    setSavingRateLimit(true)
+    try {
+      await updateRateLimitSettings(rateLimitEnabled, Math.max(1, Math.round(rateLimitPerMinute || 1)))
+      dialog.alert('完成', 'API 限流设置已保存')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    } finally {
+      setSavingRateLimit(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -456,6 +700,64 @@ export default function Settings() {
                 <button onClick={handleSaveAccount} className="rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200">保存修改</button>
               </div>
             </div>
+          )}
+
+          {activeSection === 'security' && (
+            <TwoFactorCard
+              twoFA={twoFA}
+              twoFASetup={twoFASetup}
+              verifyCode={verifyCode}
+              twoFACode={twoFACode}
+              disableCode={disableCode}
+              backupCodes={backupCodes}
+              onSetVerifyCode={setVerifyCode}
+              onSetTwoFACode={setTwoFACode}
+              onSetDisableCode={setDisableCode}
+              onRefresh={fetch2FA}
+              onSetup={handle2FASetup}
+              onEnable={handle2FAEnable}
+              onRegenerate={handle2FARegenerate}
+              onDisable={handle2FADisable}
+            />
+          )}
+
+          {activeSection === 'audit' && (
+            <AuditComplianceCard
+              auditDays={auditDays}
+              saving={savingAudit}
+              onDaysChange={setAuditDays}
+              onSave={handleSaveAudit}
+            />
+          )}
+
+          {activeSection === 'backup' && (
+            <BackupCard
+              enabled={backupEnabled}
+              interval={backupInterval}
+              keep={backupKeep}
+              backups={backups}
+              creating={creatingBackup}
+              onEnabledChange={setBackupEnabled}
+              onIntervalChange={setBackupInterval}
+              onKeepChange={setBackupKeep}
+              onRefresh={fetchBackup}
+              onSave={handleSaveBackup}
+              onCreate={handleCreateBackup}
+              onRestore={handleRestoreBackup}
+            />
+          )}
+
+          {activeSection === 'ratelimit' && (
+            <RateLimitCard
+              enabled={rateLimitEnabled}
+              perMinute={rateLimitPerMinute}
+              health={health}
+              saving={savingRateLimit}
+              onEnabledChange={setRateLimitEnabled}
+              onPerMinuteChange={setRateLimitPerMinute}
+              onSave={handleSaveRateLimit}
+              onRefreshHealth={fetchHealth}
+            />
           )}
 
           {activeSection === 'webssh' && (
@@ -728,6 +1030,501 @@ interface SSLCardProps {
   onKeyChange: (key: string) => void
   onApplyNowChange: (apply: boolean) => void
   onSave: () => void
+}
+
+interface AuditComplianceCardProps {
+  auditDays: number
+  saving: boolean
+  onDaysChange: (value: number) => void
+  onSave: () => void
+}
+
+function AuditComplianceCard(props: AuditComplianceCardProps) {
+  const dialog = useDialog()
+  const download = async (format: 'csv' | 'json') => {
+    try {
+      await downloadWithAuth(`/api/audit-logs/export?format=${format}`, `audit-logs.${format}`)
+    } catch (err: unknown) {
+      const e = err as { message?: string }
+      dialog.alert('失败', e.message || '导出失败')
+    }
+  }
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+        <Clock className="h-4 w-4" />审计合规
+      </h2>
+      <p className="mb-4 text-xs text-gray-500 dark:text-gray-400">控制审计/登录日志的保留周期，并可导出审计日志归档</p>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">保留天数（0 表示永久保留）</label>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={props.auditDays}
+            onChange={(e) => props.onDaysChange(Number(e.target.value))}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+          />
+        </div>
+        <div className="flex items-end justify-end gap-2">
+          <button onClick={() => download('csv')} className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
+            <Download className="h-4 w-4" />导出 CSV
+          </button>
+          <button onClick={() => download('json')} className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">
+            <Download className="h-4 w-4" />导出 JSON
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end">
+        <button onClick={props.onSave} disabled={props.saving} className="inline-flex items-center justify-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+          <Save className="h-4 w-4" />
+          {props.saving ? '保存中...' : '保存保留期'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface BackupCardProps {
+  enabled: boolean
+  interval: number
+  keep: number
+  backups: BackupRecord[]
+  creating: boolean
+  onEnabledChange: (value: boolean) => void
+  onIntervalChange: (value: number) => void
+  onKeepChange: (value: number) => void
+  onRefresh: () => void
+  onSave: () => void
+  onCreate: () => void
+  onRestore: (filename: string) => void
+}
+
+function BackupCard(props: BackupCardProps) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+          <Database className="h-4 w-4" />容灾备份（配置快照）
+        </h2>
+        <button type="button" onClick={props.onRefresh} className="rounded-md border border-gray-200 p-1.5 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800" title="刷新">
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      </div>
+
+      <p className="mb-4 rounded-md border border-gray-100 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+        备份会以 JSON 快照保存全部配置（容器/子用户/API Key/策略/租户等），可用于整机级配置还原。
+      </p>
+
+      <div className="flex items-center justify-between gap-4 border-y border-gray-100 py-3 dark:border-gray-800">
+        <div>
+          <div className="text-sm font-medium text-gray-800 dark:text-gray-200">启用自动备份</div>
+          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">按设定间隔自动创建配置快照</div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={props.enabled}
+          onClick={() => props.onEnabledChange(!props.enabled)}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full border transition-colors ${props.enabled ? 'border-black bg-black dark:border-white dark:bg-white' : 'border-gray-300 bg-gray-300 dark:border-gray-600 dark:bg-gray-700'}`}
+        >
+          <span className={`pointer-events-none absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${props.enabled ? 'translate-x-5 dark:bg-gray-900' : 'translate-x-0 dark:bg-gray-200'}`} />
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">备份间隔（小时）</label>
+          <input type="number" min={1} value={props.interval} onChange={(e) => props.onIntervalChange(Number(e.target.value))} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">保留份数</label>
+          <input type="number" min={1} value={props.keep} onChange={(e) => props.onKeepChange(Number(e.target.value))} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white" />
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-gray-100 pt-4 dark:border-gray-800">
+        <button onClick={props.onSave} className="inline-flex items-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+          <Save className="h-4 w-4" />保存设置
+        </button>
+        <button onClick={props.onCreate} disabled={props.creating} className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">
+          <Plus className="h-4 w-4" />立即备份
+        </button>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">备份记录（{props.backups.length}）</div>
+        {props.backups.length === 0 ? (
+          <p className="text-sm text-gray-400">暂无备份记录</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-100 text-gray-400">
+                  <th className="py-2 text-left font-medium">文件名</th>
+                  <th className="py-2 text-left font-medium">创建时间</th>
+                  <th className="py-2 text-left font-medium">大小</th>
+                  <th className="py-2 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {props.backups.map((b) => (
+                  <tr key={b.id}>
+                    <td className="py-2 font-mono text-gray-700 dark:text-gray-200">{b.filename}</td>
+                    <td className="py-2 text-gray-500">{b.created_at}</td>
+                    <td className="py-2 text-gray-500">{(b.size_bytes / 1024).toFixed(1)} KB</td>
+                    <td className="py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => downloadWithAuth(`/api/backup/download?file=${encodeURIComponent(b.filename)}`, b.filename).catch((e: { message?: string }) => alert(e.message || '下载失败'))}
+                        className="mr-2 inline-flex items-center gap-1 text-gray-600 hover:text-black dark:text-gray-300"
+                      >
+                        <Download className="h-3.5 w-3.5" />下载
+                      </button>
+                      <button onClick={() => props.onRestore(b.filename)} className="inline-flex items-center gap-1 text-red-600 hover:underline">
+                        <Trash2 className="h-3.5 w-3.5" />还原
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface RateLimitCardProps {
+  enabled: boolean
+  perMinute: number
+  health: HealthDetail | null
+  saving: boolean
+  onEnabledChange: (value: boolean) => void
+  onPerMinuteChange: (value: number) => void
+  onSave: () => void
+  onRefreshHealth: () => void
+}
+
+function RateLimitCard(props: RateLimitCardProps) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+            <Gauge className="h-4 w-4" />API 治理 · 限流
+          </h2>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">对版本化接口 /api/v1 按客户端 IP 限制每分钟请求次数</p>
+        </div>
+        <button type="button" onClick={props.onRefreshHealth} className="rounded-md border border-gray-200 p-1.5 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800" title="刷新健康详情">
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 border-y border-gray-100 py-3 dark:border-gray-800">
+        <div>
+          <div className="text-sm font-medium text-gray-800 dark:text-gray-200">启用 API 限流</div>
+          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">超出配额返回 429</div>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={props.enabled}
+          onClick={() => props.onEnabledChange(!props.enabled)}
+          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full border transition-colors ${props.enabled ? 'border-black bg-black dark:border-white dark:bg-white' : 'border-gray-300 bg-gray-300 dark:border-gray-600 dark:bg-gray-700'}`}
+        >
+          <span className={`pointer-events-none absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${props.enabled ? 'translate-x-5 dark:bg-gray-900' : 'translate-x-0 dark:bg-gray-200'}`} />
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">每分钟请求上限</label>
+          <input type="number" min={1} value={props.perMinute} onChange={(e) => props.onPerMinuteChange(Number(e.target.value))} className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">OpenAPI 契约</label>
+          <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">
+            <CodeIcon className="h-4 w-4" />查看 openapi.json
+          </a>
+        </div>
+      </div>
+
+      {props.health && (
+        <div className="mt-4 grid gap-2 rounded-md border border-gray-100 bg-gray-50 p-3 text-xs dark:border-gray-800 dark:bg-gray-950 sm:grid-cols-3">
+          <div><span className="text-gray-500 dark:text-gray-400">运行时长</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{formatUptime(props.health.uptime)}</div></div>
+          <div><span className="text-gray-500 dark:text-gray-400">Goroutines</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{props.health.goroutines}</div></div>
+          <div><span className="text-gray-500 dark:text-gray-400">内存</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{props.health.memory_alloc_mb.toFixed(1)} MB</div></div>
+          <div><span className="text-gray-500 dark:text-gray-400">容器数</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{props.health.container_count}</div></div>
+          <div><span className="text-gray-500 dark:text-gray-400">节点数</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{props.health.node_count}</div></div>
+          <div><span className="text-gray-500 dark:text-gray-400">活跃任务</span><div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{props.health.active_tasks}</div></div>
+        </div>
+      )}
+
+      <div className="mt-4 flex justify-end">
+        <button onClick={props.onSave} disabled={props.saving} className="inline-flex items-center justify-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+          <Save className="h-4 w-4" />
+          {props.saving ? '保存中...' : '保存限流设置'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function CodeIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  )
+}
+
+// downloadWithAuth fetches a protected endpoint with the Bearer token and
+// triggers a browser download. Plain <a href> navigation cannot carry the
+// Authorization header, so downloads of protected resources must go through
+// fetch() and a Blob object URL.
+async function downloadWithAuth(url: string, fallbackName: string) {
+  const token = localStorage.getItem('eyvescloud_token')
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    throw new Error(`下载失败（HTTP ${res.status}）`)
+  }
+  const blob = await res.blob()
+  const objURL = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objURL
+  a.download = fallbackName
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(objURL)
+}
+
+// copyText copies text with fallback and reports success.
+async function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+function formatUptime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds || 0))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}天 ${h}时 ${m}分`
+  if (h > 0) return `${h}时 ${m}分`
+  return `${m}分`
+}
+
+interface TwoFactorCardProps {
+  twoFA: TwoFAStatus | null
+  twoFASetup: { secret: string; otpauth_uri: string } | null
+  verifyCode: string
+  twoFACode: string
+  disableCode: string
+  backupCodes: string[]
+  onSetVerifyCode: (value: string) => void
+  onSetTwoFACode: (value: string) => void
+  onSetDisableCode: (value: string) => void
+  onRefresh: () => void
+  onSetup: () => void
+  onEnable: () => void
+  onRegenerate: () => void
+  onDisable: () => void
+}
+
+function TwoFactorCard(props: TwoFactorCardProps) {
+  const dialog = useDialog()
+  const enabled = !!props.twoFA?.enabled
+  const hasSecret = !!props.twoFA?.has_secret
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+            <Smartphone className="h-4 w-4" />两步验证（TOTP）
+          </h2>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">用于管理员登录的 One-Time Password，支持主流身份验证器 App</p>
+        </div>
+        <button type="button" onClick={props.onRefresh} className="rounded-md border border-gray-200 p-1.5 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800" title="刷新状态">
+          <RefreshCw className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 rounded-md border border-gray-100 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-950">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-200">
+            <ShieldCheck className={`h-4 w-4 ${enabled ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} />
+            两步验证 {enabled ? '已启用' : '未启用'}
+          </div>
+          <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            {enabled ? '登录时需额外输入 6 位动态口令或一次性备份码' : '启用后管理员登录将要求额外身份验证'}
+          </div>
+        </div>
+      </div>
+
+      {!enabled && !props.twoFASetup && (
+        <div className="mt-4">
+          <button type="button" onClick={props.onSetup} className="inline-flex items-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+            <KeyRound className="h-4 w-4" />开始设置
+          </button>
+        </div>
+      )}
+
+      {props.twoFASetup && !enabled && (
+        <div className="mt-4 space-y-4">
+          <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
+            用身份验证器 App（如 Google Authenticator、Microsoft Authenticator、1Password）扫码，或手动输入下方密钥。
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">otpauth:// 链接（或二维码中内容）</label>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={props.twoFASetup.otpauth_uri}
+                  className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void copyText(props.twoFASetup?.otpauth_uri || '').then(ok => ok ? dialog.alert('已复制', '密钥链接已复制到剪贴板') : dialog.alert('复制失败', '无法访问剪贴板，请手动复制')) }}
+                  className="rounded-md border border-gray-300 p-2 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
+                  title="复制链接"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">手动输入密钥</label>
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={props.twoFASetup.secret}
+                  className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void copyText(props.twoFASetup?.secret || '').then(ok => ok ? dialog.alert('已复制', '密钥已复制到剪贴板') : dialog.alert('复制失败', '无法访问剪贴板，请手动复制')) }}
+                  className="rounded-md border border-gray-300 p-2 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
+                  title="复制密钥"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">输入当前 6 位动态口令以启用</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                value={props.verifyCode}
+                onChange={(e) => props.onSetVerifyCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="123456"
+                className="w-40 rounded-md border border-gray-300 bg-white px-3 py-2 text-center font-mono text-base tracking-widest text-black outline-none focus:border-black focus:ring-1 focus:ring-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+              />
+              <button type="button" onClick={props.onEnable} className="inline-flex items-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+                <ShieldCheck className="h-4 w-4" />启用两步验证
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {enabled && (
+        <div className="mt-4 space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">输入动态口令换发新备份码</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={props.twoFACode}
+                  onChange={(e) => props.onSetTwoFACode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="123456"
+                  className="w-32 rounded-md border border-gray-300 bg-white px-3 py-2 text-center font-mono text-sm text-black outline-none focus:border-black focus:ring-1 focus:ring-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                />
+                <button type="button" onClick={props.onRegenerate} className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">
+                  重新生成备份码
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">输入动态口令或备份码以关闭</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={props.disableCode}
+                  onChange={(e) => props.onSetDisableCode(e.target.value)}
+                  placeholder="6 位动态码或备份码"
+                  className="w-40 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                />
+                <button type="button" onClick={props.onDisable} className="rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20">
+                  关闭两步验证
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {props.backupCodes.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/20">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-amber-800 dark:text-amber-300">一次性备份码（请立即保存，仅显示一次）</span>
+                <button
+                  type="button"
+                  onClick={() => { void copyText(props.backupCodes.join('\n')).then(ok => ok ? dialog.alert('已复制', '备份码已复制到剪贴板') : dialog.alert('复制失败', '无法访问剪贴板，请手动复制')) }}
+                  className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                >
+                  复制
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 font-mono text-xs text-amber-900 dark:text-amber-200 sm:grid-cols-4">
+                {props.backupCodes.map((code) => (
+                  <div key={code} className="rounded bg-amber-100/70 px-2 py-1 text-center dark:bg-amber-900/40">{code}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasSecret && (
+            <p className="text-xs text-gray-400 dark:text-gray-500">每个备份码仅可使用一次；换发或恢复备份码需要输入当前动态口令。</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 interface WebSSHOriginCardProps {

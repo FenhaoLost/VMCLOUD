@@ -19,6 +19,7 @@ import NodeMigration from './pages/NodeMigration'
 import PolicyManagement from './pages/PolicyManagement'
 import NodeManagement from './pages/NodeManagement'
 import Layout from './components/Layout'
+import Tenants from './pages/Tenants'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -75,6 +76,7 @@ function App() {
         <Route path="api-integration" element={<ApiIntegration />} />
         <Route path="host-report" element={<HostReport />} />
         <Route path="sub-users" element={<SubUserManagement />} />
+        <Route path="tenants" element={<Tenants />} />
         <Route path="settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

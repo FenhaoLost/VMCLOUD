@@ -1,4 +1,4 @@
-module clicd
+module eyvescloud
 
 go 1.25.0
 

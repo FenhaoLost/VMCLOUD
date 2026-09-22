@@ -1,6 +1,6 @@
 # API Integration
 
-CLICD remains compatible with the legacy `/api` endpoints, so existing integrations do not need changes. For new integrations, use the `/api/v1` endpoints; the list below covers v1. `GET /api/v1/containers` is recommended for listing containers.
+EYVESCLOUD remains compatible with the legacy `/api` endpoints, so existing integrations do not need changes. For new integrations, use the `/api/v1` endpoints; the list below covers v1. `GET /api/v1/containers` is recommended for listing containers.
 
 ## Authentication
 
@@ -420,6 +420,91 @@ On successful registration the worker receives its `node_id` and `token`; the wo
 | POST | `/api/v1/api-keys` | Create an API key |
 | PATCH | `/api/v1/api-keys/{id}` | Update an API key |
 | DELETE | `/api/v1/api-keys/{id}` | Delete an API key |
+
+## Enterprise API
+
+Endpoints for enterprise-grade account security, multi-tenancy, disaster recovery, audit compliance, observability, and API governance. Except `health`, all require an admin session or an API key with the `admin:access` scope.
+
+### Two-factor authentication (TOTP)
+
+RFC 6238 two-factor auth for the admin account. Only an admin session or a key with `admin:access` may call; the routes live under `/api/2fa/*`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/2fa/status` | 2FA state: `{ enabled, has_secret }` |
+| POST | `/api/2fa/setup` | Generate a fresh TOTP secret (only when disabled), returns `{ secret, otpauth_uri }` |
+| POST | `/api/2fa/enable` | Accept `{ code, backup_codes_count? }` to enable, returns plaintext backups `{ backup_codes }` |
+| POST | `/api/2fa/disable` | Accept `{ code }` (TOTP or backup code) to disable |
+| POST | `/api/2fa/regenerate-backup-codes` | Accept `{ code }` to issue a new set of backup codes |
+
+```json
+// POST /api/2fa/enable   body: { "code": "123456", "backup_codes_count": 8 }
+{ "success": true, "data": { "backup_codes": ["abc-def-ghi-jkl", "..."] } }
+```
+
+> Login flow: after password-only submit, if 2FA is enabled the backend returns `401` with `data.twofa_required=true`; submit a TOTP code or backup code to complete login.
+
+### Multi-tenancy
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/tenants` | List tenants (with container/quota usage stats) |
+| POST | `/api/v1/tenants` | Create a tenant; body: `{ id, name, description?, container_quota?, vcpu_quota?, ram_quota_mb?, disk_quota_gb? }` |
+| PUT | `/api/v1/tenants/{id}` | Update a tenant (partial field override) |
+| DELETE | `/api/v1/tenants/{id}` | Delete a tenant (empty tenants only) |
+| PUT | `/api/v1/containers/{id}/tenant` | Set a container's tenant; body: `{ "tenant": "tenant-id" }` |
+| PUT | `/api/v1/sub-users/{id}/tenant` | Set a sub-user's tenant; body: `{ "tenant": "tenant-id" }` |
+
+```json
+// GET /api/v1/tenants
+{ "success": true, "data": [ { "id": "reseller-a", "name": "Reseller A",
+  "container_quota": 20, "vcpu_quota": 16, "ram_quota_mb": 16384, "disk_quota_gb": 500,
+  "enabled": true, "usage_containers": 3, "usage_vcpu": 3, "usage_ram_mb": 1536, "usage_disk_gb": 90 } ] }
+```
+
+### Disaster recovery (config backup)
+
+Backups are full-config JSON stored in a **fixed, safe directory**; download/restore only allow already-registered backup files to prevent arbitrary file access.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/backup/settings` | Backup settings: `{ enabled, interval_hours, keep, directory, last_backup_at, last_backup_file, backup_count }` |
+| PUT | `/api/v1/backup/settings` | Update: `{ enabled, interval_hours, keep }` (directory is fixed by the backend) |
+| POST | `/api/v1/backup` | Create a backup immediately |
+| GET | `/api/v1/backup/list` | List backup records |
+| GET | `/api/v1/backup/download?file={filename}` | Download a backup (**authenticated download**, returns the raw JSON file) |
+| POST | `/api/v1/backup/restore` | Restore: `{ file, confirm: true }` (destructive, must be explicitly confirmed) |
+
+### Audit compliance
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/audit/settings` | Audit retention: `{ retention_days, audit_log_count, retention_notes }` |
+| PUT | `/api/v1/audit/settings` | Update: `{ retention_days }` (0-3650, 0 = keep forever) |
+| GET | `/api/v1/audit-logs/export?format=csv\|json` | Export audit logs (**authenticated download**, requires `admin:access`) |
+
+### External alert notifications
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/notifications` | Push settings: `{ security_alerts_enabled, min_severity, webhook_url, smtp_enabled, smtp_server, smtp_port, smtp_user, smtp_from, smtp_to, smtp_password_set }` |
+| PUT | `/api/v1/notifications` | Update settings (empty SMTP password keeps the old value; webhook must be http/https without embedded credentials) |
+| POST | `/api/v1/notifications/test` | Send a test alert through the configured channels |
+
+### API governance (rate limiting)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/rate-limit/settings` | Rate-limit settings: `{ enabled, per_minute, scope: "/api/v1", notes }` |
+| PUT | `/api/v1/rate-limit/settings` | Update: `{ enabled, per_minute }` (per-client-IP limit over a 1-minute window for versioned endpoints) |
+
+### Observability and contract
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/health` | **Public** liveness probe: `{ status, version, uptime, time }` (for load balancers/monitoring) |
+| GET | `/api/v1/health/detail` | Admin-visible runtime metrics (goroutines, memory, container/node/sub-user counts, tasks, etc.) |
+| GET | `/api/v1/openapi.json` | Minimal API contract description |
 
 ## Response Examples
 
@@ -918,17 +1003,17 @@ The samples below are grouped by endpoint path. Real resource values, task IDs, 
   "GET /api/v1/api-keys": {
     "success": true,
     "data": [
-      { "id": "c271023f", "name": "Test", "prefix": "clicd_sk_dd9d...", "ip_whitelist": "", "created_at": "2026-06-08 15:44:40", "last_used": "2026-06-08 15:46:10", "scopes": ["*"], "expires_at": "", "disabled": false, "container_uuids": [], "last_used_ip": "198.51.100.23" }
+      { "id": "c271023f", "name": "Test", "prefix": "eyvescloud_sk_dd9d...", "ip_whitelist": "", "created_at": "2026-06-08 15:44:40", "last_used": "2026-06-08 15:46:10", "scopes": ["*"], "expires_at": "", "disabled": false, "container_uuids": [], "last_used_ip": "198.51.100.23" }
     ]
   },
   "POST /api/v1/api-keys": {
     "success": true,
     "message": "API key created. Save this key now - it won't be shown again.",
-    "data": { "id": "a1b2c3d4", "name": "Automation", "key": "clicd_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "prefix": "clicd_sk_xxxx...", "ip_whitelist": "198.51.100.23", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
+    "data": { "id": "a1b2c3d4", "name": "Automation", "key": "eyvescloud_sk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "prefix": "eyvescloud_sk_xxxx...", "ip_whitelist": "198.51.100.23", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
   },
   "PATCH /api/v1/api-keys/{id}": {
     "success": true,
-    "data": { "id": "a1b2c3d4", "name": "Automation", "prefix": "clicd_sk_xxxx...", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
+    "data": { "id": "a1b2c3d4", "name": "Automation", "prefix": "eyvescloud_sk_xxxx...", "scopes": ["dashboard:read", "container:read"], "expires_at": "2026-12-31 23:59:59", "disabled": false, "container_uuids": ["00000000-0000-4000-8000-000000000005"] }
   },
   "DELETE /api/v1/api-keys/{id}": {
     "success": true,

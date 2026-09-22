@@ -10,7 +10,7 @@
 | --- | --- |
 | ID | `disk-root` |
 | 名称 | `system (/)` |
-| 路径 | `/var/lib/clicd` |
+| 路径 | `/var/lib/eyvescloud` |
 | 挂载点 | `/` |
 | 内容类型 | LXC、KVM、镜像、快照、备份 |
 
@@ -30,7 +30,7 @@
 | --- | --- |
 | ID | `disk-data` |
 | 名称 | `data disk (/data)` |
-| 路径 | `/data/clicd` |
+| 路径 | `/data/eyvescloud` |
 | 挂载点 | `/data` |
 | 内容类型 | LXC、镜像 |
 

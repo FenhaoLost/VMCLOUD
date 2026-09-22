@@ -34,9 +34,9 @@ bash eyvescloud-agent-node1.sh
 
 The script automatically:
 
-1. Downloads the binary from the Controller (`GET /api/nodes/binary`, the same `clicd` as the Controller).
+1. Downloads the binary from the Controller (`GET /api/nodes/binary`, the same `eyvescloud` as the Controller).
 2. Registers with the Controller using the install key (`POST /api/nodes/register`) and receives the worker node token.
-3. Starts the local panel in `clicd agent` mode and writes a systemd service for auto-start on boot.
+3. Starts the local panel in `eyvescloud agent` mode and writes a systemd service for auto-start on boot.
 
 The script also accepts override arguments: `bash eyvescloud-agent-node1.sh [node name] [worker panel address]`.
 
@@ -45,7 +45,7 @@ The script also accepts override arguments: `bash eyvescloud-agent-node1.sh [nod
 You can also run it manually on the worker server:
 
 ```bash
-clicd agent \
+eyvescloud agent \
   --controller=http://MASTER_IP:8999 \
   --install-key=INSTALL_KEY \
   --name=node-1 \
@@ -79,7 +79,7 @@ These operations are performed by the Controller proxying the worker's `/api/age
 Deleting a node removes its record from the Controller. If the worker's systemd service is still running, it keeps trying to report heartbeats, but the Controller will no longer show it. To fully revoke access, also uninstall the service on the worker:
 
 ```bash
-systemctl disable --now clicd-agent
+systemctl disable --now eyvescloud-agent
 ```
 
 ## Security Notes

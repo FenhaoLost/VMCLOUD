@@ -7,15 +7,15 @@ import (
 	"strings"
 	"time"
 
-	"clicd/internal/config"
-	"clicd/internal/kvm"
-	"clicd/internal/lxc"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/kvm"
+	"eyvescloud/internal/lxc"
 )
 
 const migrateFormat = "eyvescloud-migrate"
 
 // migrateContainer is the portable subset of a container configuration used
-// to migrate a workload to another CLICD node. Runtime-only state (status,
+// to migrate a workload to another EYVESCLOUD node. Runtime-only state (status,
 // allocated ports, traffic counters, host boot restore) is excluded.
 type migrateContainer struct {
 	Name                  string                        `json:"name"`
@@ -105,7 +105,7 @@ func buildMigrateContainer(c config.Container) migrateContainer {
 }
 
 // HandleContainerMigrateExport downloads the portable configuration of a
-// container so it can be imported on another CLICD node.
+// container so it can be imported on another EYVESCLOUD node.
 func HandleContainerMigrateExport(w http.ResponseWriter, r *http.Request, id int) {
 	// Migration bundles contain the SSH password and full network config, so
 	// export is restricted to the administrator (sub-users and narrow API keys

@@ -8,7 +8,7 @@
 - CPU、内存、磁盘、Swap。
 - 网络状态。
 - LXC/KVM 依赖状态。
-- CLICD 服务状态。
+- EyvesCloud 服务状态。
 
 ## 相关接口
 

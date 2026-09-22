@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 var (
@@ -35,7 +35,7 @@ func (m *Manager) ApplyPortMappings(id int) error {
 		return fmt.Errorf("container has no IP")
 	}
 	EnsureAssignedPublicIPv4s(c.PublicIPv4s)
-	tag := clicdTag(id)
+	tag := eyvescloudTag(id)
 	bridge := "lxcbr0"
 	subnet := config.LXCNATNetwork().Subnet
 	if c.IsKVM() {
@@ -63,7 +63,7 @@ func (m *Manager) ApplyPortMappings(id int) error {
 				"--dport", fmt.Sprintf("%d", pm.HostPort),
 				"-j", "DNAT",
 				"--to-destination", fmt.Sprintf("%s:%d", c.IP, pm.ContainerPort),
-				"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-%s-%d", tag, natRuleIPTag(hostIP), pm.HostPort),
+				"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-%s-%d", tag, natRuleIPTag(hostIP), pm.HostPort),
 			)
 			cmd := exec.Command("iptables", args...)
 			output, err := cmd.CombinedOutput()
@@ -110,7 +110,7 @@ func ensureIndependentIPv4Ingress(c *config.Container, tag string) {
 				"-p", proto,
 				"-j", "DNAT",
 				"--to-destination", c.IP,
-				"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-%s-all-%s", tag, natRuleIPTag(hostIP), proto),
+				"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-%s-all-%s", tag, natRuleIPTag(hostIP), proto),
 			}
 			cmd := exec.Command("iptables", args...)
 			output, err := cmd.CombinedOutput()
@@ -152,7 +152,7 @@ func containerAllowsPublicIPv4Egress(c *config.Container) bool {
 func ensureContainerMasquerade(c *config.Container, tag string) {
 	args := []string{
 		"-s", c.IP + "/32",
-		"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-masq", tag),
+		"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-masq", tag),
 		"-j", "MASQUERADE",
 	}
 	if host := DetectPublicIPv4(); strings.TrimSpace(host.Interface) != "" {
@@ -168,7 +168,7 @@ func ensureIPv4EgressBlocked(c *config.Container, bridge, subnet, tag string) {
 		"-i", bridge,
 		"-s", c.IP + "/32",
 		"!", "-d", subnet,
-		"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-v4-egress-block", tag),
+		"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-v4-egress-block", tag),
 		"-j", "REJECT",
 	}
 	ensureFilterRule("FORWARD", args)
@@ -229,7 +229,7 @@ func applyPublicIPv4SNAT(c *config.Container, tag string) {
 		args = append(args, "-o", iface)
 	}
 	args = append(args,
-		"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-snat-%s", tag, natRuleIPTag(hostIP)),
+		"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-snat-%s", tag, natRuleIPTag(hostIP)),
 		"-j", "SNAT", "--to-source", hostIP,
 	)
 	if output, err := exec.Command("iptables", args...).CombinedOutput(); err != nil {
@@ -249,7 +249,7 @@ func primaryPublicIPv4Assignment(c *config.Container) (config.PublicIPv4Assignme
 	return config.PublicIPv4Assignment{}, false
 }
 
-func clicdTag(id int) string { return "c" + strconv.Itoa(id) }
+func eyvescloudTag(id int) string { return "c" + strconv.Itoa(id) }
 
 func EnsureAllRunningPortMappings() {
 	m := NewManager()
@@ -268,7 +268,7 @@ func EnsureAllRunningPortMappings() {
 	}
 }
 
-var taggedContainerIDPattern = regexp.MustCompile(`clicd-c([0-9]+)-`)
+var taggedContainerIDPattern = regexp.MustCompile(`eyvescloud-c([0-9]+)-`)
 
 func (m *Manager) cleanOrphanedPortMappings() {
 	output, err := exec.Command("iptables-save").Output()
@@ -389,7 +389,7 @@ func (m *Manager) CleanPortMappings(id int) error {
 }
 
 func (m *Manager) cleanPortMappingsLocked(id int) error {
-	marker := "clicd-" + clicdTag(id) + "-"
+	marker := "eyvescloud-" + eyvescloudTag(id) + "-"
 	var cleanupErrors []error
 	for _, target := range []struct {
 		table string
@@ -1200,25 +1200,38 @@ func CleanFirewallRules(id int) {
 }
 
 func cleanFirewallRulesLocked(id int) {
-	tag := clicdTag(id)
-	// Remove all rules with the firewall tag prefix
-	cmd := exec.Command("bash", "-c",
-		fmt.Sprintf("iptables -S FORWARD 2>/dev/null | grep 'clicd-%s-fw-' | sed 's/^-A /-D /' | while read rule; do iptables $rule; done", tag))
-	cmd.CombinedOutput()
-	cmd = exec.Command("bash", "-c",
-		fmt.Sprintf("ip6tables -S FORWARD 2>/dev/null | grep 'clicd-%s-fw-' | sed 's/^-A /-D /' | while read rule; do ip6tables $rule; done", tag))
-	cmd.CombinedOutput()
+	tag := eyvescloudTag(id)
+	prefix := "eyvescloud-" + tag + "-fw-"
+	// Remove all rules with the firewall tag prefix. 逐参数构造 argv 执行，避免
+	// 把 iptables 输出再经 shell 二次求值（命令注入）的风险。
+	cleanForwardChainRules("iptables", prefix)
+	cleanForwardChainRules("ip6tables", prefix)
 
 	// Also remove legacy default policy rules (without specific rule ID)
 	for _, suffix := range []string{"default-in", "default-out"} {
 		for _, proto := range []string{"tcp", "udp"} {
 			exec.Command("iptables", "-D", "FORWARD",
-				"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-%s-%s", tag, suffix, proto),
+				"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-%s-%s", tag, suffix, proto),
 			).CombinedOutput()
 		}
 		exec.Command("ip6tables", "-D", "FORWARD",
-			"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-%s", tag, suffix),
+			"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-%s", tag, suffix),
 		).CombinedOutput()
+	}
+}
+
+// cleanForwardChainRules 列出 FORWARD 链并删除注释前缀匹配的规则，全程不经过 shell。
+func cleanForwardChainRules(bin, prefix string) {
+	out, _ := exec.Command(bin, "-S", "FORWARD").CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "-A ") || !strings.Contains(line, prefix) {
+			continue
+		}
+		fields := strings.Fields(strings.Replace(line, "-A ", "-D ", 1))
+		if len(fields) < 2 || fields[0] != "-D" {
+			continue
+		}
+		exec.Command(bin, fields...).CombinedOutput()
 	}
 }
 
@@ -1252,7 +1265,7 @@ func applyFirewallRulesLocked(id int) error {
 	if containerIP == "" && len(containerIPv6s) == 0 {
 		return nil
 	}
-	tag := clicdTag(id)
+	tag := eyvescloudTag(id)
 
 	defaultAction := normalizeFirewallDefaultAction(c.FirewallDefaultAction)
 	if defaultAction == "DROP" {
@@ -1369,7 +1382,7 @@ func firewallIPv6Addresses(c *config.Container) []string {
 }
 
 func applyOneFirewallRule(tag, bridge, containerIP string, rule config.FirewallRule) error {
-	commentTag := fmt.Sprintf("clicd-%s-fw-%s", tag, rule.ID)
+	commentTag := fmt.Sprintf("eyvescloud-%s-fw-%s", tag, rule.ID)
 
 	// Build base iptables args
 	args := []string{"-I", "FORWARD", "1"}
@@ -1434,7 +1447,7 @@ func applyOneFirewallRule(tag, bridge, containerIP string, rule config.FirewallR
 
 func applyOneFirewallIPv6Rule(tag, bridge string, containerIPs []string, rule config.FirewallRule) error {
 	for _, containerIP := range containerIPs {
-		commentTag := fmt.Sprintf("clicd-%s-fw-%s-v6-%s", tag, rule.ID, firewallCommentIPTag(containerIP))
+		commentTag := fmt.Sprintf("eyvescloud-%s-fw-%s-v6-%s", tag, rule.ID, firewallCommentIPTag(containerIP))
 		args := []string{"-I", "FORWARD", "1"}
 
 		switch rule.Direction {
@@ -1521,14 +1534,14 @@ func applyDefaultFirewallPolicy(tag, bridge, containerIP string) error {
 			"-o", bridge,
 			"-d", containerIP + "/32",
 			"-j", "DROP",
-			"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-default-in", tag),
+			"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-default-in", tag),
 		},
 		{
 			"-I", "FORWARD", "1",
 			"-i", bridge,
 			"-s", containerIP + "/32",
 			"-j", "DROP",
-			"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-default-out", tag),
+			"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-default-out", tag),
 		},
 	}
 	for _, args := range defaults {
@@ -1549,14 +1562,14 @@ func applyDefaultFirewallIPv6Policy(tag, bridge string, containerIPs []string) e
 				"-o", bridge,
 				"-d", containerIP + "/128",
 				"-j", "DROP",
-				"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-default-in-v6-%s", tag, firewallCommentIPTag(containerIP)),
+				"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-default-in-v6-%s", tag, firewallCommentIPTag(containerIP)),
 			},
 			{
 				"-I", "FORWARD", "1",
 				"-i", bridge,
 				"-s", containerIP + "/128",
 				"-j", "DROP",
-				"-m", "comment", "--comment", fmt.Sprintf("clicd-%s-fw-default-out-v6-%s", tag, firewallCommentIPTag(containerIP)),
+				"-m", "comment", "--comment", fmt.Sprintf("eyvescloud-%s-fw-default-out-v6-%s", tag, firewallCommentIPTag(containerIP)),
 			},
 		}
 		for _, args := range defaults {

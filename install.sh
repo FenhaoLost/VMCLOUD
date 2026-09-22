@@ -1,17 +1,17 @@
 #!/bin/sh
 set -eu
 
-REPO="${CLICD_REPO:-MengMengCode/CLICD}"
-CLICD_INSTALL_VERSION="${CLICD_VERSION:-latest}"
+REPO="${EYVESCLOUD_REPO:-FenhaoLost/VMCLOUD}"
+EYVESCLOUD_INSTALL_VERSION="${EYVESCLOUD_VERSION:-latest}"
 ACTION="${1:-install}"
 ACTION_CONFIRM="${2:-}"
 ISSUE_URL="https://github.com/${REPO}/issues"
-LOG_FILE="${CLICD_LOG_FILE:-/var/log/clicd-install.log}"
-INSTALL_DOWNLOAD_MARKER="${CLICD_INSTALL_DOWNLOAD_MARKER:-/tmp/clicd-install-dir.$$}"
-LIBVIRT_DEFAULT_MARKER="/var/lib/clicd/kvm/default-network.created"
-CLICD_NETWORK_ENV="/etc/clicd/network.env"
+LOG_FILE="${EYVESCLOUD_LOG_FILE:-/var/log/eyvescloud-install.log}"
+INSTALL_DOWNLOAD_MARKER="${EYVESCLOUD_INSTALL_DOWNLOAD_MARKER:-/tmp/eyvescloud-install-dir.$$}"
+LIBVIRT_DEFAULT_MARKER="/var/lib/eyvescloud/kvm/default-network.created"
+EYVESCLOUD_NETWORK_ENV="/etc/eyvescloud/network.env"
 
-normalize_clicd_arch() {
+normalize_eyvescloud_arch() {
     arch="$1"
     case "$(printf '%s' "$arch" | tr 'A-Z' 'a-z')" in
         x86_64|amd64) echo amd64 ;;
@@ -21,65 +21,65 @@ normalize_clicd_arch() {
 }
 
 HOST_ARCH_RAW="$(uname -m 2>/dev/null || echo unknown)"
-CLICD_ARCH_NORMALIZED="$(normalize_clicd_arch "${CLICD_ARCH:-$HOST_ARCH_RAW}")"
-ASSET_DIR="clicd-linux-${CLICD_ARCH_NORMALIZED:-unknown}"
+EYVESCLOUD_ARCH_NORMALIZED="$(normalize_eyvescloud_arch "${EYVESCLOUD_ARCH:-$HOST_ARCH_RAW}")"
+ASSET_DIR="eyvescloud-linux-${EYVESCLOUD_ARCH_NORMALIZED:-unknown}"
 ASSET="${ASSET_DIR}.tar.gz"
 BINARY_ASSET="$ASSET_DIR"
 
 kvm_supported_arch() {
-    [ "$CLICD_ARCH_NORMALIZED" = "amd64" ] || [ "$CLICD_ARCH_NORMALIZED" = "arm64" ]
+    [ "$EYVESCLOUD_ARCH_NORMALIZED" = "amd64" ] || [ "$EYVESCLOUD_ARCH_NORMALIZED" = "arm64" ]
 }
 
 warn_kvm_unsupported_arch() {
     if ! kvm_supported_arch; then
-        warn "当前架构 ${CLICD_ARCH_NORMALIZED:-unknown} 已适配 CLICD/LXC；KVM 功能当前支持 x86_64/amd64 和 aarch64/arm64，将跳过 KVM 专用依赖。"
+        warn "当前架构 ${EYVESCLOUD_ARCH_NORMALIZED:-unknown} 已适配 EYVESCLOUD/LXC；KVM 功能当前支持 x86_64/amd64 和 aarch64/arm64，将跳过 KVM 专用依赖。"
     fi
 }
 
 qemu_system_package_apk() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo qemu-system-aarch64 ;;
         *) echo qemu-system-x86_64 ;;
     esac
 }
 
 qemu_system_package_apt() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo qemu-system-arm ;;
         *) echo qemu-system-x86 ;;
     esac
 }
 
 qemu_system_package_rpm() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo qemu-system-aarch64 ;;
         *) echo qemu-kvm ;;
     esac
 }
 
 qemu_emulator_cmd() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo qemu-system-aarch64 ;;
         *) echo qemu-system-x86_64 ;;
     esac
 }
 
 qemu_efi_package_apt() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo qemu-efi-aarch64 ;;
         *) echo ovmf ;;
     esac
 }
 
 qemu_efi_package_apk() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo edk2-aarch64 ;;
         *) echo ovmf ;;
     esac
 }
 
 qemu_efi_package_rpm() {
-    case "$CLICD_ARCH_NORMALIZED" in
+    case "$EYVESCLOUD_ARCH_NORMALIZED" in
         arm64) echo edk2-aarch64 ;;
         *) echo edk2-ovmf ;;
     esac
@@ -95,7 +95,7 @@ normalize_lang() {
 }
 
 detect_lang() {
-    normalized="$(normalize_lang "${CLICD_LANG:-}")"
+    normalized="$(normalize_lang "${EYVESCLOUD_LANG:-}")"
     if [ -n "$normalized" ]; then
         echo "$normalized"
         return
@@ -109,7 +109,7 @@ detect_lang() {
 }
 
 choose_language() {
-    normalized="$(normalize_lang "${CLICD_LANG:-}")"
+    normalized="$(normalize_lang "${EYVESCLOUD_LANG:-}")"
     if [ -n "$normalized" ]; then
         echo "$normalized"
         return
@@ -155,18 +155,18 @@ choose_language() {
     detect_lang
 }
 
-CLICD_LANG_DETECTED="$(choose_language)"
-export CLICD_LANG="$CLICD_LANG_DETECTED"
+EYVESCLOUD_LANG_DETECTED="$(choose_language)"
+export EYVESCLOUD_LANG="$EYVESCLOUD_LANG_DETECTED"
 
 tr_msg() {
     msg="$*"
-    [ "$CLICD_LANG_DETECTED" = "en" ] || { printf '%s' "$msg"; return; }
+    [ "$EYVESCLOUD_LANG_DETECTED" = "en" ] || { printf '%s' "$msg"; return; }
     msg="$(printf '%s' "$msg" | sed \
         -e 's/中文安装\/卸载脚本/Installer\/Uninstaller/g' \
         -e 's/警告/Warning/g' \
         -e 's/错误/Error/g' \
         -e 's/安装\/卸载未完成。请查看日志：/Install\/uninstall did not complete. Check log: /g' \
-        -e 's/如果你确认这是程序问题，请提交 issue：/If this looks like a CLICD bug, please open an issue: /g' \
+        -e 's/如果你确认这是程序问题，请提交 issue：/If this looks like a EYVESCLOUD bug, please open an issue: /g' \
         -e 's/开始：/Starting: /g' \
         -e 's/完成：/Completed: /g' \
         -e 's/步骤失败：/Step failed: /g' \
@@ -192,17 +192,17 @@ tr_msg() {
         -e 's/日志文件：/Log file: /g' \
         -e 's/仓库地址：/Repository: /g' \
         -e 's/未知操作：/Unknown action: /g' \
-        -e 's/卸载会停止并删除 CLICD 服务、配置数据库、CLICD 创建的 LXC\/KVM 实例和缓存数据。/Uninstall will stop and remove the CLICD service, configuration database, CLICD-created LXC\/KVM instances, and cached data./g' \
-        -e 's/为避免误删生产数据，脚本只会删除名称形如 ct-数字 的 LXC 容器、clicd-img-dl-\* 下载临时容器和 vm-数字 的 KVM 域。/To avoid deleting production data, the script only removes LXC containers named ct-NUMBER, temporary clicd-img-dl-* download containers, and KVM domains named vm-NUMBER./g' \
+        -e 's/卸载会停止并删除 EYVESCLOUD 服务、配置数据库、EYVESCLOUD 创建的 LXC\/KVM 实例和缓存数据。/Uninstall will stop and remove the EYVESCLOUD service, configuration database, EYVESCLOUD-created LXC\/KVM instances, and cached data./g' \
+        -e 's/为避免误删生产数据，脚本只会删除名称形如 ct-数字 的 LXC 容器、eyvescloud-img-dl-\* 下载临时容器和 vm-数字 的 KVM 域。/To avoid deleting production data, the script only removes LXC containers named ct-NUMBER, temporary eyvescloud-img-dl-* download containers, and KVM domains named vm-NUMBER./g' \
         -e 's/如需确认卸载，请输入：YES/Type YES to confirm uninstall:/g' \
-        -e 's/已取消卸载。如需非交互卸载，请设置 CLICD_UNINSTALL_CONFIRM=1。/Uninstall cancelled. For non-interactive uninstall, set CLICD_UNINSTALL_CONFIRM=1./g' \
-        -e 's/正在卸载 CLICD.../Uninstalling CLICD.../g' \
-        -e 's/正在删除 CLICD 创建的 LXC 容器（\/var\/lib\/lxc\/ct-数字）.../Removing CLICD-created LXC containers (\/var\/lib\/lxc\/ct-NUMBER).../g' \
-        -e 's/保留 \/root\/clicd-backups，避免误删部署\/回滚备份。确认不需要后可手动删除。/Keeping \/root\/clicd-backups to avoid deleting deployment\/rollback backups. Remove it manually if no longer needed./g' \
-        -e 's/CLICD 卸载完成/CLICD uninstall complete/g' \
-        -e 's/已删除服务、二进制、SQLite\/配置数据、CLICD LXC\/KVM 实例、/Removed service, binary, SQLite\/config data, CLICD LXC\/KVM instances,/g' \
-        -e 's/CLICD 镜像缓存、防火墙规则、主机钩子、配额记录和临时文件。/CLICD image cache, firewall rules, host hooks, quota records, and temporary files./g' \
-        -e 's/已保留 \/root\/clicd-backups 和非 CLICD 的 LXC 全局缓存，避免误删生产备份\/共享镜像。/Kept \/root\/clicd-backups and non-CLICD global LXC cache to avoid deleting production backups\/shared images./g' \
+        -e 's/已取消卸载。如需非交互卸载，请设置 EYVESCLOUD_UNINSTALL_CONFIRM=1。/Uninstall cancelled. For non-interactive uninstall, set EYVESCLOUD_UNINSTALL_CONFIRM=1./g' \
+        -e 's/正在卸载 EYVESCLOUD.../Uninstalling EYVESCLOUD.../g' \
+        -e 's/正在删除 EYVESCLOUD 创建的 LXC 容器（\/var\/lib\/lxc\/ct-数字）.../Removing EYVESCLOUD-created LXC containers (\/var\/lib\/lxc\/ct-NUMBER).../g' \
+        -e 's/保留 \/root\/eyvescloud-backups，避免误删部署\/回滚备份。确认不需要后可手动删除。/Keeping \/root\/eyvescloud-backups to avoid deleting deployment\/rollback backups. Remove it manually if no longer needed./g' \
+        -e 's/EYVESCLOUD 卸载完成/EYVESCLOUD uninstall complete/g' \
+        -e 's/已删除服务、二进制、SQLite\/配置数据、EYVESCLOUD LXC\/KVM 实例、/Removed service, binary, SQLite\/config data, EYVESCLOUD LXC\/KVM instances,/g' \
+        -e 's/EYVESCLOUD 镜像缓存、防火墙规则、主机钩子、配额记录和临时文件。/EYVESCLOUD image cache, firewall rules, host hooks, quota records, and temporary files./g' \
+        -e 's/已保留 \/root\/eyvescloud-backups 和非 EYVESCLOUD 的 LXC 全局缓存，避免误删生产备份\/共享镜像。/Kept \/root\/eyvescloud-backups and non-EYVESCLOUD global LXC cache to avoid deleting production backups\/shared images./g' \
         -e 's/日志：/Log: /g' \
         -e 's/兼容性检查/Compatibility check/g' \
         -e 's/存储环境检查/Storage environment check/g' \
@@ -215,8 +215,8 @@ tr_msg() {
         -e 's/配置 LXC 存储权限/Configure LXC storage permissions/g' \
         -e 's/检查 project quota/Check project quota/g' \
         -e 's/下载发行版包/Download release package/g' \
-        -e 's/安装 CLICD 二进制/Install CLICD binary/g' \
-        -e 's/安装并启动 CLICD 服务/Install and start CLICD service/g' \
+        -e 's/安装 EYVESCLOUD 二进制/Install EYVESCLOUD binary/g' \
+        -e 's/安装并启动 EYVESCLOUD 服务/Install and start EYVESCLOUD service/g' \
         -e 's/已写入面板语言：/Panel language saved: /g' \
         -e 's/写入面板语言/Save panel language/g' \
         -e 's/面板语言写入失败，请安装后在面板右下角手动切换。/Failed to save panel language. Please switch it manually from the lower-left panel control after installation./g' \
@@ -243,38 +243,38 @@ tr_msg() {
         -e 's/未检测到 systemd 单元 /systemd unit was not detected: /g' \
         -e 's/，跳过。/; skipped./g' \
         -e 's/检测到 libvirt 传统 libvirtd 服务，已使用 libvirtd 模式。/Detected the legacy libvirt libvirtd service; using libvirtd mode./g' \
-        -e 's/未检测到支持的服务管理器。CLICD 当前支持 systemd 或 OpenRC。/No supported service manager was detected. CLICD currently supports systemd or OpenRC./g' \
+        -e 's/未检测到支持的服务管理器。EYVESCLOUD 当前支持 systemd 或 OpenRC。/No supported service manager was detected. EYVESCLOUD currently supports systemd or OpenRC./g' \
         -e 's/正在检查 libvirt default NAT 网络.../Checking libvirt default NAT network.../g' \
         -e 's/未找到 virsh，跳过 libvirt default NAT 网络检查。/virsh was not found; skipping the libvirt default NAT network check./g' \
         -e 's/libvirt default 网络仍未启动。请执行 virsh net-info default 查看详情。/libvirt default network is still not active. Run virsh net-info default for details./g' \
         -e 's/libvirt default NAT 网络已启用。/libvirt default NAT network is enabled./g' \
         -e 's/正在配置 subordinate UID\/GID 范围.../Configuring subordinate UID\/GID ranges.../g' \
         -e 's/根文件系统 /Root filesystem /g' \
-        -e 's/ 不需要\/不适合自动启用 ext4 project quota，CLICD 将使用兼容磁盘限制模式。/ does not need or is not suitable for automatic ext4 project quota; CLICD will use compatible disk limit mode./g' \
-        -e 's/ 不在自动 project quota 支持范围，CLICD 将使用兼容磁盘限制模式。/ is not supported for automatic project quota; CLICD will use compatible disk limit mode./g' \
+        -e 's/ 不需要\/不适合自动启用 ext4 project quota，EYVESCLOUD 将使用兼容磁盘限制模式。/ does not need or is not suitable for automatic ext4 project quota; EYVESCLOUD will use compatible disk limit mode./g' \
+        -e 's/ 不在自动 project quota 支持范围，EYVESCLOUD 将使用兼容磁盘限制模式。/ is not supported for automatic project quota; EYVESCLOUD will use compatible disk limit mode./g' \
         -e 's/根分区来源 /Root partition source /g' \
-        -e 's/ 不是块设备，跳过 project quota 自动检查，CLICD 将使用兼容磁盘限制模式。/ is not a block device; skipping automatic project quota check and using compatible disk limit mode./g' \
-        -e 's/未找到 tune2fs，跳过 project quota 检查，CLICD 将使用兼容磁盘限制模式。/tune2fs was not found; skipping project quota check and using compatible disk limit mode./g' \
+        -e 's/ 不是块设备，跳过 project quota 自动检查，EYVESCLOUD 将使用兼容磁盘限制模式。/ is not a block device; skipping automatic project quota check and using compatible disk limit mode./g' \
+        -e 's/未找到 tune2fs，跳过 project quota 检查，EYVESCLOUD 将使用兼容磁盘限制模式。/tune2fs was not found; skipping project quota check and using compatible disk limit mode./g' \
         -e 's/检测到 ext4 project quota 已可用。/ext4 project quota is already available./g' \
-        -e 's/ext4 project quota 未启用，CLICD 将自动回退到 loopback 镜像磁盘限制模式。/ext4 project quota is not enabled; CLICD will automatically fall back to loopback image disk limit mode./g' \
-        -e 's/当前目录未找到 clicd 二进制，将下载发行版包。/No local clicd binary found; downloading release package./g' \
+        -e 's/ext4 project quota 未启用，EYVESCLOUD 将自动回退到 loopback 镜像磁盘限制模式。/ext4 project quota is not enabled; EYVESCLOUD will automatically fall back to loopback image disk limit mode./g' \
+        -e 's/当前目录未找到 eyvescloud 二进制，将下载发行版包。/No local eyvescloud binary found; downloading release package./g' \
         -e 's/正在下载发行版包：/Downloading release package: /g' \
         -e 's/下载发行版包需要 curl 或 wget。/Downloading the release package requires curl or wget./g' \
-        -e 's/下载的发行版包中未找到 clicd 二进制。/The downloaded release package does not contain the clicd binary./g' \
-        -e 's/未找到 clicd 二进制，安装无法继续。/clicd binary was not found; installation cannot continue./g' \
+        -e 's/下载的发行版包中未找到 eyvescloud 二进制。/The downloaded release package does not contain the eyvescloud binary./g' \
+        -e 's/未找到 eyvescloud 二进制，安装无法继续。/eyvescloud binary was not found; installation cannot continue./g' \
         -e 's/已安装二进制：/Installed binary: /g' \
-        -e 's/正在安装 CLICD 服务.../Installing CLICD service.../g' \
-        -e 's/正在清理 CLICD 防火墙和网桥规则.../Cleaning CLICD firewall and bridge rules.../g' \
+        -e 's/正在安装 EYVESCLOUD 服务.../Installing EYVESCLOUD service.../g' \
+        -e 's/正在清理 EYVESCLOUD 防火墙和网桥规则.../Cleaning EYVESCLOUD firewall and bridge rules.../g' \
         -e 's/已清理 /Cleaned /g' \
-        -e 's/ 中的 CLICD 配额记录/ CLICD quota records/g' \
+        -e 's/ 中的 EYVESCLOUD 配额记录/ EYVESCLOUD quota records/g' \
         -e 's/跳过当前安装目录 /Skipping current installation directory /g' \
         -e 's/，避免中断后续安装步骤。/ to avoid interrupting later installation steps./g' \
         -e 's/ 被占用，终止占用进程后重试删除.../ is busy; killing occupying processes and retrying removal.../g' \
-        -e 's/正在删除 CLICD 使用的 LXC 镜像缓存.../Removing LXC image cache used by CLICD.../g' \
+        -e 's/正在删除 EYVESCLOUD 使用的 LXC 镜像缓存.../Removing LXC image cache used by EYVESCLOUD.../g' \
         -e 's/正在删除 KVM 虚拟机域 /Removing KVM VM domain /g' \
-        -e 's/正在销毁 CLICD 创建的 KVM 虚拟机.../Destroying CLICD-created KVM VMs.../g' \
-        -e 's/检测到非 CLICD 虚拟机仍在使用 libvirt default 网络，已保留 default\/virbr0。/Non-CLICD VMs are still using the libvirt default network, so default\/virbr0 has been kept./g' \
-        -e 's/正在删除 CLICD 创建的 libvirt default NAT 网络.../Removing CLICD-created libvirt default NAT network.../g' \
+        -e 's/正在销毁 EYVESCLOUD 创建的 KVM 虚拟机.../Destroying EYVESCLOUD-created KVM VMs.../g' \
+        -e 's/检测到非 EYVESCLOUD 虚拟机仍在使用 libvirt default 网络，已保留 default\/virbr0。/Non-EYVESCLOUD VMs are still using the libvirt default network, so default\/virbr0 has been kept./g' \
+        -e 's/正在删除 EYVESCLOUD 创建的 libvirt default NAT 网络.../Removing EYVESCLOUD-created libvirt default NAT network.../g' \
         -e 's/已删除 /Removed /g' \
         -e 's/检测到 /Detected /g' \
         -e 's/安装完成/Installation complete/g' \
@@ -297,7 +297,7 @@ tr_msg() {
 }
 
 echo "====================================="
-echo "  $(tr_msg "CLICD 中文安装/卸载脚本")"
+echo "  $(tr_msg "EYVESCLOUD 中文安装/卸载脚本")"
 echo "====================================="
 
 write_log_file() {
@@ -308,21 +308,21 @@ write_log_file() {
 
 log() {
     msg="$(tr_msg "$*")"
-    echo "[clicd] $msg"
-    write_log_file "[clicd] $msg"
+    echo "[eyvescloud] $msg"
+    write_log_file "[eyvescloud] $msg"
 }
 
 warn() {
     label="$(tr_msg "警告")"
     msg="$(tr_msg "$*")"
-    echo "[clicd][$label] $msg" >&2
+    echo "[eyvescloud][$label] $msg" >&2
     write_log_file "[$label] $msg"
 }
 
 die() {
     label="$(tr_msg "错误")"
     msg="$(tr_msg "$*")"
-    echo "[clicd][$label] $msg" >&2
+    echo "[eyvescloud][$label] $msg" >&2
     write_log_file "[$label] $msg"
     echo "" >&2
     echo "$(tr_msg "安装/卸载未完成。请查看日志：")$LOG_FILE" >&2
@@ -352,8 +352,8 @@ run_step() {
     fi
     rc="$?"
     echo "" >&2
-    echo "[clicd][$(tr_msg "错误")] $(tr_msg "步骤失败：")$(tr_msg "$step_name")$(tr_msg "，")$(tr_msg "退出码：")$rc" >&2
-    echo "[clicd][$(tr_msg "错误")] $(tr_msg "最近 80 行日志：")$LOG_FILE" >&2
+    echo "[eyvescloud][$(tr_msg "错误")] $(tr_msg "步骤失败：")$(tr_msg "$step_name")$(tr_msg "，")$(tr_msg "退出码：")$rc" >&2
+    echo "[eyvescloud][$(tr_msg "错误")] $(tr_msg "最近 80 行日志：")$LOG_FILE" >&2
     tail -n 80 "$LOG_FILE" >&2 2>/dev/null || true
     echo "" >&2
     echo "$(tr_msg "请将上述日志和系统信息提交到：")$ISSUE_URL" >&2
@@ -361,8 +361,8 @@ run_step() {
 }
 
 check_os_compatibility() {
-    log "系统检测：ID=${OS_ID} ID_LIKE=${OS_LIKE} ARCH=${HOST_ARCH_RAW} CLICD_ARCH=${CLICD_ARCH_NORMALIZED:-unsupported}"
-    [ -n "$CLICD_ARCH_NORMALIZED" ] || die "当前安装包支持 x86_64/amd64 和 aarch64/arm64，当前架构：${HOST_ARCH_RAW}。"
+    log "系统检测：ID=${OS_ID} ID_LIKE=${OS_LIKE} ARCH=${HOST_ARCH_RAW} EYVESCLOUD_ARCH=${EYVESCLOUD_ARCH_NORMALIZED:-unsupported}"
+    [ -n "$EYVESCLOUD_ARCH_NORMALIZED" ] || die "当前安装包支持 x86_64/amd64 和 aarch64/arm64，当前架构：${HOST_ARCH_RAW}。"
     if ! is_systemd && ! is_openrc; then
         die "未检测到 systemd 或 OpenRC，无法安装服务。"
     fi
@@ -409,19 +409,19 @@ if [ -r /etc/os-release ]; then
 fi
 
 usage() {
-    if [ "$CLICD_LANG_DETECTED" = "en" ]; then
+    if [ "$EYVESCLOUD_LANG_DETECTED" = "en" ]; then
         cat << EOF
 Usage:
-  ./install.sh              Install or upgrade CLICD
-  ./install.sh uninstall    Uninstall CLICD (removes containers, VMs, image cache, and config data)
+  ./install.sh              Install or upgrade EYVESCLOUD
+  ./install.sh uninstall    Uninstall EYVESCLOUD (removes containers, VMs, image cache, and config data)
 
 Environment variables:
-  CLICD_REPO=owner/repo          Default: ${REPO}
-  CLICD_VERSION=latest|v1.0.0    Default: latest
-  CLICD_LANG=en|zh               Default: auto
-  CLICD_LXC_SUBNET=10.0.3.0/24   Default: auto-detect an available private subnet
-  CLICD_KVM_SUBNET=192.168.122.0/24
-  CLICD_LOG_FILE=/path/file.log  Default: ${LOG_FILE}
+  EYVESCLOUD_REPO=owner/repo          Default: ${REPO}
+  EYVESCLOUD_VERSION=latest|v1.0.0    Default: latest
+  EYVESCLOUD_LANG=en|zh               Default: auto
+  EYVESCLOUD_LXC_SUBNET=10.0.3.0/24   Default: auto-detect an available private subnet
+  EYVESCLOUD_KVM_SUBNET=192.168.122.0/24
+  EYVESCLOUD_LOG_FILE=/path/file.log  Default: ${LOG_FILE}
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo sh
@@ -435,16 +435,16 @@ EOF
     fi
     cat << EOF
 用法：
-  ./install.sh              安装或升级 CLICD
-  ./install.sh uninstall    卸载 CLICD（会删除容器、虚拟机、镜像缓存和配置数据）
+  ./install.sh              安装或升级 EYVESCLOUD
+  ./install.sh uninstall    卸载 EYVESCLOUD（会删除容器、虚拟机、镜像缓存和配置数据）
 
 环境变量：
-  CLICD_REPO=owner/repo          默认：${REPO}
-  CLICD_VERSION=latest|v1.0.0    默认：latest
-  CLICD_LANG=en|zh               默认：自动检测
-  CLICD_LXC_SUBNET=10.0.3.0/24   默认：自动检测可用私网网段
-  CLICD_KVM_SUBNET=192.168.122.0/24
-  CLICD_LOG_FILE=/path/file.log  默认：${LOG_FILE}
+  EYVESCLOUD_REPO=owner/repo          默认：${REPO}
+  EYVESCLOUD_VERSION=latest|v1.0.0    默认：latest
+  EYVESCLOUD_LANG=en|zh               默认：自动检测
+  EYVESCLOUD_LXC_SUBNET=10.0.3.0/24   默认：自动检测可用私网网段
+  EYVESCLOUD_KVM_SUBNET=192.168.122.0/24
+  EYVESCLOUD_LOG_FILE=/path/file.log  默认：${LOG_FILE}
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo sh
@@ -532,10 +532,10 @@ remove_lxc_container_dir() {
     log "已删除 $container_dir"
 }
 
-remove_clicd_lxc_image_cache() {
-    log "正在删除 CLICD 使用的 LXC 镜像缓存..."
+remove_eyvescloud_lxc_image_cache() {
+    log "正在删除 EYVESCLOUD 使用的 LXC 镜像缓存..."
 
-    for container_dir in /var/lib/lxc/clicd-img-dl-*; do
+    for container_dir in /var/lib/lxc/eyvescloud-img-dl-*; do
         [ -d "$container_dir" ] || continue
         remove_lxc_container_dir "$container_dir"
     done
@@ -591,8 +591,8 @@ remove_kvm_domain() {
             return
             ;;
     esac
-    if [ ! -d "/var/lib/clicd/kvm/instances/$domain" ] &&
-        ! virsh dumpxml "$domain" 2>/dev/null | grep -q '/var/lib/clicd/kvm/'; then
+    if [ ! -d "/var/lib/eyvescloud/kvm/instances/$domain" ] &&
+        ! virsh dumpxml "$domain" 2>/dev/null | grep -q '/var/lib/eyvescloud/kvm/'; then
         return
     fi
 
@@ -604,36 +604,36 @@ remove_kvm_domain() {
         true
 }
 
-destroy_clicd_kvm_domains() {
+destroy_eyvescloud_kvm_domains() {
     if ! has_cmd virsh; then
         return
     fi
 
-    log "正在销毁 CLICD 创建的 KVM 虚拟机..."
+    log "正在销毁 EYVESCLOUD 创建的 KVM 虚拟机..."
     virsh list --all --name 2>/dev/null | while IFS= read -r domain; do
         [ -n "$domain" ] || continue
         remove_kvm_domain "$domain"
     done
 }
 
-domain_is_clicd_kvm() {
+domain_is_eyvescloud_kvm() {
     domain="$1"
     case "$domain" in
         vm-[0-9]*)
             return 0
             ;;
     esac
-    virsh dumpxml "$domain" 2>/dev/null | grep -q '/var/lib/clicd/kvm/'
+    virsh dumpxml "$domain" 2>/dev/null | grep -q '/var/lib/eyvescloud/kvm/'
 }
 
-libvirt_default_used_by_non_clicd_domain() {
+libvirt_default_used_by_non_eyvescloud_domain() {
     if ! has_cmd virsh; then
         return 1
     fi
 
     for domain in $(virsh list --all --name 2>/dev/null); do
         [ -n "$domain" ] || continue
-        if domain_is_clicd_kvm "$domain"; then
+        if domain_is_eyvescloud_kvm "$domain"; then
             continue
         fi
         if virsh domiflist "$domain" 2>/dev/null | awk '$3 == "default" || $3 == "virbr0" {found = 1} END {exit found ? 0 : 1}'; then
@@ -643,16 +643,16 @@ libvirt_default_used_by_non_clicd_domain() {
     return 1
 }
 
-remove_clicd_libvirt_default_network() {
+remove_eyvescloud_libvirt_default_network() {
     if ! has_cmd virsh || [ ! -f "$LIBVIRT_DEFAULT_MARKER" ]; then
         return
     fi
-    if libvirt_default_used_by_non_clicd_domain; then
-        warn "检测到非 CLICD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。"
+    if libvirt_default_used_by_non_eyvescloud_domain; then
+        warn "检测到非 EYVESCLOUD 虚拟机仍在使用 libvirt default 网络，已保留 default/virbr0。"
         return
     fi
 
-    log "正在删除 CLICD 创建的 libvirt default NAT 网络..."
+    log "正在删除 EYVESCLOUD 创建的 libvirt default NAT 网络..."
     virsh net-destroy default >/dev/null 2>&1 || true
     virsh net-undefine default >/dev/null 2>&1 || true
     rm -f "$LIBVIRT_DEFAULT_MARKER"
@@ -725,19 +725,19 @@ delete_ip6tables_nat_source() {
     done
 }
 
-read_clicd_network_records() {
-    db="/root/.clicd/config.db"
-    legacy="/root/.clicd/config.json"
+read_eyvescloud_network_records() {
+    db="/root/.eyvescloud/config.db"
+    legacy="/root/.eyvescloud/config.json"
     query="SELECT COALESCE(virtualization,''), COALESCE(ipv6,''), COALESCE(ipv6_interface,''), COALESCE(mac_address,'') FROM containers WHERE COALESCE(ipv6,'') <> '' OR COALESCE(mac_address,'') <> '';"
 
     if [ -f "$db" ] && has_cmd sqlite3; then
         sqlite3 -separator '|' "$db" "$query" 2>/dev/null || true
     elif [ -f "$db" ] && has_cmd python3; then
-        CLICD_DB="$db" python3 - <<'PY' 2>/dev/null || true
+        EYVESCLOUD_DB="$db" python3 - <<'PY' 2>/dev/null || true
 import os
 import sqlite3
 
-db = os.environ.get("CLICD_DB")
+db = os.environ.get("EYVESCLOUD_DB")
 for row in sqlite3.connect(db).execute(
     "SELECT COALESCE(virtualization,''), COALESCE(ipv6,''), COALESCE(ipv6_interface,''), COALESCE(mac_address,'') "
     "FROM containers WHERE COALESCE(ipv6,'') <> '' OR COALESCE(mac_address,'') <> ''"
@@ -747,11 +747,11 @@ PY
     fi
 
     if [ -f "$legacy" ] && has_cmd python3; then
-        CLICD_LEGACY_CONFIG="$legacy" python3 - <<'PY' 2>/dev/null || true
+        EYVESCLOUD_LEGACY_CONFIG="$legacy" python3 - <<'PY' 2>/dev/null || true
 import json
 import os
 
-path = os.environ.get("CLICD_LEGACY_CONFIG")
+path = os.environ.get("EYVESCLOUD_LEGACY_CONFIG")
 with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
 for item in data.get("containers", []):
@@ -765,7 +765,7 @@ PY
     fi
 }
 
-cleanup_clicd_ipv6_record() {
+cleanup_eyvescloud_ipv6_record() {
     virt="$1"
     ipv6="$2"
     uplink="$3"
@@ -804,13 +804,13 @@ cleanup_clicd_ipv6_record() {
     fi
 }
 
-cleanup_clicd_ipv6_from_config() {
-    read_clicd_network_records | while IFS='|' read -r virt ipv6 uplink mac; do
-        cleanup_clicd_ipv6_record "$virt" "$ipv6" "$uplink" "$mac"
+cleanup_eyvescloud_ipv6_from_config() {
+    read_eyvescloud_network_records | while IFS='|' read -r virt ipv6 uplink mac; do
+        cleanup_eyvescloud_ipv6_record "$virt" "$ipv6" "$uplink" "$mac"
     done
 }
 
-cleanup_clicd_ipv6_bridge_routes() {
+cleanup_eyvescloud_ipv6_bridge_routes() {
     if ! has_cmd ip; then
         return
     fi
@@ -847,20 +847,20 @@ delete_ip6tables_bridge_rules() {
     done
 }
 
-cleanup_clicd_networking() {
-    log "正在清理 CLICD 防火墙和网桥规则..."
-    delete_iptables_lines nat PREROUTING 'clicd-'
-    delete_iptables_lines nat POSTROUTING 'clicd-'
-    configured_lxc_subnet="$(sed -n 's/^CLICD_LXC_SUBNET=//p' "$CLICD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
-    configured_kvm_subnet="$(sed -n 's/^CLICD_KVM_SUBNET=//p' "$CLICD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
+cleanup_eyvescloud_networking() {
+    log "正在清理 EYVESCLOUD 防火墙和网桥规则..."
+    delete_iptables_lines nat PREROUTING 'eyvescloud-'
+    delete_iptables_lines nat POSTROUTING 'eyvescloud-'
+    configured_lxc_subnet="$(sed -n 's/^EYVESCLOUD_LXC_SUBNET=//p' "$EYVESCLOUD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
+    configured_kvm_subnet="$(sed -n 's/^EYVESCLOUD_KVM_SUBNET=//p' "$EYVESCLOUD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
     [ -n "$configured_lxc_subnet" ] || configured_lxc_subnet="$(ip -4 route show dev lxcbr0 proto kernel scope link 2>/dev/null | awk '$1 ~ /\// {print $1; exit}' || true)"
     [ -n "$configured_kvm_subnet" ] || configured_kvm_subnet="$(ip -4 route show dev virbr0 proto kernel scope link 2>/dev/null | awk '$1 ~ /\// {print $1; exit}' || true)"
     for subnet in 10.0.3.0/24 192.168.122.0/24 "$configured_lxc_subnet" "$configured_kvm_subnet"; do
         [ -n "$subnet" ] || continue
         delete_iptables_rule nat POSTROUTING -s "$subnet" -o eth+ -j MASQUERADE
     done
-    cleanup_clicd_ipv6_from_config
-    cleanup_clicd_ipv6_bridge_routes
+    cleanup_eyvescloud_ipv6_from_config
+    cleanup_eyvescloud_ipv6_bridge_routes
 
     for bridge in lxcbr0 virbr0; do
         delete_filter_rule FORWARD -i "$bridge" -j ACCEPT
@@ -872,51 +872,51 @@ cleanup_clicd_networking() {
 
 restore_lxc_network_configs() {
     for path in /etc/default/lxc-net /etc/sysconfig/lxc-net /etc/conf.d/lxc-net /etc/conf.d/lxc-bridge; do
-        backup="${path}.clicd-backup"
+        backup="${path}.eyvescloud-backup"
         if [ -f "$backup" ]; then
             mv -f "$backup" "$path"
             log "已恢复 $path"
-        elif [ -f "${path}.clicd-created" ]; then
+        elif [ -f "${path}.eyvescloud-created" ]; then
             remove_path "$path"
         fi
-        rm -f "${path}.clicd-created"
+        rm -f "${path}.eyvescloud-created"
     done
-    remove_path "$CLICD_NETWORK_ENV"
-    rmdir /etc/clicd >/dev/null 2>&1 || true
+    remove_path "$EYVESCLOUD_NETWORK_ENV"
+    rmdir /etc/eyvescloud >/dev/null 2>&1 || true
 }
 
-remove_clicd_host_hooks() {
+remove_eyvescloud_host_hooks() {
     if has_cmd systemctl; then
-        systemctl stop clicd-kvm-ipv6.service >/dev/null 2>&1 || true
-        systemctl disable clicd-kvm-ipv6.service >/dev/null 2>&1 || true
+        systemctl stop eyvescloud-kvm-ipv6.service >/dev/null 2>&1 || true
+        systemctl disable eyvescloud-kvm-ipv6.service >/dev/null 2>&1 || true
     fi
     if has_cmd rc-service; then
-        rc-service clicd-kvm-ipv6 stop >/dev/null 2>&1 || true
+        rc-service eyvescloud-kvm-ipv6 stop >/dev/null 2>&1 || true
     fi
     if has_cmd rc-update; then
-        rc-update del clicd-kvm-ipv6 default >/dev/null 2>&1 || true
+        rc-update del eyvescloud-kvm-ipv6 default >/dev/null 2>&1 || true
     fi
 
-    remove_path /usr/local/sbin/clicd-kvm-ipv6-init
-    remove_path /etc/systemd/system/clicd-kvm-ipv6.service
-    remove_path /etc/local.d/clicd-kvm-ipv6.start
-    remove_path /etc/network/if-up.d/clicd-kvm-ipv6
+    remove_path /usr/local/sbin/eyvescloud-kvm-ipv6-init
+    remove_path /etc/systemd/system/eyvescloud-kvm-ipv6.service
+    remove_path /etc/local.d/eyvescloud-kvm-ipv6.start
+    remove_path /etc/network/if-up.d/eyvescloud-kvm-ipv6
 }
 
-remove_clicd_quota_records() {
+remove_eyvescloud_quota_records() {
     for file in /etc/projects /etc/projid; do
         [ -f "$file" ] || continue
-        tmp="${file}.clicd-clean.$$"
-        grep -v 'clicd-' "$file" > "$tmp" || true
+        tmp="${file}.eyvescloud-clean.$$"
+        grep -v 'eyvescloud-' "$file" > "$tmp" || true
         cat "$tmp" > "$file"
         rm -f "$tmp"
-        log "已清理 $file 中的 CLICD 配额记录"
+        log "已清理 $file 中的 EYVESCLOUD 配额记录"
     done
 }
 
-remove_clicd_tmp_files() {
+remove_eyvescloud_tmp_files() {
     current_dir="$(pwd -P 2>/dev/null || pwd)"
-    for path in /tmp/clicd-* /tmp/clicd.*; do
+    for path in /tmp/eyvescloud-* /tmp/eyvescloud.*; do
         [ -e "$path" ] || [ -L "$path" ] || continue
         abs_path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")"
         if [ "$abs_path" = "$current_dir" ]; then
@@ -928,7 +928,7 @@ remove_clicd_tmp_files() {
     done
 }
 
-remove_clicd_swapfile() {
+remove_eyvescloud_swapfile() {
     if [ ! -e /swapfile ]; then
         return
     fi
@@ -938,12 +938,12 @@ remove_clicd_swapfile() {
 
 
 confirm_uninstall() {
-    if [ "${CLICD_UNINSTALL_CONFIRM:-}" = "1" ] || [ "${CLICD_UNINSTALL_CONFIRM:-}" = "yes" ] || [ "$ACTION_CONFIRM" = "--yes" ] || [ "$ACTION_CONFIRM" = "-y" ]; then
+    if [ "${EYVESCLOUD_UNINSTALL_CONFIRM:-}" = "1" ] || [ "${EYVESCLOUD_UNINSTALL_CONFIRM:-}" = "yes" ] || [ "$ACTION_CONFIRM" = "--yes" ] || [ "$ACTION_CONFIRM" = "-y" ]; then
         return
     fi
     echo ""
-    echo "[clicd][$(tr_msg "警告")] $(tr_msg "卸载会停止并删除 CLICD 服务、配置数据库、CLICD 创建的 LXC/KVM 实例和缓存数据。")" >&2
-    echo "[clicd][$(tr_msg "警告")] $(tr_msg "为避免误删生产数据，脚本只会删除名称形如 ct-数字 的 LXC 容器、clicd-img-dl-* 下载临时容器和 vm-数字 的 KVM 域。")" >&2
+    echo "[eyvescloud][$(tr_msg "警告")] $(tr_msg "卸载会停止并删除 EYVESCLOUD 服务、配置数据库、EYVESCLOUD 创建的 LXC/KVM 实例和缓存数据。")" >&2
+    echo "[eyvescloud][$(tr_msg "警告")] $(tr_msg "为避免误删生产数据，脚本只会删除名称形如 ct-数字 的 LXC 容器、eyvescloud-img-dl-* 下载临时容器和 vm-数字 的 KVM 域。")" >&2
     echo "$(tr_msg "如需确认卸载，请输入：YES")" >&2
     if [ -r /dev/tty ]; then
         IFS= read -r answer < /dev/tty
@@ -953,58 +953,58 @@ confirm_uninstall() {
         answer=""
     fi
     if [ "$answer" != "YES" ]; then
-        die "已取消卸载。如需非交互卸载，请设置 CLICD_UNINSTALL_CONFIRM=1。"
+        die "已取消卸载。如需非交互卸载，请设置 EYVESCLOUD_UNINSTALL_CONFIRM=1。"
     fi
 }
 
-uninstall_clicd() {
+uninstall_eyvescloud() {
     confirm_uninstall
-    log "正在卸载 CLICD..."
+    log "正在卸载 EYVESCLOUD..."
 
     if has_cmd systemctl; then
-        systemctl stop clicd >/dev/null 2>&1 || true
-        systemctl disable clicd >/dev/null 2>&1 || true
+        systemctl stop eyvescloud >/dev/null 2>&1 || true
+        systemctl disable eyvescloud >/dev/null 2>&1 || true
     fi
 
     if has_cmd rc-service; then
-        rc-service clicd stop >/dev/null 2>&1 || true
+        rc-service eyvescloud stop >/dev/null 2>&1 || true
     fi
     if has_cmd rc-update; then
-        rc-update del clicd default >/dev/null 2>&1 || true
+        rc-update del eyvescloud default >/dev/null 2>&1 || true
     fi
 
-    log "正在删除 CLICD 创建的 LXC 容器（/var/lib/lxc/ct-数字）..."
+    log "正在删除 EYVESCLOUD 创建的 LXC 容器（/var/lib/lxc/ct-数字）..."
     for container_dir in /var/lib/lxc/ct-[0-9]*; do
         [ -d "$container_dir" ] || continue
         remove_lxc_container_dir "$container_dir"
     done
-    remove_clicd_lxc_image_cache
-    destroy_clicd_kvm_domains
-    remove_clicd_libvirt_default_network
-    cleanup_clicd_networking
+    remove_eyvescloud_lxc_image_cache
+    destroy_eyvescloud_kvm_domains
+    remove_eyvescloud_libvirt_default_network
+    cleanup_eyvescloud_networking
     restore_lxc_network_configs
-    remove_clicd_host_hooks
-    remove_clicd_quota_records
+    remove_eyvescloud_host_hooks
+    remove_eyvescloud_quota_records
 
-    remove_path /etc/systemd/system/clicd.service
-    remove_path /etc/init.d/clicd
-    remove_path /usr/local/bin/clicd
-    remove_path /etc/sysctl.d/99-clicd.conf
-    remove_path /var/log/clicd.log
-    remove_path /var/log/clicd.err
-    remove_path /root/.clicd
-    # /var/lib/lxc 可能包含非 CLICD 容器，生产环境不整体删除。
-    unmount_path_tree /var/lib/clicd
-    remove_path /var/lib/clicd
-    # /var/cache/lxc 是 LXC 全局缓存，已按 CLICD 模板精确清理，生产环境不整体删除。
-    remove_path /var/cache/clicd
-    warn "保留 /root/clicd-backups，避免误删部署/回滚备份。确认不需要后可手动删除。"
-    remove_clicd_tmp_files
-    remove_clicd_swapfile
+    remove_path /etc/systemd/system/eyvescloud.service
+    remove_path /etc/init.d/eyvescloud
+    remove_path /usr/local/bin/eyvescloud
+    remove_path /etc/sysctl.d/99-eyvescloud.conf
+    remove_path /var/log/eyvescloud.log
+    remove_path /var/log/eyvescloud.err
+    remove_path /root/.eyvescloud
+    # /var/lib/lxc 可能包含非 EYVESCLOUD 容器，生产环境不整体删除。
+    unmount_path_tree /var/lib/eyvescloud
+    remove_path /var/lib/eyvescloud
+    # /var/cache/lxc 是 LXC 全局缓存，已按 EYVESCLOUD 模板精确清理，生产环境不整体删除。
+    remove_path /var/cache/eyvescloud
+    warn "保留 /root/eyvescloud-backups，避免误删部署/回滚备份。确认不需要后可手动删除。"
+    remove_eyvescloud_tmp_files
+    remove_eyvescloud_swapfile
 
     if has_cmd systemctl; then
         systemctl daemon-reload >/dev/null 2>&1 || true
-        systemctl reset-failed clicd >/dev/null 2>&1 || true
+        systemctl reset-failed eyvescloud >/dev/null 2>&1 || true
     fi
     if has_cmd sysctl; then
         sysctl --system >/dev/null 2>&1 || true
@@ -1012,11 +1012,11 @@ uninstall_clicd() {
 
     echo ""
     echo "====================================="
-    echo "  $(tr_msg "CLICD 卸载完成")"
+    echo "  $(tr_msg "EYVESCLOUD 卸载完成")"
     echo "====================================="
-    echo "  $(tr_msg "已删除服务、二进制、SQLite/配置数据、CLICD LXC/KVM 实例、")"
-    echo "  $(tr_msg "CLICD 镜像缓存、防火墙规则、主机钩子、配额记录和临时文件。")"
-    echo "  $(tr_msg "已保留 /root/clicd-backups 和非 CLICD 的 LXC 全局缓存，避免误删生产备份/共享镜像。")"
+    echo "  $(tr_msg "已删除服务、二进制、SQLite/配置数据、EYVESCLOUD LXC/KVM 实例、")"
+    echo "  $(tr_msg "EYVESCLOUD 镜像缓存、防火墙规则、主机钩子、配额记录和临时文件。")"
+    echo "  $(tr_msg "已保留 /root/eyvescloud-backups 和非 EYVESCLOUD 的 LXC 全局缓存，避免误删生产备份/共享镜像。")"
     echo "  $(tr_msg "日志：")$LOG_FILE"
     echo "  $(tr_msg "问题反馈：")$ISSUE_URL"
     echo "====================================="
@@ -1026,7 +1026,7 @@ case "$ACTION" in
     install|"")
         ;;
     uninstall|remove)
-        uninstall_clicd
+        uninstall_eyvescloud
         exit 0
         ;;
     -h|--help|help)
@@ -1289,13 +1289,13 @@ saved_nat_subnet() {
     key="$1"
     bridge="$2"
     saved=""
-    if [ -f "$CLICD_NETWORK_ENV" ]; then
-        saved="$(sed -n "s/^${key}=//p" "$CLICD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
+    if [ -f "$EYVESCLOUD_NETWORK_ENV" ]; then
+        saved="$(sed -n "s/^${key}=//p" "$EYVESCLOUD_NETWORK_ENV" 2>/dev/null | tail -n 1)"
     fi
     if [ -z "$saved" ]; then
         saved="$(current_bridge_subnet "$bridge")"
     fi
-    if [ -z "$saved" ] && [ "$key" = "CLICD_LXC_SUBNET" ]; then
+    if [ -z "$saved" ] && [ "$key" = "EYVESCLOUD_LXC_SUBNET" ]; then
         for path in /etc/default/lxc-net /etc/sysconfig/lxc-net /etc/conf.d/lxc-net /etc/conf.d/lxc-bridge; do
             [ -f "$path" ] || continue
             saved="$(sed -n 's/^[[:space:]]*LXC_NETWORK=["'\'']*\([^"'\'']*\)["'\'']*[[:space:]]*$/\1/p' "$path" | tail -n 1)"
@@ -1311,11 +1311,11 @@ resolve_nat_network() {
     hint="$3"
     exclude_bridge="$4"
     extra_blocked="$5"
-    CLICD_NET_ROLE="$role" \
-    CLICD_NET_REQUESTED="$requested" \
-    CLICD_NET_HINT="$hint" \
-    CLICD_NET_EXCLUDE_BRIDGE="$exclude_bridge" \
-    CLICD_NET_EXTRA_BLOCKED="$extra_blocked" \
+    EYVESCLOUD_NET_ROLE="$role" \
+    EYVESCLOUD_NET_REQUESTED="$requested" \
+    EYVESCLOUD_NET_HINT="$hint" \
+    EYVESCLOUD_NET_EXCLUDE_BRIDGE="$exclude_bridge" \
+    EYVESCLOUD_NET_EXTRA_BLOCKED="$extra_blocked" \
         python3 - <<'PY'
 import ipaddress
 import os
@@ -1331,11 +1331,11 @@ def clean_excepthook(exc_type, value, traceback):
 
 sys.excepthook = clean_excepthook
 
-role = os.environ.get("CLICD_NET_ROLE", "lxc")
-requested = os.environ.get("CLICD_NET_REQUESTED", "").strip()
-hint = os.environ.get("CLICD_NET_HINT", "").strip()
-exclude_bridge = os.environ.get("CLICD_NET_EXCLUDE_BRIDGE", "").strip()
-extra_blocked = os.environ.get("CLICD_NET_EXTRA_BLOCKED", "").strip()
+role = os.environ.get("EYVESCLOUD_NET_ROLE", "lxc")
+requested = os.environ.get("EYVESCLOUD_NET_REQUESTED", "").strip()
+hint = os.environ.get("EYVESCLOUD_NET_HINT", "").strip()
+exclude_bridge = os.environ.get("EYVESCLOUD_NET_EXCLUDE_BRIDGE", "").strip()
+extra_blocked = os.environ.get("EYVESCLOUD_NET_EXTRA_BLOCKED", "").strip()
 private_ranges = tuple(
     ipaddress.ip_network(item)
     for item in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
@@ -1450,7 +1450,7 @@ else:
                 break
 
 if selected is None:
-    raise ValueError("没有找到可用的私网网段，请通过 CLICD_LXC_SUBNET/CLICD_KVM_SUBNET 手动指定")
+    raise ValueError("没有找到可用的私网网段，请通过 EYVESCLOUD_LXC_SUBNET/EYVESCLOUD_KVM_SUBNET 手动指定")
 
 hosts = selected.num_addresses
 gateway = selected.network_address + 1
@@ -1480,7 +1480,7 @@ prompt_nat_network() {
 
     while :; do
         if [ -z "$requested" ] && network_prompt_available; then
-            if [ "$CLICD_LANG_DETECTED" = "en" ]; then
+            if [ "$EYVESCLOUD_LANG_DETECTED" = "en" ]; then
                 printf "  %s (IPv4 CIDR, press Enter to auto-detect): " "$label_en" > /dev/tty
             else
                 printf "  %s（IPv4 CIDR，回车自动检测可用网段）: " "$label_zh" > /dev/tty
@@ -1489,7 +1489,7 @@ prompt_nat_network() {
         fi
         [ -n "$requested" ] || requested="auto"
 
-        error_file="/tmp/clicd-network-error.$$"
+        error_file="/tmp/eyvescloud-network-error.$$"
         if values="$(resolve_nat_network "$role" "$requested" "$hint" "$bridge" "$extra_blocked" 2>"$error_file")"; then
             rm -f "$error_file"
             printf '%s' "$values"
@@ -1506,10 +1506,10 @@ prompt_nat_network() {
 }
 
 choose_nat_networks() {
-    lxc_hint="$(saved_nat_subnet CLICD_LXC_SUBNET lxcbr0)"
-    kvm_hint="$(saved_nat_subnet CLICD_KVM_SUBNET virbr0)"
+    lxc_hint="$(saved_nat_subnet EYVESCLOUD_LXC_SUBNET lxcbr0)"
+    kvm_hint="$(saved_nat_subnet EYVESCLOUD_KVM_SUBNET virbr0)"
 
-    lxc_values="$(prompt_nat_network lxc "LXC NAT 网段" "LXC NAT subnet" "${CLICD_LXC_SUBNET:-}" "$lxc_hint" lxcbr0 "")"
+    lxc_values="$(prompt_nat_network lxc "LXC NAT 网段" "LXC NAT subnet" "${EYVESCLOUD_LXC_SUBNET:-}" "$lxc_hint" lxcbr0 "")"
     old_ifs="$IFS"
     IFS='|'
     set -- $lxc_values
@@ -1521,7 +1521,7 @@ choose_nat_networks() {
     LXC_NAT_DHCP_END="$5"
     LXC_NAT_DHCP_MAX="$6"
 
-    kvm_values="$(prompt_nat_network kvm "KVM NAT 网段" "KVM NAT subnet" "${CLICD_KVM_SUBNET:-}" "$kvm_hint" virbr0 "$LXC_NAT_SUBNET")"
+    kvm_values="$(prompt_nat_network kvm "KVM NAT 网段" "KVM NAT subnet" "${EYVESCLOUD_KVM_SUBNET:-}" "$kvm_hint" virbr0 "$LXC_NAT_SUBNET")"
     IFS='|'
     set -- $kvm_values
     IFS="$old_ifs"
@@ -1532,20 +1532,20 @@ choose_nat_networks() {
     KVM_NAT_DHCP_END="$5"
     KVM_NAT_DHCP_MAX="$6"
 
-    export CLICD_LXC_SUBNET="$LXC_NAT_SUBNET"
-    export CLICD_KVM_SUBNET="$KVM_NAT_SUBNET"
+    export EYVESCLOUD_LXC_SUBNET="$LXC_NAT_SUBNET"
+    export EYVESCLOUD_KVM_SUBNET="$KVM_NAT_SUBNET"
     log "NAT 网络：LXC=${LXC_NAT_SUBNET} gateway=${LXC_NAT_GATEWAY}，KVM=${KVM_NAT_SUBNET} gateway=${KVM_NAT_GATEWAY}"
 }
 
 write_lxc_network_config() {
     path="$1"
     mkdir -p "$(dirname "$path")"
-    if [ -f "${path}.clicd-created" ]; then
+    if [ -f "${path}.eyvescloud-created" ]; then
         :
-    elif [ -f "$path" ] && [ ! -f "${path}.clicd-backup" ]; then
-        cp -p "$path" "${path}.clicd-backup"
+    elif [ -f "$path" ] && [ ! -f "${path}.eyvescloud-backup" ]; then
+        cp -p "$path" "${path}.eyvescloud-backup"
     elif [ ! -f "$path" ]; then
-        touch "${path}.clicd-created"
+        touch "${path}.eyvescloud-created"
     fi
     cat > "$path" << EOF
 USE_LXC_BRIDGE="true"
@@ -1564,8 +1564,8 @@ configure_lxc_nat_network() {
     previous="$(current_bridge_subnet lxcbr0)"
     if [ -n "$previous" ] && [ "$previous" != "$LXC_NAT_SUBNET" ]; then
         active="$(lxc-ls --active 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
-        if [ -n "$active" ] && [ "${CLICD_FORCE_NAT_RECONFIGURE:-0}" != "1" ]; then
-            die "LXC NAT 网段将从 ${previous} 修改为 ${LXC_NAT_SUBNET}，但仍有运行中的 LXC：${active}。请先关机，或设置 CLICD_FORCE_NAT_RECONFIGURE=1。"
+        if [ -n "$active" ] && [ "${EYVESCLOUD_FORCE_NAT_RECONFIGURE:-0}" != "1" ]; then
+            die "LXC NAT 网段将从 ${previous} 修改为 ${LXC_NAT_SUBNET}，但仍有运行中的 LXC：${active}。请先关机，或设置 EYVESCLOUD_FORCE_NAT_RECONFIGURE=1。"
         fi
         if is_systemd; then
             systemctl stop lxc-net.service >/dev/null 2>&1 || true
@@ -1586,17 +1586,17 @@ configure_lxc_nat_network() {
             ;;
     esac
 
-    mkdir -p "$(dirname "$CLICD_NETWORK_ENV")"
-    cat > "$CLICD_NETWORK_ENV" << EOF
-CLICD_LXC_SUBNET=${LXC_NAT_SUBNET}
-CLICD_KVM_SUBNET=${KVM_NAT_SUBNET}
+    mkdir -p "$(dirname "$EYVESCLOUD_NETWORK_ENV")"
+    cat > "$EYVESCLOUD_NETWORK_ENV" << EOF
+EYVESCLOUD_LXC_SUBNET=${LXC_NAT_SUBNET}
+EYVESCLOUD_KVM_SUBNET=${KVM_NAT_SUBNET}
 EOF
-    chmod 0644 "$CLICD_NETWORK_ENV"
+    chmod 0644 "$EYVESCLOUD_NETWORK_ENV"
 }
 
 configure_kernel_networking() {
     log "正在启用内核转发配置..."
-    cat > /etc/sysctl.d/99-clicd.conf << 'EOF'
+    cat > /etc/sysctl.d/99-eyvescloud.conf << 'EOF'
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
 net.bridge.bridge-nf-call-iptables = 0
@@ -1682,7 +1682,7 @@ setup_runtime_services() {
         return
     fi
 
-    die "未检测到支持的服务管理器。CLICD 当前支持 systemd 或 OpenRC。"
+    die "未检测到支持的服务管理器。EYVESCLOUD 当前支持 systemd 或 OpenRC。"
 }
 
 
@@ -1728,8 +1728,8 @@ setup_default_libvirt_network() {
     current_subnet="$(libvirt_default_subnet)"
     if [ -n "$current_subnet" ] && [ "$current_subnet" != "$KVM_NAT_SUBNET" ]; then
         domains="$(libvirt_default_in_use | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-        if [ -n "$domains" ] && [ "${CLICD_FORCE_NAT_RECONFIGURE:-0}" != "1" ]; then
-            die "KVM NAT 网段将从 ${current_subnet} 修改为 ${KVM_NAT_SUBNET}，但 libvirt default 网络仍被虚拟机使用：${domains}。请先关机，或设置 CLICD_FORCE_NAT_RECONFIGURE=1。"
+        if [ -n "$domains" ] && [ "${EYVESCLOUD_FORCE_NAT_RECONFIGURE:-0}" != "1" ]; then
+            die "KVM NAT 网段将从 ${current_subnet} 修改为 ${KVM_NAT_SUBNET}，但 libvirt default 网络仍被虚拟机使用：${domains}。请先关机，或设置 EYVESCLOUD_FORCE_NAT_RECONFIGURE=1。"
         fi
         if libvirt_network_active; then
             LC_ALL=C LANG=C virsh net-destroy default >/dev/null
@@ -1737,7 +1737,7 @@ setup_default_libvirt_network() {
         LC_ALL=C LANG=C virsh net-undefine default >/dev/null
     fi
     if ! virsh net-info default >/dev/null 2>&1; then
-        net_xml="$(mktemp /tmp/clicd-default-net.XXXXXX.xml)"
+        net_xml="$(mktemp /tmp/eyvescloud-default-net.XXXXXX.xml)"
         cat > "$net_xml" << EOF
 <network>
   <name>default</name>
@@ -1792,22 +1792,22 @@ try_enable_project_quota() {
         ext4)
             ;;
         xfs|btrfs|zfs|overlay|unknown|"")
-            log "根文件系统 ${root_fs:-unknown} 不需要/不适合自动启用 ext4 project quota，CLICD 将使用兼容磁盘限制模式。"
+            log "根文件系统 ${root_fs:-unknown} 不需要/不适合自动启用 ext4 project quota，EYVESCLOUD 将使用兼容磁盘限制模式。"
             return
             ;;
         *)
-            log "根文件系统 ${root_fs:-unknown} 不在自动 project quota 支持范围，CLICD 将使用兼容磁盘限制模式。"
+            log "根文件系统 ${root_fs:-unknown} 不在自动 project quota 支持范围，EYVESCLOUD 将使用兼容磁盘限制模式。"
             return
             ;;
     esac
 
     if [ -z "$root_src" ] || [ ! -b "$root_src" ]; then
-        log "根分区来源 ${root_src:-unknown} 不是块设备，跳过 project quota 自动检查，CLICD 将使用兼容磁盘限制模式。"
+        log "根分区来源 ${root_src:-unknown} 不是块设备，跳过 project quota 自动检查，EYVESCLOUD 将使用兼容磁盘限制模式。"
         return
     fi
 
     if ! has_cmd tune2fs; then
-        log "未找到 tune2fs，跳过 project quota 检查，CLICD 将使用兼容磁盘限制模式。"
+        log "未找到 tune2fs，跳过 project quota 检查，EYVESCLOUD 将使用兼容磁盘限制模式。"
         return
     fi
 
@@ -1816,7 +1816,7 @@ try_enable_project_quota() {
         return
     fi
 
-    log "ext4 project quota 未启用，CLICD 将自动回退到 loopback 镜像磁盘限制模式。"
+    log "ext4 project quota 未启用，EYVESCLOUD 将自动回退到 loopback 镜像磁盘限制模式。"
 }
 
 download_file() {
@@ -1851,8 +1851,8 @@ release_api_json() {
 release_asset_url() {
     asset_name="$1"
 
-    if [ "$CLICD_INSTALL_VERSION" != "latest" ]; then
-        printf '%s\n' "https://github.com/${REPO}/releases/download/${CLICD_INSTALL_VERSION}/${asset_name}"
+    if [ "$EYVESCLOUD_INSTALL_VERSION" != "latest" ]; then
+        printf '%s\n' "https://github.com/${REPO}/releases/download/${EYVESCLOUD_INSTALL_VERSION}/${asset_name}"
         return
     fi
 
@@ -1873,17 +1873,17 @@ release_asset_url() {
 }
 
 download_release_if_needed() {
-    if [ -f "./clicd" ]; then
+    if [ -f "./eyvescloud" ]; then
         return
     fi
 
-    if [ "$CLICD_INSTALL_VERSION" = "latest" ]; then
+    if [ "$EYVESCLOUD_INSTALL_VERSION" = "latest" ]; then
         download_url="https://github.com/${REPO}/releases/latest/download/${ASSET}"
     else
-        download_url="https://github.com/${REPO}/releases/download/${CLICD_INSTALL_VERSION}/${ASSET}"
+        download_url="https://github.com/${REPO}/releases/download/${EYVESCLOUD_INSTALL_VERSION}/${ASSET}"
     fi
 
-    log "当前目录未找到 clicd 二进制，将下载发行版包。"
+    log "当前目录未找到 eyvescloud 二进制，将下载发行版包。"
     log "正在下载发行版包：${download_url}"
 
     tmp_dir="$(mktemp -d)"
@@ -1916,10 +1916,10 @@ download_release_if_needed() {
         tar -xzf "$archive_path" -C "$tmp_dir" || die "Failed to extract release package: $archive_path"
     else
         binary_asset="$BINARY_ASSET"
-        if [ "$CLICD_INSTALL_VERSION" = "latest" ]; then
+        if [ "$EYVESCLOUD_INSTALL_VERSION" = "latest" ]; then
             binary_url="https://github.com/${REPO}/releases/latest/download/${binary_asset}"
         else
-            binary_url="https://github.com/${REPO}/releases/download/${CLICD_INSTALL_VERSION}/${binary_asset}"
+            binary_url="https://github.com/${REPO}/releases/download/${EYVESCLOUD_INSTALL_VERSION}/${binary_asset}"
         fi
         binary_urls="$binary_url"
         resolved_binary_url="$(release_asset_url "$binary_asset")"
@@ -1934,8 +1934,8 @@ download_release_if_needed() {
             log "Trying release binary: $url"
             if download_file "$url" "$binary_path" && [ -s "$binary_path" ]; then
                 mkdir -p "$tmp_dir/$ASSET_DIR"
-                cp "$binary_path" "$tmp_dir/$ASSET_DIR/clicd"
-                chmod +x "$tmp_dir/$ASSET_DIR/clicd"
+                cp "$binary_path" "$tmp_dir/$ASSET_DIR/eyvescloud"
+                chmod +x "$tmp_dir/$ASSET_DIR/eyvescloud"
                 binary_ok=1
                 break
             fi
@@ -1946,33 +1946,33 @@ download_release_if_needed() {
     fi
 
     [ -d "$tmp_dir/$ASSET_DIR" ] || die "Release package layout is invalid: missing $ASSET_DIR directory"
-    [ -f "$tmp_dir/$ASSET_DIR/clicd" ] || die "下载的发行版包中未找到 clicd 二进制。"
+    [ -f "$tmp_dir/$ASSET_DIR/eyvescloud" ] || die "下载的发行版包中未找到 eyvescloud 二进制。"
 }
 
 install_binary() {
     if has_cmd systemctl; then
-        systemctl stop clicd >/dev/null 2>&1 || true
+        systemctl stop eyvescloud >/dev/null 2>&1 || true
     fi
     if has_cmd rc-service; then
-        rc-service clicd stop >/dev/null 2>&1 || true
+        rc-service eyvescloud stop >/dev/null 2>&1 || true
     fi
 
-    bin_src="./clicd"
+    bin_src="./eyvescloud"
     download_dir=""
     if [ ! -f "$bin_src" ] && [ -f "$INSTALL_DOWNLOAD_MARKER" ]; then
         download_dir="$(sed -n '1p' "$INSTALL_DOWNLOAD_MARKER" 2>/dev/null || true)"
-        if [ -n "$download_dir" ] && [ -f "$download_dir/$ASSET_DIR/clicd" ]; then
-            bin_src="$download_dir/$ASSET_DIR/clicd"
+        if [ -n "$download_dir" ] && [ -f "$download_dir/$ASSET_DIR/eyvescloud" ]; then
+            bin_src="$download_dir/$ASSET_DIR/eyvescloud"
         fi
     fi
-    [ -f "$bin_src" ] || die "未找到 clicd 二进制，安装无法继续。"
+    [ -f "$bin_src" ] || die "未找到 eyvescloud 二进制，安装无法继续。"
 
-    tmp_bin="/usr/local/bin/clicd.new.$$"
+    tmp_bin="/usr/local/bin/eyvescloud.new.$$"
     cp "$bin_src" "$tmp_bin"
     chmod +x "$tmp_bin"
-    mv -f "$tmp_bin" /usr/local/bin/clicd
-    chmod +x /usr/local/bin/clicd
-    log "已安装二进制：/usr/local/bin/clicd"
+    mv -f "$tmp_bin" /usr/local/bin/eyvescloud
+    chmod +x /usr/local/bin/eyvescloud
+    log "已安装二进制：/usr/local/bin/eyvescloud"
 
     if [ -n "$download_dir" ]; then
         case "$download_dir" in
@@ -1989,7 +1989,7 @@ install_systemd_service() {
     libvirt_wants="$(systemd_existing_units libvirtd.service virtqemud.socket virtlogd.socket)"
     lxc_after="$(systemd_existing_units lxc.service lxcfs.service lxc-net.service)"
 
-    cat > /etc/systemd/system/clicd.service << EOF
+    cat > /etc/systemd/system/eyvescloud.service << EOF
 [Unit]
 Description=EyvesCloud - LXC/KVM Container Manager
 After=network-online.target${lxc_after}${libvirt_after}
@@ -1999,19 +1999,18 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/clicd server
+ExecStart=/usr/local/bin/eyvescloud server
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-EnvironmentFile=-${CLICD_NETWORK_ENV}
-# 安全加固（不影响 LXC/KVM 管理所需的权限）
-NoNewPrivileges=true
+EnvironmentFile=-${EYVESCLOUD_NETWORK_ENV}
+# 说明：此处不使用 NoNewPrivileges / ProtectControlGroups / ProtectKernelTunables /
+# ProtectKernelModules / RestrictSUIDSGID 等加固。
+# 原因：eyvescloud 通过派生子进程管理 LXC/KVM（lxc-start、mount -o loop、nsenter、
+# modprobe br_netfilter、用户命名空间 setuid 辅助程序等），需要可写 cgroup、/proc/sys、
+# 可加载内核模块并执行 setuid/setgid 辅助程序。上述加固会导致容器/虚拟机无法启动。
 PrivateTmp=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
 RestrictRealtime=true
 
 [Install]
@@ -2019,26 +2018,26 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable clicd
-    systemctl restart clicd
+    systemctl enable eyvescloud
+    systemctl restart eyvescloud
 }
 
 install_openrc_service() {
-    cat > /etc/init.d/clicd << 'EOF'
+    cat > /etc/init.d/eyvescloud << 'EOF'
 #!/sbin/openrc-run
 
-name="CLICD"
+name="EYVESCLOUD"
 description="EyvesCloud - LXC/KVM Container Manager"
-command="/usr/local/bin/clicd"
+command="/usr/local/bin/eyvescloud"
 command_args="server"
 command_background=true
-pidfile="/run/clicd.pid"
-output_log="/var/log/clicd.log"
-error_log="/var/log/clicd.err"
+pidfile="/run/eyvescloud.pid"
+output_log="/var/log/eyvescloud.log"
+error_log="/var/log/eyvescloud.err"
 
-if [ -r /etc/clicd/network.env ]; then
+if [ -r /etc/eyvescloud/network.env ]; then
     set -a
-    . /etc/clicd/network.env
+    . /etc/eyvescloud/network.env
     set +a
 fi
 
@@ -2048,26 +2047,26 @@ depend() {
 }
 EOF
 
-    chmod +x /etc/init.d/clicd
-    rc-update add clicd default
-    rc-service clicd restart
+    chmod +x /etc/init.d/eyvescloud
+    rc-update add eyvescloud default
+    rc-service eyvescloud restart
 }
 
 install_service() {
-    log "正在安装 CLICD 服务..."
+    log "正在安装 EYVESCLOUD 服务..."
 
     if is_systemd; then
         install_systemd_service
     elif is_openrc; then
         install_openrc_service
     else
-        die "未检测到支持的服务管理器。CLICD 当前支持 systemd 或 OpenRC。"
+        die "未检测到支持的服务管理器。EYVESCLOUD 当前支持 systemd 或 OpenRC。"
     fi
 }
 
 set_panel_language() {
-    lang="$CLICD_LANG_DETECTED"
-    db="/root/.clicd/config.db"
+    lang="$EYVESCLOUD_LANG_DETECTED"
+    db="/root/.eyvescloud/config.db"
     if [ "$lang" != "zh" ] && [ "$lang" != "en" ]; then
         lang="zh"
     fi
@@ -2080,12 +2079,12 @@ set_panel_language() {
     done
 
     if [ -f "$db" ] && has_cmd python3; then
-        CLICD_PANEL_LANG="$lang" CLICD_DB="$db" python3 - <<'PY' >/dev/null 2>&1 && saved=1 || saved=0
+        EYVESCLOUD_PANEL_LANG="$lang" EYVESCLOUD_DB="$db" python3 - <<'PY' >/dev/null 2>&1 && saved=1 || saved=0
 import os
 import sqlite3
 
-db = os.environ["CLICD_DB"]
-lang = os.environ["CLICD_PANEL_LANG"]
+db = os.environ["EYVESCLOUD_DB"]
+lang = os.environ["EYVESCLOUD_PANEL_LANG"]
 conn = sqlite3.connect(db)
 conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
 conn.execute("INSERT OR REPLACE INTO app_meta(key, value) VALUES('language', ?)", (lang,))
@@ -2105,10 +2104,10 @@ PY
 
     if [ "$saved" = "1" ]; then
         log "已写入面板语言：$lang"
-        if has_cmd systemctl && systemctl is-active clicd >/dev/null 2>&1; then
-            systemctl restart clicd >/dev/null 2>&1 || true
+        if has_cmd systemctl && systemctl is-active eyvescloud >/dev/null 2>&1; then
+            systemctl restart eyvescloud >/dev/null 2>&1 || true
         elif has_cmd rc-service; then
-            rc-service clicd restart >/dev/null 2>&1 || true
+            rc-service eyvescloud restart >/dev/null 2>&1 || true
         fi
     else
         warn "面板语言写入失败，请安装后在面板右下角手动切换。"
@@ -2121,28 +2120,28 @@ print_summary() {
     echo "  $(tr_msg "安装完成")"
     echo "====================================="
     echo "  $(tr_msg "Web 面板：")http://YOUR_SERVER_IP:8999"
-    echo "  $(tr_msg "二进制：")/usr/local/bin/clicd"
+    echo "  $(tr_msg "二进制：")/usr/local/bin/eyvescloud"
     echo "  LXC NAT: ${LXC_NAT_SUBNET} (gateway ${LXC_NAT_GATEWAY})"
     echo "  KVM NAT: ${KVM_NAT_SUBNET} (gateway ${KVM_NAT_GATEWAY})"
     echo "  $(tr_msg "安装日志：")$LOG_FILE"
     echo "  $(tr_msg "问题反馈：")$ISSUE_URL"
     if is_systemd; then
-        echo "  $(tr_msg "服务：")systemctl {start|stop|restart|status} clicd"
-        echo "  $(tr_msg "运行日志：")journalctl -u clicd -f"
+        echo "  $(tr_msg "服务：")systemctl {start|stop|restart|status} eyvescloud"
+        echo "  $(tr_msg "运行日志：")journalctl -u eyvescloud -f"
     elif is_openrc; then
-        echo "  $(tr_msg "服务：")rc-service clicd {start|stop|restart|status}"
-        echo "  $(tr_msg "运行日志：")tail -f /var/log/clicd.log /var/log/clicd.err"
+        echo "  $(tr_msg "服务：")rc-service eyvescloud {start|stop|restart|status}"
+        echo "  $(tr_msg "运行日志：")tail -f /var/log/eyvescloud.log /var/log/eyvescloud.err"
     fi
     echo "====================================="
     echo ""
     echo "$(tr_msg "首次安装时的初始账号信息：")"
     if is_systemd; then
-        journalctl -u clicd --no-pager -n 80 | grep -E "Username:|Password:" || true
+        journalctl -u eyvescloud --no-pager -n 80 | grep -E "Username:|Password:" || true
     else
-        grep -E "Username:|Password:" /var/log/clicd.log /var/log/clicd.err 2>/dev/null || true
+        grep -E "Username:|Password:" /var/log/eyvescloud.log /var/log/eyvescloud.err 2>/dev/null || true
     fi
     echo ""
-    echo "$(tr_msg "如果没有显示密码，说明服务器已有") /root/.clicd/config.db."
+    echo "$(tr_msg "如果没有显示密码，说明服务器已有") /root/.eyvescloud/config.db."
     echo "$(tr_msg "已有管理员密码使用 bcrypt 存储，无法反查；请使用面板内修改密码或重置配置。")"
 }
 
@@ -2159,8 +2158,8 @@ run_step "配置 UID/GID 映射" setup_subids
 run_step "配置 LXC 存储权限" configure_lxc_storage_access
 run_step "检查 project quota" try_enable_project_quota
 run_step "下载发行版包" download_release_if_needed
-run_step "安装 CLICD 二进制" install_binary
-run_step "安装并启动 CLICD 服务" install_service
+run_step "安装 EYVESCLOUD 二进制" install_binary
+run_step "安装并启动 EYVESCLOUD 服务" install_service
 run_step "写入面板语言" set_panel_language
 sleep 2
 print_summary

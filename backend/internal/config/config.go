@@ -276,9 +276,9 @@ func normalizeStoragePools() bool {
 func managedStoragePoolPath(mountPoint string) string {
 	mountPoint = filepath.Clean(strings.TrimSpace(mountPoint))
 	if mountPoint == string(os.PathSeparator) {
-		return filepath.Join(string(os.PathSeparator), "var", "lib", "clicd")
+		return filepath.Join(string(os.PathSeparator), "var", "lib", "eyvescloud")
 	}
-	return filepath.Join(mountPoint, "clicd")
+	return filepath.Join(mountPoint, "eyvescloud")
 }
 
 func storagePoolIDFromName(name, path string) string {
@@ -678,6 +678,7 @@ type ApiKeyConfig struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
 	KeyHash        string   `json:"key_hash"`
+	KeyFingerprint string   `json:"key_fingerprint,omitempty"` // SHA-256 of the raw key, used for O(1) pre-screening
 	Prefix         string   `json:"prefix"`
 	IPWhitelist    string   `json:"ip_whitelist"`
 	CreatedAt      string   `json:"created_at"`
@@ -787,12 +788,53 @@ func defaultPrimaryStoragePool() StoragePool {
 	return StoragePool{
 		ID:              "disk-root",
 		Name:            "system (/)",
-		Path:            "/var/lib/clicd",
+		Path:            "/var/lib/eyvescloud",
 		MountPoint:      "/",
 		ContentTypes:    append([]string(nil), contents...),
 		DefaultContents: append([]string(nil), contents...),
 		Enabled:         true,
 	}
+}
+
+// AuditRetentionDefault is the default number of days audit/login logs are kept (0 = keep all).
+const AuditRetentionDefault = 90
+
+// BackupRecord represents an on-disk configuration backup snapshot.
+type BackupRecord struct {
+	ID        string `json:"id"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+	Kind      string `json:"kind"` // "config"
+	CreatedAt string `json:"created_at"`
+}
+
+// BackupSettings controls automatic configuration backups.
+type BackupSettings struct {
+	Enabled        bool   `json:"enabled"`
+	IntervalHours  int    `json:"interval_hours"`
+	Keep           int    `json:"keep"`
+	Directory      string `json:"directory,omitempty"`
+	LastBackupAt   string `json:"last_backup_at,omitempty"`
+	LastBackupFile string `json:"last_backup_file,omitempty"`
+}
+
+// APIRateLimitConfig controls per-client rate limiting on the versioned API.
+type APIRateLimitConfig struct {
+	Enabled   bool `json:"enabled"`
+	PerMinute int  `json:"per_minute"`
+}
+
+// Tenant represents a tenant group with resource quotas.
+type Tenant struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Description    string `json:"description,omitempty"`
+	ContainerQuota int    `json:"container_quota"` // 0 = unlimited
+	VCPUQuota      int    `json:"vcpu_quota"`
+	RAMQuotaMB     int64  `json:"ram_quota_mb"`
+	DiskQuotaGB    int64  `json:"disk_quota_gb"`
+	Enabled        bool   `json:"enabled"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // NotificationConfig controls external alert push (webhook / SMTP).
@@ -831,11 +873,14 @@ type Node struct {
 	CreatedAt      string  `json:"created_at,omitempty"`
 }
 
-// ClicdConfig is the main configuration structure
-type ClicdConfig struct {
+// EyvescloudConfig is the main configuration structure
+type EyvescloudConfig struct {
 	AdminUser            string                 `json:"admin_user"`
 	AdminPassHash        string                 `json:"admin_pass_hash"`
 	AdminTokenVersion    int                    `json:"admin_token_version"`
+	AdminTOTPSecret      string                 `json:"admin_totp_secret,omitempty"`
+	AdminTOTPEnabled     bool                   `json:"admin_totp_enabled"`
+	AdminBackupCodes     []string               `json:"admin_backup_codes,omitempty"`
 	JWTSecret            string                 `json:"jwt_secret"`
 	Port                 int                    `json:"port"`
 	DataDir              string                 `json:"data_dir"`
@@ -872,6 +917,11 @@ type ClicdConfig struct {
 	PolicyRules          []PolicyRule           `json:"policy_rules"`
 	PolicyHistory        []PolicyTriggerRecord  `json:"policy_history"`
 	Nodes                []Node                 `json:"nodes,omitempty"`
+	AuditRetentionDays   int                    `json:"audit_retention_days"`
+	BackupSettings       BackupSettings         `json:"backup_settings"`
+	Backups              []BackupRecord         `json:"backups,omitempty"`
+	APIRateLimit         APIRateLimitConfig     `json:"api_rate_limit"`
+	Tenants              []Tenant               `json:"tenants,omitempty"`
 }
 
 const (
@@ -908,7 +958,7 @@ type CustomLXCImage struct {
 }
 
 var configPath string
-var AppConfig *ClicdConfig
+var AppConfig *EyvescloudConfig
 var allocationMu sync.Mutex
 
 // agentToken is the node token issued by the controller. In agent mode it is
@@ -952,7 +1002,7 @@ func getConfigPath() string {
 	if err != nil {
 		home = "/root"
 	}
-	return filepath.Join(home, ".clicd", "config.json")
+	return filepath.Join(home, ".eyvescloud", "config.json")
 }
 
 func SetConfigPath(path string) {
@@ -964,7 +1014,7 @@ func getDataDir() string {
 	if err != nil {
 		home = "/root"
 	}
-	return filepath.Join(home, ".clicd")
+	return filepath.Join(home, ".eyvescloud")
 }
 
 func generateRandomString(length int) string {
@@ -1013,7 +1063,7 @@ func newContainerUUIDUnlocked() string {
 }
 
 // InitConfig initializes or loads the configuration
-func InitConfig() (*ClicdConfig, error) {
+func InitConfig() (*EyvescloudConfig, error) {
 	cfgPath := getConfigPath()
 	dataDir := getDataDir()
 
@@ -1068,7 +1118,7 @@ func InitConfig() (*ClicdConfig, error) {
 		return nil, fmt.Errorf("failed to hash password: %v", err)
 	}
 
-	AppConfig = &ClicdConfig{
+	AppConfig = &EyvescloudConfig{
 		AdminUser:            adminUser,
 		AdminPassHash:        string(hash),
 		JWTSecret:            jwtSecret,
@@ -1080,8 +1130,8 @@ func InitConfig() (*ClicdConfig, error) {
 		NextSSHPort:          22000,
 		NATPortStart:         DefaultNATPortStart,
 		NATPortEnd:           DefaultNATPortEnd,
-		LXCNATSubnet:         configuredSubnetValue("", "CLICD_LXC_SUBNET", DefaultLXCNATSubnet),
-		KVMNATSubnet:         configuredSubnetValue("", "CLICD_KVM_SUBNET", DefaultKVMNATSubnet),
+		LXCNATSubnet:         configuredSubnetValue("", "EYVESCLOUD_LXC_SUBNET", DefaultLXCNATSubnet),
+		KVMNATSubnet:         configuredSubnetValue("", "EYVESCLOUD_KVM_SUBNET", DefaultKVMNATSubnet),
 		SetupComplete:        false,
 		SubUsers:             []SubUser{},
 		AuditLogs:            []AuditLog{},
@@ -1097,6 +1147,18 @@ func InitConfig() (*ClicdConfig, error) {
 		},
 		TaskConcurrency: DefaultTaskConcurrency,
 		StoragePools:    []StoragePool{defaultPrimaryStoragePool()},
+		AuditRetentionDays: AuditRetentionDefault,
+		BackupSettings: BackupSettings{
+			Enabled:       false,
+			IntervalHours: 24,
+			Keep:          14,
+			Directory:     filepath.Join(dataDir, "backups"),
+		},
+		APIRateLimit: APIRateLimitConfig{
+			Enabled:   false,
+			PerMinute: 120,
+		},
+		Tenants: []Tenant{},
 	}
 
 	if err := SaveConfig(); err != nil {
@@ -1200,8 +1262,9 @@ func normalizeConfigDefaults(dataDir string) bool {
 		changed = true
 	} else {
 		for i := range AppConfig.ApiKeys {
-			if len(AppConfig.ApiKeys[i].Scopes) == 0 {
-				AppConfig.ApiKeys[i].Scopes = []string{"*"}
+			// 空 scope 的 Key 保持为空（无任何权限），绝不默认升级为全权限 "*"。
+			if AppConfig.ApiKeys[i].Scopes == nil {
+				AppConfig.ApiKeys[i].Scopes = []string{}
 				changed = true
 			}
 		}
@@ -1240,6 +1303,34 @@ func normalizeConfigDefaults(dataDir string) bool {
 	}
 	if AppConfig.Language != "zh" && AppConfig.Language != "en" {
 		AppConfig.Language = "zh"
+		changed = true
+	}
+	if AppConfig.AuditRetentionDays == 0 {
+		AppConfig.AuditRetentionDays = AuditRetentionDefault
+		changed = true
+	}
+	if AppConfig.BackupSettings.IntervalHours <= 0 {
+		AppConfig.BackupSettings.IntervalHours = 24
+		changed = true
+	}
+	if AppConfig.BackupSettings.Keep <= 0 {
+		AppConfig.BackupSettings.Keep = 14
+		changed = true
+	}
+	if AppConfig.BackupSettings.Directory == "" {
+		AppConfig.BackupSettings.Directory = filepath.Join(AppConfig.DataDir, "backups")
+		changed = true
+	}
+	if AppConfig.APIRateLimit.PerMinute <= 0 {
+		AppConfig.APIRateLimit.PerMinute = 120
+		changed = true
+	}
+	if AppConfig.Tenants == nil {
+		AppConfig.Tenants = make([]Tenant, 0)
+		changed = true
+	}
+	if AppConfig.Backups == nil {
+		AppConfig.Backups = make([]BackupRecord, 0)
 		changed = true
 	}
 	if normalizeSSLDefaults() {
@@ -1720,10 +1811,80 @@ func AddContainer(c Container) {
 // persists the result. It is the safe way for handlers to change top-level
 // config fields (admin credentials, language, concurrency, ...) concurrently
 // with the background scanners and metric samplers.
-func MutateGlobal(fn func(*ClicdConfig)) error {
+func MutateGlobal(fn func(*EyvescloudConfig)) error {
 	AppConfigMu.Lock()
 	defer AppConfigMu.Unlock()
 	fn(AppConfig)
+	return saveConfigToDB()
+}
+
+// BackupDirectory returns the fixed, safe backup directory under the data dir.
+// The backup directory is intentionally not user-configurable: allowing an
+// arbitrary path here would let the backup download/restore handlers read or
+// delete files anywhere on the host.
+func BackupDirectory() string {
+	if AppConfig != nil && AppConfig.DataDir != "" {
+		return filepath.Join(AppConfig.DataDir, "backups")
+	}
+	return filepath.Join(getDataDir(), "backups")
+}
+
+// GetAPIRateLimit returns a snapshot of the versioned-API rate-limit config.
+func GetAPIRateLimit() APIRateLimitConfig {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return AppConfig.APIRateLimit
+}
+
+// GetJWTSecret returns a snapshot of the JWT signing secret.
+func GetJWTSecret() string {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return AppConfig.JWTSecret
+}
+
+// GetBackupSettings returns a snapshot of the automatic-backup settings.
+func GetBackupSettings() BackupSettings {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return AppConfig.BackupSettings
+}
+
+// GetAuditLogCount returns the current number of retained audit logs.
+func GetAuditLogCount() int {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return len(AppConfig.AuditLogs)
+}
+
+// GetBackupCount returns the current number of registered config backups.
+func GetBackupCount() int {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return len(AppConfig.Backups)
+}
+
+// IsBackupFileKnown reports whether filename is a currently registered backup
+// snapshot. Used to restrict download/restore to real backups, preventing
+// arbitrary file reads even if the base directory were ever misconfigured.
+func IsBackupFileKnown(filename string) bool {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	for _, b := range AppConfig.Backups {
+		if b.Filename == filename {
+			return true
+		}
+	}
+	return false
+}
+
+// ReconcileConfig re-applies default normalization and migrations to the live
+// config (used after restoring a snapshot from an older version) and persists.
+func ReconcileConfig() error {
+	AppConfigMu.Lock()
+	defer AppConfigMu.Unlock()
+	normalizeConfigDefaults(AppConfig.DataDir)
+	migrateLoadedConfig()
 	return saveConfigToDB()
 }
 
@@ -1753,7 +1914,7 @@ func FindNodeByInstallKey(key string) (Node, bool) {
 
 // AddNode persists a new managed node. Node IDs must be unique.
 func AddNode(n Node) error {
-	return MutateGlobal(func(cfg *ClicdConfig) {
+	return MutateGlobal(func(cfg *EyvescloudConfig) {
 		cfg.Nodes = append(cfg.Nodes, n)
 	})
 }
@@ -1763,7 +1924,7 @@ func AddNode(n Node) error {
 func UpdateNode(id string, fn func(*Node)) (Node, bool) {
 	var updated Node
 	ok := false
-	_ = MutateGlobal(func(cfg *ClicdConfig) {
+	_ = MutateGlobal(func(cfg *EyvescloudConfig) {
 		for i := range cfg.Nodes {
 			if cfg.Nodes[i].ID != id {
 				continue
@@ -1780,7 +1941,7 @@ func UpdateNode(id string, fn func(*Node)) (Node, bool) {
 // RemoveNode removes a managed node by ID.
 func RemoveNode(id string) bool {
 	removed := false
-	_ = MutateGlobal(func(cfg *ClicdConfig) {
+	_ = MutateGlobal(func(cfg *EyvescloudConfig) {
 		filtered := make([]Node, 0, len(cfg.Nodes))
 		for _, n := range cfg.Nodes {
 			if n.ID == id {
@@ -1832,11 +1993,15 @@ func clearContainerSnapshotSchedule(c *Container) {
 }
 
 func AddSnapshot(snapshot Snapshot) {
+	AppConfigMu.Lock()
 	AppConfig.Snapshots = append(AppConfig.Snapshots, snapshot)
+	AppConfigMu.Unlock()
 	SaveConfig()
 }
 
 func FindSnapshot(id string) *Snapshot {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
 	for i := range AppConfig.Snapshots {
 		if AppConfig.Snapshots[i].ID == id {
 			return &AppConfig.Snapshots[i]
@@ -1846,23 +2011,31 @@ func FindSnapshot(id string) *Snapshot {
 }
 
 func RemoveSnapshot(id string) bool {
+	AppConfigMu.Lock()
+	found := false
 	for i := range AppConfig.Snapshots {
 		if AppConfig.Snapshots[i].ID == id {
 			AppConfig.Snapshots = append(AppConfig.Snapshots[:i], AppConfig.Snapshots[i+1:]...)
-			SaveConfig()
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	AppConfigMu.Unlock()
+	if found {
+		SaveConfig()
+	}
+	return found
 }
 
 func ContainerSnapshots(containerID int) []Snapshot {
+	AppConfigMu.RLock()
 	result := make([]Snapshot, 0)
 	for _, snapshot := range AppConfig.Snapshots {
 		if snapshot.ContainerID == containerID {
 			result = append(result, snapshot)
 		}
 	}
+	AppConfigMu.RUnlock()
 	return result
 }
 

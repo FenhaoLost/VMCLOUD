@@ -6,7 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
+	"eyvescloud/internal/lxc"
 )
 
 // 被控节点（agent 模式）专用 API，仅供主控（Controller）通过节点 token 调用。
@@ -75,6 +76,14 @@ func HandleAgentContainerAction(w http.ResponseWriter, r *http.Request) {
 		runErr = stopByRuntime(id)
 	case "restart":
 		runErr = restartByRuntime(id)
+	case "reset-password":
+		newPassword, pwErr := agentResetPassword(id, r)
+		if pwErr != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: pwErr.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "SSH password reset successfully", Data: map[string]string{"password": newPassword}})
+		return
 	default:
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Unknown action: " + action})
 		return
@@ -91,6 +100,26 @@ func HandleAgentContainerAction(w http.ResponseWriter, r *http.Request) {
 		config.UpdateContainerStatus(id, "stopped")
 	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "OK"})
+}
+
+// agentResetPassword 处理母控下发的子容器密码重置。未填密码时由运行时自动生成新密码。
+func agentResetPassword(id int, r *http.Request) (string, error) {
+	var req struct {
+		Password string `json:"password"`
+	}
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && err.Error() != "EOF" {
+			return "", err
+		}
+	}
+	password := strings.TrimSpace(req.Password)
+	if password != "" {
+		if err := lxc.ValidateCustomSSHPassword(password); err != nil {
+			return "", err
+		}
+	}
+	return resetPasswordByRuntime(id, password)
 }
 
 // AgentContainerActionFromQuery 兼容 /api/agent/containers?action=start&id=1 的调用形式。

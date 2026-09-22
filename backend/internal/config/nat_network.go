@@ -63,8 +63,8 @@ func KVMNATNetwork() NATNetwork {
 
 func normalizeNATNetworkDefaults() bool {
 	changed := false
-	lxcSubnet := configuredSubnetValue(AppConfig.LXCNATSubnet, "CLICD_LXC_SUBNET", DefaultLXCNATSubnet)
-	kvmSubnet := configuredSubnetValue(AppConfig.KVMNATSubnet, "CLICD_KVM_SUBNET", DefaultKVMNATSubnet)
+	lxcSubnet := configuredSubnetValue(AppConfig.LXCNATSubnet, "EYVESCLOUD_LXC_SUBNET", DefaultLXCNATSubnet)
+	kvmSubnet := configuredSubnetValue(AppConfig.KVMNATSubnet, "EYVESCLOUD_KVM_SUBNET", DefaultKVMNATSubnet)
 	if AppConfig.LXCNATSubnet != lxcSubnet {
 		AppConfig.LXCNATSubnet = lxcSubnet
 		changed = true

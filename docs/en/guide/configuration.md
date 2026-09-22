@@ -1,6 +1,6 @@
 # Configuration
 
-After installation, EyvesCloud runs as a systemd service, with runtime configuration and the database stored locally on the host. The exact paths may vary with install script options; for a default installation, start by checking `/root/.clicd/`.
+After installation, EyvesCloud runs as a systemd service, with runtime configuration and the database stored locally on the host. The exact paths may vary with install script options; for a default installation, start by checking `/root/.eyvescloud/`.
 
 ## Common Settings
 
@@ -18,27 +18,27 @@ After installation, EyvesCloud runs as a systemd service, with runtime configura
 ## Service Commands
 
 ```bash
-systemctl status clicd
-systemctl restart clicd
-journalctl -u clicd -n 100 --no-pager
+systemctl status eyvescloud
+systemctl restart eyvescloud
+journalctl -u eyvescloud -n 100 --no-pager
 ```
 
 ## Panel Access Allowlist CLI
 
 ```bash
 # Show the current policy
-clicd access-policy show
+eyvescloud access-policy show
 
 # Allow only the specified IPs/networks; fill in reverse proxy addresses as needed
-clicd access-policy set \
+eyvescloud access-policy set \
   --allow "203.0.113.10,192.168.1.0/24,2001:db8::/32" \
   --trusted-proxy "127.0.0.1"
 
 # Disable the allowlist restriction
-clicd access-policy disable
+eyvescloud access-policy disable
 ```
 
-You can also run `clicd cli` and select "Panel access allowlist" from the interactive menu. Both the direct command and the interactive menu persist the configuration and restart the panel service automatically.
+You can also run `eyvescloud cli` and select "Panel access allowlist" from the interactive menu. Both the direct command and the interactive menu persist the configuration and restart the panel service automatically.
 
 ## Worker Node Configuration
 
@@ -54,7 +54,7 @@ The registration info of a worker node (Agent mode) is stored in `agent.json` un
 }
 ```
 
-This file is generated automatically by `clicd agent` on the first registration. The `token` is used for API authentication between the Controller and the worker; do not expose it.
+This file is generated automatically by `eyvescloud agent` on the first registration. The `token` is used for API authentication between the Controller and the worker; do not expose it.
 
 ## Security Recommendations
 

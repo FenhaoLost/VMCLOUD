@@ -34,9 +34,9 @@ bash eyvescloud-agent-node1.sh
 
 脚本会自动完成：
 
-1. 从主控下载二进制（`GET /api/nodes/binary`，与主控同一份 `clicd`）。
+1. 从主控下载二进制（`GET /api/nodes/binary`，与主控同一份 `eyvescloud`）。
 2. 使用安装密钥注册到主控（`POST /api/nodes/register`），换取被控节点 token。
-3. 以 `clicd agent` 模式启动本地面板，并写入 systemd 服务实现开机自启。
+3. 以 `eyvescloud agent` 模式启动本地面板，并写入 systemd 服务实现开机自启。
 
 脚本也支持参数覆盖：`bash eyvescloud-agent-node1.sh [节点名称] [被控面板地址]`。
 
@@ -45,7 +45,7 @@ bash eyvescloud-agent-node1.sh
 也可以在被控服务器上手动执行：
 
 ```bash
-clicd agent \
+eyvescloud agent \
   --controller=http://MASTER_IP:8999 \
   --install-key=安装密钥 \
   --name=node-1 \
@@ -79,7 +79,7 @@ clicd agent \
 删除节点会从主控移除该节点记录。若被控的 systemd 服务仍在运行，它会继续尝试上报心跳，主控将不再显示。如需彻底吊销，请同时在被控上卸载服务：
 
 ```bash
-systemctl disable --now clicd-agent
+systemctl disable --now eyvescloud-agent
 ```
 
 ## 安全说明

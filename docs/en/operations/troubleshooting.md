@@ -5,8 +5,8 @@
 Check the service status:
 
 ```bash
-systemctl status clicd
-journalctl -u clicd -n 100 --no-pager
+systemctl status eyvescloud
+journalctl -u eyvescloud -n 100 --no-pager
 ```
 
 Check the listening port:
@@ -56,7 +56,7 @@ When the one-line install script reports "registration failed" or the worker log
 
 ## Worker Heartbeat Fails (Node Shows Offline)
 
-- Check the worker's `clicd-agent` service: `systemctl status clicd-agent`.
+- Check the worker's `eyvescloud-agent` service: `systemctl status eyvescloud-agent`.
 - Check whether the worker can reach the Controller's `:8999`.
 - Check whether the token in the Controller's node record matches the worker's `agent.json`; if not, delete the worker's `agent.json` and re-register.
 

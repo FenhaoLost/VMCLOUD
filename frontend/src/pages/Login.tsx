@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react'
-import { Lock, User } from 'lucide-react'
+import { Lock, Smartphone, User } from 'lucide-react'
 import AppIcon from '../components/AppIcon'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -15,10 +15,12 @@ function LanguageIcon({ className = '' }: { className?: string }) {
 }
 
 export default function Login() {
-  const { login, accessCodeLogin } = useAuth()
+  const { login, loginWith2FA, accessCodeLogin } = useAuth()
   const { language, toggleLanguage, t } = useLanguage()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [twoFACode, setTwoFACode] = useState('')
+  const [twoFARequired, setTwoFARequired] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -36,19 +38,37 @@ export default function Login() {
     try {
       if (isAccessCodeLogin) {
         await accessCodeLogin(accessCode, password)
+      } else if (twoFARequired) {
+        await loginWith2FA(username, password, twoFACode)
       } else {
         await login(username, password)
       }
     } catch (err: unknown) {
-      const error = err as { response?: { status?: number; data?: { message?: string } } }
-      if (error.response?.status === 401) {
-        setError(t(isAccessCodeLogin ? '访问码或密码错误' : '用户名或密码错误'))
+      const error = err as {
+        response?: {
+          status?: number
+          data?: { message?: string; data?: { twofa_required?: boolean } }
+        }
+      }
+      const data = error.response?.data
+      if (error.response?.status === 401 && data?.data?.twofa_required) {
+        setTwoFARequired(true)
+        setTwoFACode('')
+        setError(t('账户已启用两步验证，请输入 6 位动态口令'))
+      } else if (error.response?.status === 401) {
+        setError(t(isAccessCodeLogin ? '访问码或密码错误' : '用户名或密码或验证码错误'))
       } else {
-        setError(error.response?.data?.message || t('登录失败，请检查用户名和密码'))
+        setError(data?.message || t('登录失败，请检查用户名和密码'))
       }
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleBackToCredentials = () => {
+    setTwoFARequired(false)
+    setTwoFACode('')
+    setError('')
   }
 
   return (
@@ -80,7 +100,7 @@ export default function Login() {
                 </div>
               )}
 
-              {!isAccessCodeLogin && (
+              {!isAccessCodeLogin && !twoFARequired && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
                     {t('用户名')}
@@ -99,6 +119,15 @@ export default function Login() {
                       autoComplete="username"
                     />
                   </div>
+                </div>
+              )}
+
+              {twoFARequired && !isAccessCodeLogin && (
+                <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800">
+                  <div className="flex items-center gap-1.5 font-medium">
+                    <Smartphone className="h-3.5 w-3.5" />{t('两步验证')}
+                  </div>
+                  <div className="mt-1">{t('请输入身份验证器中的 6 位动态口令，或一次性备份码')}</div>
                 </div>
               )}
 
@@ -121,6 +150,36 @@ export default function Login() {
                 />
               </div>
             </div>
+
+            {twoFARequired && !isAccessCodeLogin && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  {t('动态口令 / 备份码')}
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <Smartphone className="h-4 w-4 text-gray-400" />
+                  </div>
+                  <input
+                    type="text"
+                    value={twoFACode}
+                    onChange={(event) => setTwoFACode(event.target.value.replace(/\s+/g, ''))}
+                    className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-md text-black bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm tracking-widest"
+                    placeholder={t('6 位动态口令或备份码')}
+                    required
+                    maxLength={32}
+                    autoComplete="one-time-code"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleBackToCredentials}
+                  className="mt-1.5 text-xs text-gray-500 hover:text-black underline"
+                >
+                  {t('返回重新输入密码')}
+                </button>
+              </div>
+            )}
 
             <button
               type="submit"

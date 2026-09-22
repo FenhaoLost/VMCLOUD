@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestAllocateSSHPortUsesConfiguredNATRange(t *testing.T) {
-	AppConfig = &ClicdConfig{
+	AppConfig = &EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   30002,
 		NextSSHPort:  22000,
@@ -28,7 +28,7 @@ func TestAllocateSSHPortUsesConfiguredNATRange(t *testing.T) {
 }
 
 func TestAllocateSSHPortErrorsWhenConfiguredRangeIsFull(t *testing.T) {
-	AppConfig = &ClicdConfig{
+	AppConfig = &EyvescloudConfig{
 		NATPortStart: 31000,
 		NATPortEnd:   31001,
 		NextSSHPort:  31000,
@@ -48,7 +48,7 @@ func TestAllocateSSHPortErrorsWhenConfiguredRangeIsFull(t *testing.T) {
 func TestAllocateSSHPortExcludingRequestedMappings(t *testing.T) {
 	previous := AppConfig
 	t.Cleanup(func() { AppConfig = previous })
-	AppConfig = &ClicdConfig{
+	AppConfig = &EyvescloudConfig{
 		NATPortStart: 32000,
 		NATPortEnd:   32002,
 		NextSSHPort:  32000,
@@ -66,7 +66,7 @@ func TestAllocateSSHPortExcludingRequestedMappings(t *testing.T) {
 func TestPreviewSSHPortUsesRangeWithoutAdvancingCursor(t *testing.T) {
 	previous := AppConfig
 	t.Cleanup(func() { AppConfig = previous })
-	AppConfig = &ClicdConfig{
+	AppConfig = &EyvescloudConfig{
 		NATPortStart: 30000,
 		NATPortEnd:   35000,
 		NextSSHPort:  30000,

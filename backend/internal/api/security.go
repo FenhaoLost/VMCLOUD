@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"clicd/internal/config"
+	"eyvescloud/internal/config"
 )
 
 // SecurityAlert represents a detected abuse event.
@@ -806,9 +806,13 @@ func HandleSecuritySettings(w http.ResponseWriter, r *http.Request) {
 		if !requireScope(w, r, "security:read") {
 			return
 		}
+		config.AppConfigMu.RLock()
+		autoShutdown := config.AppConfig.SecurityAutoShutdown
+		arpProtection := config.AppConfig.ARPProtectionEnabled
+		config.AppConfigMu.RUnlock()
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]bool{
-			"auto_shutdown":  config.AppConfig.SecurityAutoShutdown,
-			"arp_protection": config.AppConfig.ARPProtectionEnabled,
+			"auto_shutdown":  autoShutdown,
+			"arp_protection": arpProtection,
 		}})
 	case http.MethodPut:
 		if !requireScope(w, r, "security:settings") {
@@ -822,12 +826,14 @@ func HandleSecuritySettings(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
 			return
 		}
-		if req.AutoShutdown != nil {
-			config.AppConfig.SecurityAutoShutdown = *req.AutoShutdown
-		}
-		if req.ARPProtection != nil {
-			config.AppConfig.ARPProtectionEnabled = *req.ARPProtection
-		}
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+			if req.AutoShutdown != nil {
+				cfg.SecurityAutoShutdown = *req.AutoShutdown
+			}
+			if req.ARPProtection != nil {
+				cfg.ARPProtectionEnabled = *req.ARPProtection
+			}
+		})
 		if err := config.SaveConfig(); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return

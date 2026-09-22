@@ -1,6 +1,6 @@
 # 配置说明
 
-EyvesCloud 安装后会以 systemd 服务运行，运行时配置和数据库保存在宿主机本地。实际路径可能随安装脚本参数变化，默认安装建议以 `/root/.clicd/` 为主要检查位置。
+EyvesCloud 安装后会以 systemd 服务运行，运行时配置和数据库保存在宿主机本地。实际路径可能随安装脚本参数变化，默认安装建议以 `/root/.eyvescloud/` 为主要检查位置。
 
 ## 常见配置项
 
@@ -18,27 +18,27 @@ EyvesCloud 安装后会以 systemd 服务运行，运行时配置和数据库保
 ## 服务命令
 
 ```bash
-systemctl status clicd
-systemctl restart clicd
-journalctl -u clicd -n 100 --no-pager
+systemctl status eyvescloud
+systemctl restart eyvescloud
+journalctl -u eyvescloud -n 100 --no-pager
 ```
 
 ## 面板访问白名单 CLI
 
 ```bash
 # 查看当前策略
-clicd access-policy show
+eyvescloud access-policy show
 
 # 仅允许指定 IP/网段；反向代理地址按需填写
-clicd access-policy set \
+eyvescloud access-policy set \
   --allow "203.0.113.10,192.168.1.0/24,2001:db8::/32" \
   --trusted-proxy "127.0.0.1"
 
 # 关闭白名单限制
-clicd access-policy disable
+eyvescloud access-policy disable
 ```
 
-也可以运行 `clicd cli`，在交互菜单中选择“面板访问白名单”。直接命令和交互菜单都会保存配置，并在服务运行时自动重启面板。
+也可以运行 `eyvescloud cli`，在交互菜单中选择“面板访问白名单”。直接命令和交互菜单都会保存配置，并在服务运行时自动重启面板。
 
 ## 被控节点配置
 
@@ -54,7 +54,7 @@ clicd access-policy disable
 }
 ```
 
-该文件由 `clicd agent` 首次注册时自动生成，`token` 用于主控与被控之间的接口鉴权，请勿外泄。
+该文件由 `eyvescloud agent` 首次注册时自动生成，`token` 用于主控与被控之间的接口鉴权，请勿外泄。
 
 ## 安全建议
 
