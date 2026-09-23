@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh 
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.31 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.32 sh
 ```
 
 交互式选择详情见「安装 → 列出所有版本并交互式选择」。

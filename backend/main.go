@@ -106,6 +106,16 @@ func main() {
 		lxc.EnsureForwardRules("virbr0")
 		lxc.EnsureAllAssignedPublicIPv4s()
 
+		// 网络自愈：确保 LXC 侧 lxcbr0 就绪（网关 IP + dnsmasq DHCP + 转发/NAT）。
+		// KVM 侧由 ensureDefaultNetwork() 在 KVM 操作时自动完成；此处补上 LXC 侧对称逻辑。
+		if err := lxc.EnsureLXCBridgeNetwork(); err != nil {
+			fmt.Printf("Warning: LXC bridge self-healing incomplete: %v\n", err)
+		}
+		// 对称地预检 KVM 侧 libvirt 默认网络（virbr0）。
+		if err := kvm.EnsureKVMDefaultNetwork(); err != nil {
+			fmt.Printf("Warning: KVM default network self-healing incomplete: %v\n", err)
+		}
+
 		// Start expiry scanners (stops expired/over-traffic workloads every 30s)
 		manager := lxc.NewManager()
 		kvmManager := kvm.NewManager()

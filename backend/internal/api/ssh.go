@@ -119,7 +119,10 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "container is not running", http.StatusBadRequest)
 		return
 	}
-	if c.IP == "" {
+	// 容器内网 IP 不可用(空/link-local)时无法出网，ssh 也无法直连。
+	// 这里先尝试从运行环境实时刷新 IP；若仍不可用，LXC 触发一次 DHCP 修复，
+	// 让 eth0 从 lxcbr0 拿到正常网段地址，为后续 sshd 的安装提供外网连接。
+	if !isUsableContainerIP(c.IP) {
 		var ip string
 		var err error
 		if c.IsKVM() {
@@ -127,16 +130,22 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 		} else {
 			ip, err = lxcManager.GetContainerIP(c.LxcName())
 		}
-		if err == nil {
+		if err == nil && isUsableContainerIP(ip) {
 			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+			if refreshed := config.FindContainer(c.ID); refreshed != nil {
+				c = refreshed
+			}
 		}
 	}
-	if c.IP == "" && !c.IsKVM() {
-		if ip, err := lxcManager.EnsureContainerIPv4(c.ID); err == nil && ip != "" {
+	if !isUsableContainerIP(c.IP) && !c.IsKVM() {
+		if ip, err := lxcManager.EnsureContainerIPv4(c.ID); err == nil && isUsableContainerIP(ip) {
 			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+			if refreshed := config.FindContainer(c.ID); refreshed != nil {
+				c = refreshed
+			}
 		}
 	}
-	if c.IP == "" && c.IsKVM() {
+	if !isUsableContainerIP(c.IP) && c.IsKVM() {
 		if err := kvmManager.EnsureSSH(c.ID); err == nil {
 			if refreshed := config.FindContainer(c.ID); refreshed != nil {
 				c = refreshed
@@ -423,7 +432,7 @@ func webSSHOpenSSH(c *config.Container, sshConfig *ssh.ClientConfig) (*ssh.Clien
 
 	var lastErr error
 	for _, addr := range candidates {
-		client, err := ssh.Dial("tcp", addr, sshConfig)
+		client, err := dialSSHWithTimeout(addr, sshConfig, 8*time.Second)
 		if err == nil {
 			return client, nil
 		}
@@ -433,4 +442,36 @@ func webSSHOpenSSH(c *config.Container, sshConfig *ssh.ClientConfig) (*ssh.Clien
 		lastErr = fmt.Errorf("container has no reachable SSH address")
 	}
 	return nil, lastErr
+}
+
+// dialSSHWithTimeout 在「TCP 拨号 + SSH 握手」整体上施加 deadline。
+// x/crypto/ssh 的 ClientConfig.Timeout 只覆盖 TCP 拨号阶段，不覆盖 SSH
+// 版本交换与密钥交换（KEX）。当目标 TCP 可连接但 sshd 不响应握手时，
+// ssh.Dial 会无限阻塞，导致 WebSSH 永远卡在 "preparing" 界面。
+// 因此这里在已建立的连接上设置绝对 deadline，超时则关闭并返回错误。
+func dialSSHWithTimeout(addr string, sshConfig *ssh.ClientConfig, timeout time.Duration) (*ssh.Client, error) {
+	deadline := time.Now().Add(timeout)
+
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	// 覆盖握手阶段：任何超过 deadline 的读写都会被 io 层以 timeout 终止。
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetDeadline(deadline)
+	}
+
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	// 握手已完成，取消 deadline，避免影响后续交互会话。
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetDeadline(time.Time{})
+	}
+
+	return ssh.NewClient(c, chans, reqs), nil
 }

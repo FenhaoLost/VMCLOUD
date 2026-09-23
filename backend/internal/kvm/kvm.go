@@ -1886,6 +1886,15 @@ func virshCLocaleCommand(args ...string) *exec.Cmd {
 	return cmd
 }
 
+// EnsureKVMDefaultNetwork 保证 libvirt 默认网络（virbr0）已定义、运行并自启动。
+// 与 LXC 侧 EnsureLXCBridgeNetwork 对称，供主程序启动时统一调用，实现网络自愈。
+func EnsureKVMDefaultNetwork() error {
+	if _, err := exec.LookPath("virsh"); err != nil {
+		return nil // 未安装 libvirt 时静默跳过，KVM 操作时仍会走 validateHost。
+	}
+	return ensureDefaultNetwork()
+}
+
 func libvirtNetworkActive(info string) bool {
 	for _, line := range strings.Split(info, "\n") {
 		key, value, ok := strings.Cut(line, ":")

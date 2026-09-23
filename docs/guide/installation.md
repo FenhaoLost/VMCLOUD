@@ -26,18 +26,18 @@ curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh 
 ## 安装指定版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.31 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.32 sh
 ```
 
-把 `v1.1.31` 替换成需要安装的 Release 标签即可。
+把 `v1.1.32` 替换成需要安装的 Release 标签即可。
 
 ### 列出所有版本并交互式选择
 
 在交互终端（`[ -t 0 ]`）直接运行安装脚本且未指定 `EYVESCLOUD_VERSION` 时，脚本会从 GitHub 拉取项目全部 Release，列出最近 20 个版本供选择：
 
 ```text
-  1) v1.1.31
-  2) v1.1.30
+  1) v1.1.32
+  2) v1.1.31
   3) v1.1.29
   ...
   Enter) 最新版本 (latest)

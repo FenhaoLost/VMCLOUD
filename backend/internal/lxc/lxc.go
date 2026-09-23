@@ -543,6 +543,10 @@ func (cfg ContainerConfig) WantsLANIPv4() bool {
 func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 	cfg.NormalizeResourceAliases()
 	cfg.ReportProgress("preparing", "检查模板与创建参数")
+	// 创建前确保 lxcbr0 网络就绪，避免新容器落到 link-local/APIPA。
+	if err := EnsureLXCBridgeNetwork(); err != nil {
+		fmt.Printf("Warning: LXC bridge network not ready before create: %v\n", err)
+	}
 	tmpl := FindTemplate(cfg.TemplateID)
 	if tmpl == nil {
 		return fmt.Errorf("template not found: %s", cfg.TemplateID)
