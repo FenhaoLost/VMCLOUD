@@ -53,6 +53,11 @@ func HandleAgentContainerAction(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/agent/containers/")
 	parts := strings.SplitN(rest, "/", 2)
+	// /api/agent/containers/create 由主控用于在被控节点开通新容器。
+	if len(parts) == 1 && parts[0] == "create" {
+		agentCreateContainer(w, r)
+		return
+	}
 	if len(parts) != 2 {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid container action path"})
 		return
@@ -76,6 +81,14 @@ func HandleAgentContainerAction(w http.ResponseWriter, r *http.Request) {
 		runErr = stopByRuntime(id)
 	case "restart":
 		runErr = restartByRuntime(id)
+	case "destroy":
+		runErr = destroyByRuntime(id)
+		if runErr != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: runErr.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "OK"})
+		return
 	case "reset-password":
 		newPassword, pwErr := agentResetPassword(id, r)
 		if pwErr != nil {
@@ -100,6 +113,37 @@ func HandleAgentContainerAction(w http.ResponseWriter, r *http.Request) {
 		config.UpdateContainerStatus(id, "stopped")
 	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "OK"})
+}
+
+// agentCreateContainer 由主控下发创建请求，在被控节点开通（发机）新容器。
+func agentCreateContainer(w http.ResponseWriter, r *http.Request) {
+	var req lxc.ContainerConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid create request: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "container name required"})
+		return
+	}
+	if req.TemplateID == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "template required"})
+		return
+	}
+	if err := validateRuntimeResourceRequest(req.Virtualization, req.TemplateID, req.VCPU, req.RAMMB, req.DiskGB); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+	if err := createByRuntime(req); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+	created := config.FindContainerByName(req.Name)
+	if created == nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "container created but not found in config"})
+		return
+	}
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "container created", Data: created})
 }
 
 // agentResetPassword 处理母控下发的子容器密码重置。未填密码时由运行时自动生成新密码。
@@ -143,4 +187,35 @@ func AgentContainerActionFromQuery(w http.ResponseWriter, r *http.Request) {
 	rr := r.Clone(r.Context())
 	rr.URL.Path = "/api/agent/containers/" + strconv.Itoa(req.ID) + "/" + req.Action
 	HandleAgentContainerAction(w, rr)
+}
+
+// HandleAgentNodeBackup 对被控本机的全部容器做一份完整备份（节点级冷备份）。
+// 用于被控节点重装/重建前的数据保全。返回成功/失败明细。
+func HandleAgentNodeBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	containers := config.AppConfig.Containers
+	done := 0
+	failed := []string{}
+	var totalBytes int64
+	for i := range containers {
+		c := &containers[i]
+		b, err := createInstanceBackup(c.ID, "node-cold", 0)
+		if err != nil {
+			failed = append(failed, c.Name+": "+err.Error())
+			continue
+		}
+		if b != nil {
+			done++
+			totalBytes += b.SizeBytes
+		}
+	}
+	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+		"backed_up":     done,
+		"failed":        failed,
+		"total_bytes":   totalBytes,
+		"container_cnt": len(containers),
+	}})
 }

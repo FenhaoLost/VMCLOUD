@@ -880,6 +880,41 @@ func upgradeFromReleaseAsset(assetURL, latest, assetName string) error {
 	return nil
 }
 
+// SelfUpdateOnce 非交互地检查并升级到最新版本（供被控节点自动更新调用）。
+// 与菜单的「检查并升级」复用同一套逻辑，但不需要终端确认。
+// 返回 latestVersion 表示升级完成，nil 表示无需升级或已是最新。
+func SelfUpdateOnce() (newVersion string, upgraded bool, err error) {
+	repo := strings.TrimSpace(os.Getenv("EYVESCLOUD_REPO"))
+	if repo == "" {
+		repo = version.Repo
+	}
+	assetName, err := releaseArchiveAssetName(runtime.GOARCH)
+	if err != nil {
+		return "", false, err
+	}
+	current := version.Current()
+
+	release, err := fetchLatestRelease(repo, assetName)
+	if err != nil {
+		return "", false, fmt.Errorf("检查 GitHub 最新版本失败: %w", err)
+	}
+	latest := strings.TrimSpace(release.TagName)
+	if latest == "" {
+		return "", false, fmt.Errorf("GitHub Release 没有 tag_name，无法判断最新版本")
+	}
+	if sameVersion(current, latest) {
+		return latest, false, nil
+	}
+	assetURL := findReleaseAsset(release, assetName)
+	if assetURL == "" {
+		return "", false, fmt.Errorf("最新 Release 没有找到 %s，无法自动升级", assetName)
+	}
+	if err := upgradeFromReleaseAsset(assetURL, latest, assetName); err != nil {
+		return "", false, err
+	}
+	return latest, true, nil
+}
+
 func downloadFile(url, dest string) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

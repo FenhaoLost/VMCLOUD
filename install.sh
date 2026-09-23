@@ -421,7 +421,10 @@ Environment variables:
   EYVESCLOUD_LANG=en|zh               Default: auto
   EYVESCLOUD_LXC_SUBNET=10.0.3.0/24   Default: auto-detect an available private subnet
   EYVESCLOUD_KVM_SUBNET=192.168.122.0/24
-  EYVESCLOUD_LOG_FILE=/path/file.log  Default: ${LOG_FILE}
+  EYVESCLOUD_LOG_FILE=/path/file.log   Default: ${LOG_FILE}
+  EYVESCLOUD_FORCE_DOWNGRADE=1         Allow downgrade install (default: refuse)
+  EYVESCLOUD_FORCE_REINSTALL=1         Reinstall even if the same version is present
+  EYVESCLOUD_AUTO_UPDATE=1440          Agent auto-update interval in minutes (>=60)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo sh
@@ -445,6 +448,9 @@ EOF
   EYVESCLOUD_LXC_SUBNET=10.0.3.0/24   默认：自动检测可用私网网段
   EYVESCLOUD_KVM_SUBNET=192.168.122.0/24
   EYVESCLOUD_LOG_FILE=/path/file.log  默认：${LOG_FILE}
+  EYVESCLOUD_FORCE_DOWNGRADE=1       允许版本回退安装（默认拒绝）
+  EYVESCLOUD_FORCE_REINSTALL=1       相同版本时强制重装
+  EYVESCLOUD_AUTO_UPDATE=1440        被控节点自动更新间隔（分钟，>=60）
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo sh
@@ -1872,6 +1878,82 @@ release_asset_url() {
     printf '%s\n' "https://github.com/${REPO}/releases/latest/download/${asset_name}"
 }
 
+# 读取已安装可执行文件的版本号（`eyvescloud --version` 输出形如 "EyvesCloud 1.1.29"）。
+installed_eyvescloud_version() {
+    if [ -x /usr/local/bin/eyvescloud ]; then
+        /usr/local/bin/eyvescloud --version 2>/dev/null | sed -n 's/^EyvesCloud[[:space:]]*v\?//p' | head -n 1
+    fi
+}
+
+# 解析目标发行版 tag（latest 时从 GitHub release 读取；否则取显式指定的版本）。
+resolve_target_version() {
+    if [ "$EYVESCLOUD_INSTALL_VERSION" != "latest" ]; then
+        printf '%s\n' "$EYVESCLOUD_INSTALL_VERSION"
+        return
+    fi
+    release_api_json | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# 解析 semver 版本号为可比较的整型数组，便于比较主/次/补丁。
+parse_version_parts() {
+    _ver="$(printf '%s' "$1" | sed 's/^v//')"
+    _major="$(printf '%s' "$_ver" | cut -d. -f1 | tr -cd '0-9')"
+    _minor="$(printf '%s' "$_ver" | cut -d. -f2 | tr -cd '0-9')"
+    _patch="$(printf '%s' "$_ver" | cut -d. -f3 | tr -cd '0-9' | sed 's/[^0-9].*//')"
+    printf '%s %s %s\n' "${_major:-0}" "${_minor:-0}" "${_patch:-0}"
+}
+
+# 语义化比较两个版本串 a b：a>b 输出 -1，a<b 输出 1，相等输出 0。
+compare_versions() {
+    _a="$(parse_version_parts "$1")"
+    _b="$(parse_version_parts "$2")"
+    # shellcheck disable=SC2086
+    set -- $_a
+    _am="$1"; _an="$2"; _ap="$3"
+    # shellcheck disable=SC2086
+    set -- $_b
+    _bm="$1"; _bn="$2"; _bp="$3"
+    if [ "$_am" -gt "$_bm" ]; then printf '%s\n' -1; return; fi
+    if [ "$_am" -lt "$_bm" ]; then printf '%s\n' 1; return; fi
+    if [ "$_an" -gt "$_bn" ]; then printf '%s\n' -1; return; fi
+    if [ "$_an" -lt "$_bn" ]; then printf '%s\n' 1; return; fi
+    if [ "$_ap" -gt "$_bp" ]; then printf '%s\n' -1; return; fi
+    if [ "$_ap" -lt "$_bp" ]; then printf '%s\n' 1; return; fi
+    printf '%s\n' 0
+}
+
+# 升级兼容性判断：幂等可重入，已是最新则跳过，版本回退给出明确警告。
+check_upgrade_compatibility() {
+    installed="$(installed_eyvescloud_version)"
+    if [ -z "$installed" ]; then
+        return
+    fi
+    target="$(resolve_target_version)"
+    if [ -z "$target" ]; then
+        target="$EYVESCLOUD_INSTALL_VERSION"
+    fi
+    if [ -z "$target" ]; then
+        return
+    fi
+    log "检测到已安装版本 ${installed}，目标版本 ${target}"
+    if [ "$installed" = "$target" ]; then
+        log "已安装版本与目标版本一致，无需重复安装。"
+        if [ "${EYVESCLOUD_FORCE_REINSTALL:-0}" != "1" ]; then
+            print_summary
+            exit 0
+        fi
+    fi
+    cmp="$(compare_versions "$installed" "$target")"
+    if [ "$cmp" = "-1" ]; then
+        warn "目标版本 ${target} 低于已安装版本 ${installed}，这将导致版本回退。"
+        if [ "${EYVESCLOUD_FORCE_DOWNGRADE:-0}" != "1" ] && [ "${EYVESCLOUD_FORCE_REINSTALL:-0}" != "1" ]; then
+            die "拒绝回退安装。如需强制执行请设置 EYVESCLOUD_FORCE_DOWNGRADE=1。"
+        fi
+    else
+        log "正在从 ${installed} 升级到 ${target}。"
+    fi
+}
+
 download_release_if_needed() {
     if [ -f "./eyvescloud" ]; then
         return
@@ -2157,6 +2239,7 @@ run_step "配置 libvirt default NAT 网络" setup_default_libvirt_network
 run_step "配置 UID/GID 映射" setup_subids
 run_step "配置 LXC 存储权限" configure_lxc_storage_access
 run_step "检查 project quota" try_enable_project_quota
+run_step "检查升级兼容性" check_upgrade_compatibility
 run_step "下载发行版包" download_release_if_needed
 run_step "安装 EYVESCLOUD 二进制" install_binary
 run_step "安装并启动 EYVESCLOUD 服务" install_service

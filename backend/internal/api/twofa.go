@@ -52,9 +52,11 @@ func Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	config.AppConfigMu.RLock()
 	account = config.AppConfig.AdminUser
 	config.AppConfigMu.RUnlock()
+	otpauth := totpSetupURI(secret, account)
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]string{
-		"secret":     secret,
-		"otpauth_uri": totpSetupURI(secret, account),
+		"secret":      secret,
+		"otpauth_uri": otpauth,
+		"qr_data_url": totpQRDataURL(otpauth),
 	}})
 }
 

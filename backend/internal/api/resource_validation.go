@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"math"
+
+	"eyvescloud/internal/config"
 )
 
 const minVCPU = 0.25
@@ -22,8 +24,16 @@ func validateContainerResourceRequest(vcpu float64, ramMB int, diskGB float64) e
 	if host.CPU.Cores > 0 && vcpu > float64(host.CPU.Cores) {
 		return fmt.Errorf("vCPU cannot exceed host CPU cores (%d)", host.CPU.Cores)
 	}
-	if host.RAM.TotalMB > 0 && ramMB > int(host.RAM.TotalMB) {
-		return fmt.Errorf("memory cannot exceed host memory (%d MB)", host.RAM.TotalMB)
+	if host.RAM.TotalMB > 0 {
+		memCeiling := int(host.RAM.TotalMB)
+		if enabled, ratio := config.GetMemoryOvercommit(); enabled && ratio > 0 {
+			// 内存超售：可分配上限 = 物理内存 × 超售比。KSM 会压缩实际占用，
+			// 但仍有系统性风险，因此仅当管理员显式开启时才放宽硬限。
+			memCeiling = int(float64(host.RAM.TotalMB) * ratio)
+		}
+		if ramMB > memCeiling {
+			return fmt.Errorf("memory cannot exceed host memory ceiling (%d MB)", memCeiling)
+		}
 	}
 	if diskGB <= 0 {
 		return fmt.Errorf("disk must be greater than 0")

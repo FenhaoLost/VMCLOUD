@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,51 +186,10 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 		Timeout:         4 * time.Second,
 	}
 
-	addr := net.JoinHostPort(c.IP, "22")
-	writeWebSocketText(ws, nil, fmt.Sprintf("Connecting to %s...\r\n", addr))
-	client, err := ssh.Dial("tcp", addr, sshConfig)
+	client, err := webSSHOpenSSH(c, sshConfig)
 	if err != nil {
-		if c.IsKVM() {
-			writeWebSocketText(ws, nil, "\r\nSSH is not ready yet, preparing KVM guest service. This can take a few minutes on first boot...\r\n")
-			if setupErr := kvmManager.EnsureSSH(c.ID); setupErr != nil {
-				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nKVM SSH auto setup failed: %v\r\n", setupErr))
-				return
-			}
-			if refreshed := config.FindContainer(c.ID); refreshed != nil {
-				c = refreshed
-			}
-			if ip, ipErr := kvmManager.GetContainerIP(c.VirshName()); ipErr == nil && ip != "" {
-				config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
-				addr = net.JoinHostPort(ip, "22")
-			}
-			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
-			sshConfig.Timeout = 10 * time.Second
-			client, err = ssh.Dial("tcp", addr, sshConfig)
-			if err != nil {
-				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
-				return
-			}
-		} else {
-			writeWebSocketText(ws, nil, "\r\nSSH is not ready yet, preparing service. This can take up to 90 seconds on first boot...\r\n")
-			if setupErr := lxcManager.EnsureSSH(c.ID); setupErr != nil {
-				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nSSH auto setup failed: %v\r\n", setupErr))
-				return
-			}
-			if refreshed := config.FindContainer(c.ID); refreshed != nil {
-				c = refreshed
-			}
-			if ip, ipErr := lxcManager.GetContainerIP(c.LxcName()); ipErr == nil && ip != "" {
-				config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
-				addr = net.JoinHostPort(ip, "22")
-			}
-			sshConfig.Auth = []ssh.AuthMethod{ssh.Password(c.SSHPassword)}
-			sshConfig.Timeout = 10 * time.Second
-			client, err = ssh.Dial("tcp", addr, sshConfig)
-			if err != nil {
-				writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
-				return
-			}
-		}
+		writeWebSocketText(ws, nil, fmt.Sprintf("\r\nWebSSH connection failed: %v\r\n", err))
+		return
 	}
 	defer client.Close()
 
@@ -274,7 +234,7 @@ func HandleWebSSH(w http.ResponseWriter, r *http.Request) {
 	writeWebSocketText(ws, nil, "\r\nSSH shell ready. Press Enter if the prompt is not visible.\r\n")
 	_, _ = stdin.Write([]byte("\n"))
 
-	log.Printf("WebSSH connected for container %s -> %s", containerName, addr)
+	log.Printf("WebSSH connected for container %s", containerName)
 
 	done := make(chan struct{}, 3)
 	var writeMu sync.Mutex
@@ -404,4 +364,73 @@ func randomHex(bytesLen int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+// containerIPLooksUnusable 判断容器 IP 是否不可用于直连（link-local/loopback/空）。
+// 在 DHCP 尚未从 lxcbr0 拿到正常网段地址时，容器 eth0 常落到 169.254.x（APIPA），
+// 宿主对它不可路由，导致 WebSSH 永远卡在 preparing。
+func containerIPLooksUnusable(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	return parsed.IsLinkLocalUnicast() || parsed.IsLoopback() || parsed.IsUnspecified()
+}
+
+// isUsableContainerIP 判断 IP 是否既非空也不属不可用地址族。
+func isUsableContainerIP(ip string) bool {
+	return !containerIPLooksUnusable(ip)
+}
+
+// webSSHOpenSSH 以「多候选地址」方式建立到容器的 SSH 连接。
+// 候选顺序：
+//  1. 容器内网 IPv4 c.IP:22（正常场景）
+//  2. 若 c.IP 不可用，尝试动态刷新容器 IP 后再连
+//  3. 最终回退到宿主回环 127.0.0.1:<SSHPort>——DNAT 已将宿主管理端口转发到容器 22，
+//     该路径不经容器 link-local 地址，宿主机上必然可达。
+func webSSHOpenSSH(c *config.Container, sshConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	candidates := make([]string, 0, 4)
+	if isUsableContainerIP(c.IP) {
+		candidates = append(candidates, net.JoinHostPort(c.IP, "22"))
+	}
+	if c.IsKVM() {
+		if ip, err := kvmManager.GetContainerIP(c.VirshName()); err == nil && isUsableContainerIP(ip) {
+			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+			candidates = append(candidates, net.JoinHostPort(ip, "22"))
+		}
+	} else {
+		if usable := isUsableContainerIP(c.IP); !usable {
+			// c.IP 不可用(link-local/空)时，先在容器内触发一次 DHCP 修复，
+			// 让 eth0 尽量拿到 lxcbr0 网段的正常地址。
+			if ip, err := lxcManager.EnsureContainerIPv4(c.ID); err == nil && isUsableContainerIP(ip) {
+				config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+				candidates = append(candidates, net.JoinHostPort(ip, "22"))
+			}
+		}
+		if ip, err := lxcManager.GetContainerIP(c.LxcName()); err == nil && isUsableContainerIP(ip) {
+			config.MutateContainerByID(c.ID, func(l *config.Container) { l.IP = ip })
+			candidates = append(candidates, net.JoinHostPort(ip, "22"))
+		}
+	}
+	// 最后回退到宿主回环 + DNAT 管理端口。
+	if c.SSHPort > 0 && c.SSHPort <= 65535 {
+		candidates = append(candidates, net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", c.SSHPort)))
+	}
+
+	var lastErr error
+	for _, addr := range candidates {
+		client, err := ssh.Dial("tcp", addr, sshConfig)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("container has no reachable SSH address")
+	}
+	return nil, lastErr
 }

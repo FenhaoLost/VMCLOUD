@@ -134,6 +134,9 @@ export interface Container {
   policy_blocked_reason?: string
   policy_blocked_at?: string
   cloud_init_user_data?: string
+  rescue_enabled?: boolean
+  rescue_iso_id?: string
+  rescue_iso_path?: string
 }
 
 export interface Template {
@@ -157,6 +160,8 @@ export interface CreateContainerRequest {
   cpu_percent: number
   ram_mb: number
   disk_gb: number
+  data_disk_gb?: number
+  data_disk_mount_path?: string
   network_bw_mbps: number
   network_down_mbps: number
   network_up_mbps: number
@@ -481,6 +486,7 @@ export interface TwoFAStatus {
 export interface TwoFASetupResult {
   secret: string
   otpauth_uri: string
+  qr_data_url?: string
 }
 
 export const get2FAStatus = () =>
@@ -624,6 +630,93 @@ export const updateTenant = (id: string, tenant: Partial<Tenant>) =>
 
 export const deleteTenant = (id: string) =>
   api.delete<APIResponse>(`/tenants/${id}`)
+
+// ---- 批次3：区域 / IP 组 / ISO ----
+export interface Region {
+  id: string
+  name: string
+  location?: string
+  created_at?: string
+}
+
+export interface IPGroup {
+  id: string
+  name: string
+  fault_open?: string
+  enable?: string[]
+  standby?: string[]
+  created_at?: string
+}
+
+export interface ISOFile {
+  id: string
+  name: string
+  path: string
+  size_bytes?: number
+  os?: string
+  created_at?: string
+}
+
+export interface MetricRetentionSettings {
+  retention_days: number
+  sample_interval_secs?: number
+  raw_history_secs?: number
+  retention_notes?: string
+}
+
+export const getRegions = () =>
+  api.get<APIResponse<Region[]>>('/regions')
+
+export const createRegion = (r: { name: string; location?: string }) =>
+  api.post<APIResponse<Region>>('/regions', r)
+
+export const deleteRegion = (id: string) =>
+  api.delete<APIResponse>(`/regions/${id}`)
+
+export const getIPGroups = () =>
+  api.get<APIResponse<IPGroup[]>>('/ip-groups')
+
+export const createIPGroup = (g: { name: string; enable?: string[]; standby?: string[] }) =>
+  api.post<APIResponse<IPGroup>>('/ip-groups', g)
+
+export const updateIPGroup = (id: string, g: { name?: string; enable?: string[]; standby?: string[] }) =>
+  api.put<APIResponse>(`/ip-groups/${id}`, g)
+
+export const deleteIPGroup = (id: string) =>
+  api.delete<APIResponse>(`/ip-groups/${id}`)
+
+export const ipGroupFailover = (id: string, ip: string) =>
+  api.post<APIResponse<IPGroup>>(`/ip-groups/${id}/failover`, { ip })
+
+export const getISOs = () =>
+  api.get<APIResponse<ISOFile[]>>('/isos')
+
+export const createISO = (r: { name: string; url: string; os?: string }) =>
+  api.post<APIResponse<ISOFile>>('/isos', r)
+
+export const uploadISO = (file: File, name: string, os?: string) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  if (name) fd.append('name', name)
+  if (os) fd.append('os', os)
+  // axios 会为 FormData 自动生成 multipart boundary，无需手动指定 Content-Type
+  return api.post<APIResponse<ISOFile>>('/isos/upload', fd, { timeout: 0 })
+}
+
+export const deleteISO = (id: string) =>
+  api.delete<APIResponse>(`/isos/${id}`)
+
+export const containerISOAction = (containerId: number, isoId: string, attach: boolean) =>
+  api.post<APIResponse>(`/isos/attach`, { container_id: containerId, iso_id: isoId, attach })
+
+export const containerRescue = (containerId: number, enabled: boolean, isoId?: string) =>
+  api.post<APIResponse>(`/containers/rescue`, { container_id: containerId, enabled, iso_id: isoId })
+
+export const getMetricRetention = () =>
+  api.get<APIResponse<MetricRetentionSettings>>('/metrics/retention')
+
+export const setMetricRetention = (retentionDays: number) =>
+  api.put<APIResponse<{ retention_days: number }>>('/metrics/retention', { retention_days: retentionDays })
 
 export interface TaskQueueSettings {
   concurrency: number
@@ -974,8 +1067,34 @@ export const getNodeInstallScript = (id: string) =>
 export const getNodeContainers = (nodeId: string) =>
   api.get<APIResponse<Container[]>>(`/nodes/${nodeId}/containers`)
 
+export const createNodeContainer = (nodeId: string, data: CreateContainerRequest) =>
+  api.post<APIResponse<Container>>(`/nodes/${nodeId}/containers`, data, { timeout: 600000 })
+
 export const nodeContainerAction = (nodeId: string, containerId: number, action: string) =>
   api.post<APIResponse>(`/nodes/${nodeId}/containers/${containerId}/${action}`)
+
+// 节点镜像管理：查询被控镜像清单 / 主控下发镜像同步
+export interface NodeCatalogImage {
+  id: string
+  name: string
+  type?: string
+  distro?: string
+  release?: string
+  arch?: string
+  url?: string
+  sha256?: string
+  description?: string
+  created_at?: string
+}
+
+export const getNodeImages = (nodeId: string) =>
+  api.get<APIResponse<{ lxc?: NodeCatalogImage[]; kvm?: NodeCatalogImage[] }>>(`/nodes/${nodeId}/images`)
+
+export const syncNodeImages = (nodeId: string) =>
+  api.post<APIResponse<{ added?: number; updated?: number; pulled?: string[]; failed?: string[] }>>(`/nodes/${nodeId}/images/sync`, {}, { timeout: 600000 })
+
+export const nodeColdBackup = (nodeId: string) =>
+  api.post<APIResponse<{ backed_up?: number; failed?: string[]; total_bytes?: number; container_cnt?: number }>>(`/nodes/${nodeId}/backup`, {}, { timeout: 600000 })
 
 // Templates
 export const getTemplates = () =>
@@ -1121,6 +1240,31 @@ export const updateSnapshotQuota = (id: ContainerIdentifier, snapshotLimit: numb
     `/containers/${id}/snapshots/quota`,
     { snapshot_limit: snapshotLimit }
   )
+
+// 实例级备份（数据安全）：完整磁盘备份，keep-N 保留 + 还原
+export interface InstanceBackup {
+  id: string
+  container_id: number
+  container_name: string
+  kind: string
+  created_at: string
+  created_by: string
+  scheduled: boolean
+  path: string
+  size_bytes: number
+}
+
+export const getContainerBackups = (id: ContainerIdentifier) =>
+  api.get<APIResponse<InstanceBackup[]>>(`/containers/${id}/backups`)
+
+export const createContainerBackup = (id: ContainerIdentifier, keep?: number) =>
+  api.post<APIResponse<InstanceBackup>>(`/containers/${id}/backups`, { keep: keep || 0 }, { timeout: 600000 })
+
+export const deleteContainerBackup = (id: ContainerIdentifier, backupId: string) =>
+  api.delete<APIResponse>(`/containers/${id}/backups/${backupId}`, { timeout: 600000 })
+
+export const restoreContainerBackup = (id: ContainerIdentifier, backupId: string) =>
+  api.post<APIResponse>(`/containers/${id}/backups/${backupId}/restore`, {}, { timeout: 600000 })
 
 // WebSSH URL generator
 export const getWebSSHUrl = (containerName: string) => {
@@ -1286,7 +1430,7 @@ export interface PolicyRule {
   metric: 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'disk_io'
   operator: 'gt' | 'lt'
   threshold: number
-  action: 'raise_cpu' | 'raise_ram' | 'adjust_bw' | 'shutdown'
+  action: 'raise_cpu' | 'raise_ram' | 'adjust_bw' | 'shutdown' | 'notify'
   adjust_vcpu?: number
   adjust_ram_mb?: number
   adjust_bw_mbps?: number

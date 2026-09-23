@@ -237,6 +237,8 @@ type ContainerConfig struct {
 	CPUPercent           int                        `json:"cpu_percent"`
 	RAMMB                int                        `json:"ram_mb"`
 	DiskGB               float64                    `json:"disk_gb"`
+	DataDiskGB           float64                    `json:"data_disk_gb,omitempty"`
+	DataDiskMountPath    string                     `json:"data_disk_mount_path,omitempty"`
 	NetworkBWMbps        int                        `json:"network_bw_mbps"`
 	NetworkDownMbps      int                        `json:"network_down_mbps"`
 	NetworkUpMbps        int                        `json:"network_up_mbps"`
@@ -647,6 +649,14 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		return err
 	}
 
+	if cfg.DataDiskGB > 0 {
+		cfg.ReportProgress("data_disk", "创建数据盘并挂载")
+		if err := m.applyDataDisk(lxcName, cfg); err != nil {
+			_ = m.cleanupContainerStorage(lxcName)
+			return err
+		}
+	}
+
 	cfg.ReportProgress("addresses", "分配 IPv4、IPv6 与 NAT 端口")
 	publicIPv4s, err := AllocatePublicIPv4Assignments(id, cfg.PublicIPv4s, cfg.IPv4Count, cfg.AssignIPv4)
 	if err != nil {
@@ -704,6 +714,8 @@ func (m *Manager) CreateContainer(cfg ContainerConfig) error {
 		VCPU:                 cfg.VCPU,
 		RAMMB:                cfg.RAMMB,
 		DiskGB:               cfg.DiskGB,
+		DataDiskGB:           cfg.DataDiskGB,
+		DataDiskMountPath:    dataDiskMountPoint(cfg.DataDiskMountPath),
 		NetworkBWMbps:        cfg.NetworkBWMbps,
 		NetworkDownMbps:      cfg.NetworkDownMbps,
 		NetworkUpMbps:        cfg.NetworkUpMbps,
@@ -1570,6 +1582,145 @@ func (m *Manager) ensureDiskImageMounted(lxcName string) error {
 	return nil
 }
 
+// dataDiskMountPoint returns the in-container mount path for the dedicated data
+// disk, defaulting to "data" (/data) when the caller did not specify one.
+func dataDiskMountPoint(mountPath string) string {
+	p := strings.Trim(strings.TrimSpace(mountPath), "/")
+	if p == "" {
+		return "data"
+	}
+	return p
+}
+
+func isMountPoint(path string) bool {
+	target, err := findmntValue(path, "TARGET")
+	if err != nil {
+		return false
+	}
+	return sameFilesystemPath(strings.TrimSpace(target), path)
+}
+
+func (m *Manager) detachLoopImage(imgPath string) {
+	out, err := exec.Command("losetup", "-j", imgPath).Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		device := strings.TrimSuffix(strings.SplitN(line, ":", 2)[0], ":")
+		if device != "" {
+			exec.Command("losetup", "-d", device).Run()
+		}
+	}
+}
+
+// writeLXCConfigEntry appends a single key/value line (or an entry block) to the
+// container LXC config if it is not already present.
+func (m *Manager) writeLXCConfigEntry(lxcName, entry string) error {
+	configFile := filepath.Join(m.LxcPath, lxcName, "config")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	if strings.Contains(string(data), entry) {
+		return nil
+	}
+	f, err := os.OpenFile(configFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString("\n# eyvescloud managed: data disk\n" + entry + "\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyDataDisk provisions a dedicated data disk for the container: a sparse
+// ext4 loop image at <containerDir>/data.img host-mounted at
+// <containerDir>/data, bind-mounted into the container at DataDiskMountPath
+// (default /data) via lxc.mount.entry. It is idempotent.
+func (m *Manager) applyDataDisk(lxcName string, cfg ContainerConfig) error {
+	if cfg.DataDiskGB <= 0 {
+		return nil
+	}
+	containerDir := filepath.Join(m.LxcPath, lxcName)
+	dataImg := filepath.Join(containerDir, "data.img")
+	dataMount := filepath.Join(containerDir, "data")
+
+	if _, err := os.Stat(dataImg); err == nil {
+		if !isMountPoint(dataMount) {
+			_ = exec.Command("umount", "-l", dataMount).Run()
+			m.detachLoopImage(dataImg)
+			_ = os.Remove(dataImg)
+		}
+	}
+
+	if _, err := os.Stat(dataImg); os.IsNotExist(err) {
+		diskMB := int(math.Round(cfg.DataDiskGB * 1024))
+		if diskMB < 1024 {
+			diskMB = 1024
+		}
+		if output, ex := exec.Command("truncate", "-s", fmt.Sprintf("%dM", diskMB), dataImg).CombinedOutput(); ex != nil {
+			return fmt.Errorf("failed to create data disk image: %v, output: %s", ex, string(output))
+		}
+		if output, ex := exec.Command("mkfs.ext4", "-F", dataImg).CombinedOutput(); ex != nil {
+			return fmt.Errorf("failed to format data disk image: %v, output: %s", ex, string(output))
+		}
+	}
+
+	if !isMountPoint(dataMount) {
+		if err := os.MkdirAll(dataMount, 0755); err != nil {
+			return err
+		}
+		if output, ex := exec.Command("mount", "-o", "loop", dataImg, dataMount).CombinedOutput(); ex != nil {
+			return fmt.Errorf("failed to mount data disk image: %v, output: %s", ex, string(output))
+		}
+		// Unprivileged containers require the bind source owned by the mapped
+		// container-root uid so the data disk is writable as root inside.
+		if uidBase, gidBase, err := unprivilegedIDMap(); err == nil {
+			_ = exec.Command("chown", "-R", fmt.Sprintf("%d:%d", uidBase, gidBase), dataMount).Run()
+		}
+	}
+
+	mountPoint := dataDiskMountPoint(cfg.DataDiskMountPath)
+	entry := fmt.Sprintf("lxc.mount.entry = %s %s none bind 0 0", dataMount, mountPoint)
+	if err := m.writeLXCConfigEntry(lxcName, entry); err != nil {
+		return fmt.Errorf("failed to add data disk bind mount: %v", err)
+	}
+	return nil
+}
+
+// ensureDataDiskMounted mounts the container data disk image after a host
+// reboot (or a fresh mount table) if it is not already mounted, and ensures its
+// bind-mount entry is present in the LXC config.
+func (m *Manager) ensureDataDiskMounted(lxcName, mountPath string) error {
+	containerDir := filepath.Join(m.LxcPath, lxcName)
+	dataImg := filepath.Join(containerDir, "data.img")
+	if _, err := os.Stat(dataImg); os.IsNotExist(err) {
+		return nil
+	}
+	dataMount := filepath.Join(containerDir, "data")
+	if !isMountPoint(dataMount) {
+		if err := os.MkdirAll(dataMount, 0755); err != nil {
+			return err
+		}
+		if output, ex := exec.Command("mount", "-o", "loop", dataImg, dataMount).CombinedOutput(); ex != nil {
+			return fmt.Errorf("failed to mount data disk image: %v, output: %s", ex, string(output))
+		}
+		if uidBase, gidBase, err := unprivilegedIDMap(); err == nil {
+			_ = exec.Command("chown", "-R", fmt.Sprintf("%d:%d", uidBase, gidBase), dataMount).Run()
+		}
+	}
+	mountPoint := dataDiskMountPoint(mountPath)
+	entry := fmt.Sprintf("lxc.mount.entry = %s %s none bind 0 0", dataMount, mountPoint)
+	_ = m.writeLXCConfigEntry(lxcName, entry)
+	return nil
+}
+
 func rootfsHasInit(rootfsPath string) bool {
 	for _, rel := range []string{
 		"sbin/init",
@@ -2127,6 +2278,11 @@ func (m *Manager) StartContainer(id int) error {
 
 	if err := m.ensureDiskImageMounted(lxcName); err != nil {
 		return err
+	}
+	if c.DataDiskGB > 0 {
+		if err := m.ensureDataDiskMounted(lxcName, c.DataDiskMountPath); err != nil {
+			return err
+		}
 	}
 	if m.hasUnprivilegedIDMap(lxcName) && !m.rootfsShifted(lxcName) {
 		if err := m.shiftRootfsForUnprivileged(lxcName); err != nil {
@@ -3283,19 +3439,8 @@ func (m *Manager) detachContainerMounts(containerDir string) {
 }
 
 func (m *Manager) detachContainerLoopDevices(containerDir string) {
-	out, err := exec.Command("losetup", "-j", filepath.Join(containerDir, "rootfs.img")).Output()
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		device := strings.TrimSuffix(strings.SplitN(line, ":", 2)[0], ":")
-		if device != "" {
-			exec.Command("losetup", "-d", device).Run()
-		}
+	for _, img := range []string{"rootfs.img", "data.img"} {
+		m.detachLoopImage(filepath.Join(containerDir, img))
 	}
 }
 

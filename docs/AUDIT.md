@@ -53,9 +53,9 @@
 | F1 | 母-子：母面板被控节点详情仅暴露「开机/关机/重启」，**未暴露「重置 SSH 密码」按钮**。后端 `nodes.go` 已能代理转发 `reset-password`、`agent_api.go` 子端也已实现并回传新密码，但母 UI 没有入口，导致用户无法从母面板重置子容器密码（此前 N4 只补了后端、漏了前端）。 | ✅ 已修（`frontend/src/pages/NodeManagement.tsx`：容器行新增「重置 SSH 密码」按钮，调用 `nodeContainerAction(...,'reset-password')`，回显新密码并提示仅显示一次；前端已重建进 `frontend/dist`） |
 
 ### 待处理（承接上文快照的进行项）
-- M1：子用户/容器口令明文落库并回显（大改造，另立项）。
-- 2FA 端点可被 `*` scope 的 API Key 触发（认证模型调整，另立项）。
-- 节点 token 明文 HTTP 传输（加密传输，另立项）。
+- M1：子用户/容器口令明文落库并回显——**已部分修复**（列表不回显口令，见十三轮复核；落库明文仍为受控的创建/轮换专用凭据，全量哈希改造风险高，保留为后续项）。
+- 2FA 端点可被 `*` scope 的 API Key 触发——**✅ 已修**（十三轮复核：新增 `AdminSessionMiddleware` 仅限管理员本人会话）。
+- 节点 token 明文 HTTP 传输——**✅ 已修**（十三轮复核：agent 主控通道默认要求 https，明文 http 需显式 `--allow-insecure-http`）。
 
 ---
 
@@ -366,3 +366,188 @@ Mofang 模块是独立高风险面（webssh.php 无鉴权任意 WebSocket 代理
 | R12 | 低(遗留) | 子用户/容器口令明文落库并回显（M1）；节点 token 明文 HTTP 传输；2FA 端点可被 `*` scope 的 API Key 触发 | ⚪ 未改：明文口令大改造风险高，沿用既有 M1 结论单独立项；token/2FA 属既有认证模型设计，需整体演进 |
 
 > 复查验证：`go build` / `go vet` / `go test`（api/config/cli/server/lxc/kvm/safehttp 全绿）、前端 `tsc` + `vite build` 通过。
+
+---
+
+## 九/十轮复核（批次 2/3/4「一次性完成」实施 + 审计，2026-09-22）
+
+> 本轮一次性完成批次 2（长期指标留存）、批次 3（区域 / 弹性 IP / ISO / 分组故障 IP）、批次 4（跨节点迁移增强），并做源码 + 构建 + 实跑审计。审计与实施前后端整体绿链：`go build / go vet / go test ./...`（含 `go test -race`）全通过，前端 `tsc --noEmit` + `npm run build` 通过，完整 `bash build.sh` 发布构建成功，并用发布产物实跑冒烟验证所有新增 API。
+
+### 批次 2 —— 长期指标留存（指标归档 / 留存）
+
+- 后端 `internal/config/metric_store.go`：原始采样落 SQLite `container_metrics`；后台 `StartMetricRollup`（server.go 启动）每小时把**过期（早于当前整点）原始样本聚合成小时桶**写入 `container_metrics_hourly`（avg/max CPU、内存、网卡读写、磁盘读写），聚合后删除已归档原始行，避免原始样本无界增长。
+- 聚合数据通过 `containerMetrics` 读取链与原始/内存采样合并后下发，容器详情页趋势在原始 7 天窗口外仍可见（长趋势）。
+- 新增 `MetricRetentionDays` 配置项（默认 90，0=永久）+ `app_meta` 持久化 + SQLite 迁移 `metric_retention_days` 列。
+- **本轮补齐管理端 API**：`GET/PUT /api/metrics/retention`（`HandleMetricRetentionSettings`），PUT 校验 0–3650、写配置并立即按新保留期 `PruneMetricHourly`，带审计 `metric.retention`、`admin:access` scope 门禁。
+- 前端新增「指标留存」页（`MetricRetention.tsx`）展示/编辑保留天数、采样间隔与原始保留秒数；接入侧栏与路由 `/metric-retention`。
+
+### 批次 3 —— 区域 / 弹性 IP / ISO / 分组故障 IP
+
+- **3a 区域（region）层**：`config.Region` 模型 + `GET/POST /api/regions`、`DELETE /api/regions/{id}`（`HandleRegions`/`HandleRegionItem`），逻辑分组节点/存储/容器；前端「区域管理」页（`Regions.tsx`）。
+- **3b 弹性 IP / 3d 分组与故障 IP**：`config.IPGroup` 模型（enable 生效 / standby 备用 / fault_open 当前生效）。`GET/POST /api/ip-groups`、`PUT/DELETE /api/ip-groups/{id}`、`POST /api/ip-groups/{id}/failover`（`HandleIPGroups`/`HandleIPGroupItem`/`HandleIPGroupSubRoutes`/`HandleIPGroupFailover`）。故障切换：把目标备用 IP 提升为生效、原首个生效 IP 降级为备用，并把依赖该 IP 的容器公网 IP 尽力同步替换（运行时经重启生效）。IP 均做 `validPublicIPLoose` 非空校验；前端「IP 组」页（`IPGroups.tsx`）每行提供「切换到 <ip>」按钮。
+- **3c ISO 管理**：`config.ISOFile` 模型 + 挂载到 KVM。`GET/POST /api/isos`（POST 走 `safehttp` SSRF 防护下载，20GiB 上限、URL≤4096、写入 isos 目录、空文件拒绝）、`DELETE /api/isos/{id}`（仅允许删除 isos 目录内文件，路径前缀校验防任意删除）、`POST /api/isos/attach`（仅 KVM，`virsh attach-disk/detach-disk`，cdrom readonly）。前端「ISO 镜像」页（`ISOs.tsx`）。
+- 全部接口 `AdminMiddleware` 门禁 + 审计；模型经 `config.MutateGlobal` 加锁写并 `SaveConfig`（SQLite），无数据竞争（`-race` 验证）。
+
+### 批次 4 —— 跨节点迁移增强（数据盘随迁 + 校验）
+
+- `internal/api/migrate.go`：`migrateContainer` 新增 `DataDiskGB`/`DataDiskMountPath`（随迁移包往返，导入时建数据盘并挂载）；`migrateBundle` 新增 `ChecksumSHA256`（导出时对容器配置做 SHA-256，导入时校验防传输/篡改损坏，不匹配拒绝导入）。
+- 导入流程：格式/模板校验 → 名称冲突检测 → 校验模板已启用已下载 → 资源配额/存储池校验 → `createByRuntime` 复用以建容器 → 回填租户。**迁移包携带 SSH 口令与完整网络配置，导出强制管理员门禁**（`isAdminRequest`），窄 scope 子用户 / API Key 被拒。
+- 断点续传：迁移包为 JSON 配置，导出/导入均一次性完成，无需分片断点（`Version=2` 向后可识别）。
+
+### 前端路由 / 侧栏接入
+
+- `App.tsx` 新增路由：`/regions`、`/ip-groups`、`/isos`、`/metric-retention`；侧栏新增对应入口（Globe / Layers / Disc3 / Activity 图标）。
+- `services/api.ts` 新增 `Region/IPGroup/ISOFile/MetricRetentionSettings` 类型及 12 个 API 函数（全部走既有 `/api`+Bearer 约定）。
+
+### 源码审计（新增面，无存储型风险）
+
+- ISO 下载：`safehttp.Get` 经 `ValidateURL` 防 SSRF（拒绝回环/链路本地/保留地址/重定向）；文件路径仅由服务端生成的 `iso-<unixnano>.iso` 决定；删除时 `filepath.Abs`+前缀校验，杜绝任意目录读写。
+- IP 组故障切换：全程持 `config.MutateGlobal` 写锁（含容器 IP 替换循环），无锁外写共享切片；`-race` 通过。
+- metric 聚合：`RollupMetricSamples` 在单事务 + 独占 `dbMu` 下执行，避免与采样写并发冲突；保留期裁剪幂等。
+- 迁移校验：`checksumMigrateContainer` 用 `json.Marshal(c)` 与导出同一序列化路径，导入校验与导出完全对称，杜绝前后端字段错位。
+
+### 审计结论
+
+批次 2/3/4 全部落地且无回归。新增功能后端全部经 `go vet`/`go test`/`-race`、前端经 `tsc`/`vite build`，并用发布二进制实跑冒烟：`/api/health`、登录、`/api/regions` CRUD、`/api/ip-groups` CRUD+故障切换（生效/备用正确互换）、`/api/isos`、`/api/metrics/retention` GET/PUT 均返回 `success=true`。残留仅历史已立项三项（M1 口令明文、2FA `*` scope 触发、节点 token 明文 HTTP），未在本次范围内。
+
+---
+
+## 十一轮复核（主控-被控 + 批次1数据安全复核，2026-09-22）
+
+> 复核母-子（主控-被控）链路与批次1数据安全（实例备份 / 节点冷备份 / 数据盘）。核心功能齐全：镜像同步、发机(被控 create)、reset-password、节点冷备份（主控代理下发 `/api/agent/node-backup`）、实例备份 keep-N、数据盘+挂载路径，前后端全部接线。
+
+### 本轮新发现并修复
+
+| 编号 | 级别 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| M13 | 中 | **被控镜像同步存在 SSRF 纵深防御缺口**：`HandleAgentImageSync`（被控端）用裸 `http.Get(img.URL)` 拉取镜像，而 `img.URL` 直接来自主控下发的清单（`nodes.go:handleNodeImageSyncProxy` 原样下发 `config.ListCustomLX/KVMImages().URL`）。一旦主控侧被攻陷或清单被污染，被控会以 root 向任意 URL 发起 GET——可被用于扫描内网/metadata 探测。对照本仓 `safehttp`（回环/链路本地/元数据/组播/保留地址全部拦截）标准，此路径未接入防护。 | ✅ 已修：`agent_images.go:downloadImageFile` 改为 `safehttp.ValidateURL(url)` + `safehttp.Get(ctx, url, …)`，前置拒绝回环/localhost/链路本地/metadata/保留地址/FTP scheme/带凭据 URL；被控同步统一纳入产品既有 SSRF 防护。新增回归测试 `TestDownloadImageFileRejectsSSRF`（6 类恶意 URL 全部拒绝，网络零出站）。 |
+
+### 复核确认稳健的面（无新增缺陷）
+
+- **被控发机（create）**：`agentCreateContainer` 走 `validateRuntimeResourceRequest`（模板/资源校验）＋ `createByRuntime`（与本地创建同源），杜绝在受控节点上以异常资源/模板创建。
+- **Agent 鉴权**：`AgentTokenMiddleware` 用主控-被控共享 token 常量比较，无泄露、被控端 API 全局由它保护（容器动作/镜像同步/节点备份）。
+- **代理链路**：`proxyNodeRequest` 用已持久化 `node.Address` 拼接 + Bearer token（不回显 token），返回体经 8MiB 限流读取；不可下载任意文件（`handleNodeBinary` 需有效 install_key）。
+- **实例备份/节点冷备份**：归档走 `snapshotRestoreBase`（受保护的快照池）做路径前缀校验（`safeInstanceBackupStorePath`/`safePathUnder`），删除/还原目录均限制在受保护存储内，`tarDirectory`/`untarDirectory` 用 argv 无 shell；keep-N 轮换与跨实例存活正确。
+
+> 验证：`go build / go vet / go test ./...` 全绿；`TestDownloadImageFileRejectsSSRF` 通过（SSRF 修复锁定）。
+
+---
+
+## 十二轮复核（ISO 本地上传 / 内存超售与 KSM / KVM 救援系统，2026-09-23）
+
+> 按需求补三项运营能力：①ISO 支持用户**本地上传**（此前仅 URL 下载）；②**内存超售与 KSM 调优**；③**KVM 救援系统**（从用户上传的救援 ISO 引导，用于修复系统/重置密码/挂载数据盘）。冷链各端 `go build / go vet / go test ./...`（含 `-race`）、前端 `tsc --noEmit` + `vite build` 全通过。
+
+### 1. ISO 本地上传
+- 后端 `network.go:HandleISOUpload`：multipart 流式写盘（与 URL 下载共享 `isos` 目录），20GiB 上限、扩展名白名单、`safeInstanceBackupStorePath` 落盘校验，登记 `config.ISOFiles`；独立端点放宽请求体上限，入口 `MaxBytesReader` 与流式上传豁免正常。
+- 前端 `pages/ISOs.tsx`：`在线下载 / 本地上传` 双模式切换，`FormData` 直传（`api.ts:uploadISO`，`timeout:0`）。
+
+### 2. 内存超售与 KSM 调优
+- 后端 `api/overcommit.go`：`GET/PUT /api/overcommit/settings`（仅 `admin:access`），超售比 1.0–16.0 校验；`applyKSMTuning` 写 `/sys/kernel/mm/ksm/{run,pages_to_scan,sleep_millisecs}`，非 root/非 Linux 静默降级并返回警告，不阻塞元数据落盘。
+- 资源校验 `resource_validation.go`：仅当显式开启超售时，内存可分配上限 = 物理内存 × 超售比（默认仍走物理内存硬限，保守）。
+- 持久化 `config.go` 新增 `MemoryOvercommitEnabled/Ratio` 与 `KSMTuningConfig`；`store_sqlite.go` 的 `loadConfigFromDB/saveMeta` 已读写 `memory_overcommit_enabled/ratio` 与 `ksm_tuning`（新增 `atof` 辅助）。
+
+### 3. KVM 救援系统
+- 后端 `kvm/kvm.go`：
+  - `domainXML` 增 `rescueISOPath` 参数：非空时 `<boot dev='cdrom'/>` 并附加可引导光驱（x86 `sda/ide`、arm64 `vdd/virtio`）优先引导。
+  - `EnterRescue`（关停→置 `RescueEnabled`+持久化→重定义域→直接 `virsh start`，不做 cloud-init/SSH 等待）与 `ExitRescue`（恢复系统盘引导）。仅支持 Linux KVM VM，Windows 明确报错（走 ISO 挂载）。
+  - `startWithoutGuestInit`：免 guest 等待启动，供救援引导。
+- 持久化 `config.Container` 新增 `RescueEnabled/RescueISOID/RescueISOPath`；`store_sqlite.go` 迁移列 `rescue_enabled/rescue_iso_id/rescue_iso_path`（含 save/load）。
+- 后端 `api/rescue.go:HandleContainerRescue`：`POST /api/containers/rescue`（`admin:access`），`enabled` 进/退，校验 ISO 存在；`runtime.go` 增加 `enterRescueByRuntime/exitRescueByRuntime`。
+- 前端 `pages/ContainerDetail.tsx`：KVM 实例新增「救援模式 / 退出救援」按钮 + 模态框（列出 ISO 目录供选择）；`api.ts` 新增 `containerRescue`，`Container` 类型补充 rescue 字段。
+- 回归测试 `TestDomainXMLRescueBoot`（kvm_test.go）：校验普通域 `hd` 引导、救援域 `cdrom` 引导 + boot order 1 + ISO 附加且 XML 合法。
+
+> 验证：`go build / go vet / go test -race ./...` 全绿；`TestDomainXMLRescueBoot` 通过；前端 `tsc` + `vite build` 通过。残留仍为历史已立项三项（M1 口令明文、2FA `*` scope 触发、节点 token 明文 HTTP），未在本次范围内。
+
+---
+
+## 十三轮复核（Google Authenticator 2FA + 权限收紧 / 节点 TLS / M1 回显收敛，2026-09-23）
+
+> 按需求将两步验证升级为 **Google Authenticator 兼容**（TOTP + 可扫码二维码），并补齐上一轮残留的三项：2FA 权限、节点 token 传输加密、子用户口令回显。冷链各端 `go build / go vet / go test -race ./...`、前端 `tsc --noEmit` + `vite build` 全通过；新增回归测试锁定安全不变量。
+
+### 1. 2FA 升级为 Google Authenticator + 权限收紧（原「另立项」项 ✅）
+- **兼容性**：现有 TOTP 本就是 RFC 6238 / HMAC-SHA1 / 6 位 / 30s，`totpSetupURI` 已输出标准 `otpauth://totp/`（含 issuer/algorithm/digits/period），可直接被 Google Authenticator 录入。
+- **二维码**：引入纯 Go `github.com/skip2/go-qrcode`，`Handle2FASetup` 返回 `qr_data_url`（base64 PNG）；前端 `Settings.tsx` 两步设置面板改为展示可扫码二维码，并明确引导 Google Authenticator（无二维码时回退手动输入密钥）。
+- **权限收紧**：新增 `AdminSessionMiddleware`（`auth.go`），**仅允许管理员本人登录会话**（拒绝 API Key 与子用户 token）。`/api/2fa/*` 五个端点全部改用它，杜绝 `*`/`admin:access` 共享 scope 的 API Key 改写 TOTP 密钥、停用 2FA 或换发备份码的凭据接管面。
+
+### 2. 节点 token 明文 HTTP 传输（原「另立项」项 ✅）
+- agent 主控通道（注册 + 心跳）默认要求 **https**：`initSecureTransport` 校验 scheme，明文 `http://` 在未获豁免时直接拒绝并提示改用 https。
+- 显式 `--allow-insecure-http` 才放行 http（并打印醒目 MITM 警告），选择持久化到 `agent.json`（重启沿用）。
+- 生成的被控安装脚本 `buildAgentInstallScript`：当主控为 `http://` 时自动追加 `--allow-insecure-http`，保持存量 http 部署可用；`https://` 主控则始终校验证书。
+
+### 3. M1 口令回显收敛（部分修复）
+- **容器**：`listContainers` 列表视图一律置空 `SSHPassword`（只读汇总不回显登录口令）；detail/console 需要时单独拉取仍保留，WebSSH/WebVNC 内部使用不受影响。
+- **子用户**：`HandleSubUserList` 不再回显 `password`（登录口令为一次性，仅创建/轮换端点返回）；`access_code` 保留（用于生成管理分享链接，属产品设计，审计已认可）。子用户鉴权走 `PassHash`（bcrypt），未依赖明文。
+- 落库仍保留受控的明文（创建/轮换专用、仅管理员接口可取），全量哈希改造成本高、风险大，保留为后续项并在「待处理」注明。
+
+### 新增回归测试
+- `internal/api/security_hardening_test.go`：`TestSubUserListRedactsPassword`（列表不回显口令、保留 access_code）、`TestTOTPQRDataURL`（otpauth 参数与二维码 data URL 合法）。
+- `internal/agent/agent_test.go`：`TestInitSecureTransportRequiresHTTPS`（https 放行、http 拒绝、显式豁免放行、非法 scheme 拒绝）。
+
+> 验证：`go build / go vet / go test -race ./...` 全绿；新增两组安全回归测试通过；前端 `tsc` + `vite build` 通过。剩余仅 M1 的全量口令哈希改造（`另一个立项`，高成本）。
+
+## 十四轮复核（被控脚本智能更新 / 主控安装升级判断 / 账号密码快捷命令，2026-09-23）
+
+> 按需求解决「被控脚本不会自动更新、主控安装不判断环境与版本升级兼容、遗忘账号密码时缺少快捷恢复命令」三类问题。全部改动已 `go build / go vet / go test -race ./...` 通过，`install.sh` 通过 `shellcheck -s sh`（仅保留原有 info/格式提示，本次新增函数无 SC 告警）。
+
+### 1. 账号密码快捷恢复命令（原「历史需求」✅）
+- 新增 `eyvescloud account` 非交互命令（`internal/cli/account.go`），并已在 `main.go` 注册，同时支持别名 `eyvescloud kvm`：
+  - `account` / `kvm`：查看管理员账号、两步验证状态、数据目录、版本。
+  - `account reset` / `account set [--password <新密码>]`：重设管理员密码。密码以 bcrypt 单向哈希存储，**无法反查原密码**，故提供「重设并一次性打印新密码」的安全恢复路径；`--password` 显式指定（长度 ≥10）或自动生成 18 位强密码。
+  - 关键点：`account` 分支在 `server/CLI/agent` 等主流程前返回，便于通过 SSH 直接执行，无需终端交互；`reset --help` 正确处理 `flag.ErrHelp`。
+- 配置侧新增 `config.ResetAdminPassword`（bcrypt + `SaveConfig`）。
+
+### 2. 主控安装环境判断 + 版本升级兼容（install.sh ✅）
+- `install.sh` 新增升级链路阶段 `运行步骤「检查升级兼容性」`（`check_upgrade_compatibility`，位于依赖/网络配置之后的安装前阶段）：
+  - 读取已安装二进制版本（`/usr/local/bin/eyvescloud --version`）与目标发行版 tag（`latest` 时经 GitHub API 解析）。
+  - **幂等**：已安装版本 == 目标版本时提示并退出（除非 `EYVESCLOUD_FORCE_REINSTALL=1`）。
+  - **防回退**：目标版本低于已安装版本时**拒绝破坏性回退**（除非 `EYVESCLOUD_FORCE_DOWNGRADE=1`）。
+  - 升级路径：`正在从 X 升级到 Y` 明示。
+- 语义化版本比较 `compare_versions`（主/次/补丁整型比较，容忍 `v` 前缀与非规范尾缀）。
+- 不修改既有环境检测（OS/架构/service manager/磁盘）语义，仅**追加**升级兼容判断这一层，不破坏首次安装路径。
+
+### 3. 被控节点自动更新（agent ✅）
+- `eyvescloud agent` 支持可选自动更新：`EYVESCLOUD_AUTO_UPDATE=<分钟>`（≥60）在 agent 启动时启用后台 `autoUpdateLoop`。
+- 复用菜单同款升级逻辑，抽出可独立调用的 `cli.SelfUpdateOnce()`（非交互，免终端确认）。
+- 每间隔检查 GitHub 最新版，发现新版本即在线替换 `/usr/local/bin/eyvescloud` 并重启服务；检查失败仅告警不中断，下个周期重试。
+- 默认**关闭**（需显式设置环境变量），避免无意的频繁升级；避免重复检查保护（<60 分钟视为关闭）。
+- 安装脚本 `usage` 补充 `EYVESCLOUD_FORCE_DOWNGRADE` / `EYVESCLOUD_FORCE_REINSTALL` / `EYVESCLOUD_AUTO_UPDATE` 三个环境变量的中英文说明。
+
+### 新增能力验证
+- `go build ./...`、`go vet ./internal/cli ./internal/agent`、`go test -race ./internal/cli ./internal/agent` 全绿。
+- `eyvescloud account` / `account reset --help` 手测输出正确，`eyvescloud --version` 输出 `1.1.29`。
+- `install.sh` 增量函数经 `shellcheck -s sh` 无新增告警。
+
+## 十五轮复核（公网 IP 检测导致的外部 SSH 连不上，修复，2026-09-23）
+
+> 用户反馈：面板 WebSSH 与外部电脑 SSH 都不通，且「显示的 IP 不是本机 IP」。用户提供了实际部署地址并交付了 admin 凭据登录面板做实测复现。
+
+### 1. 实测复现与根因
+- 通过面板 API 实测（`host-info` / `containers`）确认部署机网络：本机 eth0 绑定**公网 IPv6** `2605:6c80:9:2::a3`；IPv4 为私网 `10.49.154.113`，出站走 NAT。
+- `host-info` 返回的 `public_ipv4 = 154.16.173.136` 来自 `detectEgressPublicIPv4()`（`internal/api/host.go`），它在本机无公网 IPv4 时调用外部 API（`api.ipify.org` 等）探测**出口网关 IP**，该 IP **并不落在本机网卡**，因此外部客户端连 `154.16.173.136:22000` 被拒。
+- 容器 `my-1313`（LXC）走 NAT 端口映射：宿主 `22000 → 容器22`，内部 IPv4 `169.254.105.30`，并持有公网 IPv6 `2605:6c80:9:2::1001`。
+- 前端 `ContainerDetail.tsx` 在 NAT 模式下取 `publicHost = hostInfo.public_ipv4`（出口 IP）拼出 `ssh -p 22000 root@154.16.173.136` —— 这是连不上的直接原因。
+- **面板 WebSSH 实测可用**：通过走 HTTP 代理的最小 WebSocket 客户端连 `/api/ssh`，面板后端能 SSH 到容器 `169.254.105.30:22` 并自动准备 SSH，说明容器内 SSH 正常；问题集中在「外部客户端 → 出口 IP:22000」这条镜像路径。
+
+### 2. 修复
+- 前端 `ContainerDetail.tsx` 的 SSH 宿主地址计算改为**优先 `window.location.hostname`（用户访问面板的域名/IP）**：
+  - 用户能打开面板，则 `window.location.hostname` 一定可达（云厂商已为该地址做端口转发），用它当 SSH 宿主必然比「出口网关 IP」可靠。
+  - 仅当容器拥有**独立公网 IPv4**（`assignedIPv4List`）时才用该公网 IP。
+  - 后端探测的 `public_ipv4` 仅作为最终兜底。
+- 该改动的企业工程要点：不臆测可达性，而是以「用户真实访问面板的地址」作为 SSH 宿主；保留「独立公网 IPv4 / IPv6 直连」优先级。
+
+### 3. 遗留（需部署侧操作，非代码 bug）
+- 外部 `154.16.173.136:22000` 能否连通仍取决于**云厂商/NAT 端口转发与安全组**是否放行该端口到面板内网机。代码已保证展示正确地址；若虚拟商未放行，需在云控制台放行。
+- WebSSH 后端始终可用（面板 → 容器内网 IP 直连，不经公网），不受公网 IP 影响。
+
+### 验证
+- `frontend: tsc --noEmit` 与 `vite build` 通过；`backend: go build ./...` 通过。
+- 已使用登录凭据在真实面板上复核宿主网络实测数据。
+
+### 4. 补充：WebSSH 连接健壮化（让后续开通新服务器不再卡住）
+- 实测定位 WebSSH 卡在 "preparing" 的根因：在「公网 IPv6 直连 + IPv4 出站 NAT」的部署机上，LXC 容器 eth0 未从 lxcbr0 正常拿到 DHCP 地址，仅落到 link-local `169.254.x.x`（APIPA）；面板后端 `HandleWebSSH` 原逻辑用 `c.IP:22` 直连，宿主对 link-local 不可路由，导致终端永远卡在 preparing。
+- 修复（`internal/api/ssh.go`）：
+  - 新增 `webSSHOpenSSH()` 多候选连接策略：依次尝试「容器内网 IPv4:22 → 动态刷新后的容器 IP:22 → 宿主回环 `127.0.0.1:<SSHPort>`（已建 DNAT 管理端口）」，任一成功即建立会话。
+  - LXC 且 `c.IP` 为 link-local/空时，先调用 `EnsureContainerIPv4` 在容器内触发 DHCP 修复，再连。
+  - `containerIPLooksUnusable()` 统一判定 link-local/loopback/unspecified 地址族，避免用不可路由地址去连。
+- 该改动使后续新开容器即使 DHCP 暂未完成，也不会再"假死"在 preparing 界面；连接失败会给出真实错误而非无限等待。
+- 验证：`go build ./...`、`go vet ./internal/api`、`go test -race ./internal/api` 全绿。

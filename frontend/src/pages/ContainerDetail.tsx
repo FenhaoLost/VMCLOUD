@@ -9,6 +9,7 @@ import {
   Cpu,
   HardDrive,
   Key,
+  LifeBuoy,
   Maximize2,
   MemoryStick,
   Minimize2,
@@ -36,12 +37,15 @@ import {
   ContainerUsage,
   createSubUser,
   createContainerSnapshot,
+  createContainerBackup,
   deleteContainer,
   deleteContainerSnapshot,
+  deleteContainerBackup,
   deletePortMapping,
   getContainer,
   getContainerHistory,
   getContainerSnapshots,
+  getContainerBackups,
   getContainerUsage,
   getHostInfo,
   getStorageInfo,
@@ -70,11 +74,16 @@ import {
   updateSnapshotQuota,
   updateSnapshotSchedule,
   restoreContainerSnapshot,
+  restoreContainerBackup,
+  InstanceBackup,
   resetTraffic,
   updateTrafficLimit,
   updateResourceLimit,
   updatePortMapping,
   SubUser,
+  getISOs,
+  ISOFile,
+  containerRescue,
 } from '../services/api'
 import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
@@ -193,6 +202,14 @@ export default function ContainerDetail() {
   const [snapshotStoragePoolID, setSnapshotStoragePoolID] = useState('')
   const [showSnapshotSchedule, setShowSnapshotSchedule] = useState(false)
   const [snapshotScheduleDraft, setSnapshotScheduleDraft] = useState({ intervalHours: 24, time: '03:00' })
+  const [showBackups, setShowBackups] = useState(false)
+  const [backups, setBackups] = useState<InstanceBackup[]>([])
+  const [backupBusy, setBackupBusy] = useState('')
+  const [backupKeep, setBackupKeep] = useState(0)
+  const [showRescue, setShowRescue] = useState(false)
+  const [rescueISOs, setRescueISOs] = useState<ISOFile[]>([])
+  const [selectedRescueISO, setSelectedRescueISO] = useState('')
+  const [rescueBusy, setRescueBusy] = useState(false)
   const [showFirewall, setShowFirewall] = useState(false)
   const [firewallEnabled, setFirewallEnabled] = useState(false)
   const [firewallDefaultAction, setFirewallDefaultAction] = useState<'ACCEPT' | 'DROP'>('DROP')
@@ -328,6 +345,22 @@ export default function ContainerDetail() {
       fetchStorage()
     }
   }, [showSnapshots, fetchSnapshots, fetchStorage])
+
+  const fetchBackups = useCallback(async () => {
+    if (!containerIdentifier) return
+    try {
+      const res = await getContainerBackups(containerIdentifier)
+      setBackups(res.data.data || [])
+    } catch {
+      // 保留上次数据
+    }
+  }, [containerIdentifier])
+
+  useEffect(() => {
+    if (showBackups) {
+      fetchBackups()
+    }
+  }, [showBackups, fetchBackups])
 
   // Poll task status for this container
   useEffect(() => {
@@ -673,6 +706,52 @@ export default function ContainerDetail() {
     setShowResetPassword(true)
   }
 
+  const openRescue = async () => {
+    setSelectedRescueISO(container?.rescue_iso_id || '')
+    setRescueBusy(true)
+    try {
+      const res = await getISOs()
+      setRescueISOs(res.data.data || [])
+    } catch {
+      setRescueISOs([])
+    } finally {
+      setRescueBusy(false)
+    }
+    setShowRescue(true)
+  }
+
+  const submitRescue = async (enabled: boolean) => {
+    if (!container || !container.id) return
+    if (enabled && !selectedRescueISO) {
+      dialog.alert('请选择救援 ISO', '请在下方选择用于救援引导的 ISO 镜像')
+      return
+    }
+    setRescueBusy(true)
+    try {
+      if (enabled) {
+        const ok = await dialog.confirm(
+          '进入救援模式',
+          '将关闭当前虚拟机，并用所选救援 ISO 重新引导，期间系统盘不会被改动。是否继续？',
+        )
+        if (!ok) return
+      } else {
+        const ok = await dialog.confirm(
+          '退出救援模式',
+          '将关闭当前虚拟机并恢复从系统盘正常引导。是否继续？',
+        )
+        if (!ok) return
+      }
+      await containerRescue(container.id, enabled, enabled ? selectedRescueISO : undefined)
+      await fetchContainer()
+      setShowRescue(false)
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      dialog.alert(enabled ? '进入救援失败' : '退出救援失败', error.response?.data?.message || '请稍后重试')
+    } finally {
+      setRescueBusy(false)
+    }
+  }
+
   const handleAssignIPv6 = async () => {
     if (!containerIdentifier) return
     setActionLoading('ipv6')
@@ -930,6 +1009,68 @@ export default function ContainerDetail() {
     }
   }
 
+  const formatBytes = (bytes?: number) => {
+    if (!bytes || bytes <= 0) return '-'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let v = bytes
+    let i = 0
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024
+      i++
+    }
+    return `${v.toFixed(1)} ${units[i]}`
+  }
+
+  const handleCreateBackup = async () => {
+    if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
+    if (!(await dialog.confirm('创建备份', '创建完整磁盘备份会临时停机，完成后自动重启容器。是否继续？'))) return
+    setBackupBusy('create')
+    try {
+      await createContainerBackup(containerIdentifier, backupKeep)
+      await fetchBackups()
+      await dialog.alert('备份完成', '实例完整备份已创建。')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('创建备份失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setBackupBusy('')
+    }
+  }
+
+  const handleRestoreBackup = async (backup: InstanceBackup) => {
+    if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
+    if (!(await dialog.confirm('恢复备份', `确定恢复到 ${backup.created_at} 的备份吗？当前容器数据会被覆盖。`))) return
+    setBackupBusy(backup.id)
+    try {
+      await restoreContainerBackup(containerIdentifier, backup.id)
+      await Promise.all([fetchBackups(), fetchContainer()])
+      await dialog.alert('还原完成', '已从备份还原。')
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('恢复备份失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setBackupBusy('')
+    }
+  }
+
+  const handleDeleteBackup = async (backup: InstanceBackup) => {
+    if (!containerIdentifier) return
+    if (!(await ensureSubUserCanOperate())) return
+    if (!(await dialog.confirm('删除备份', `确定删除 ${backup.created_at} 的备份吗？`))) return
+    setBackupBusy(backup.id)
+    try {
+      await deleteContainerBackup(containerIdentifier, backup.id)
+      await fetchBackups()
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } }
+      await dialog.alert('删除备份失败', error.response?.data?.message || '请稍后重试。')
+    } finally {
+      setBackupBusy('')
+    }
+  }
+
   const copyText = async (text: string) => {
     await copyToClipboard(text)
   }
@@ -966,7 +1107,13 @@ export default function ContainerDetail() {
   const publicIPv4s = container.public_ipv4s || []
   const assignedIPv4List = publicIPv4s.map((item) => item.address).filter(Boolean)
   const allocatableIPv4s = mergeIPv4Choices(hostInfo?.network.public_ipv4_addresses || [], publicIPv4s)
-  const publicHost = assignedIPv4List[0] || hostInfo?.network.public_ipv4 || PUBLIC_HOST
+  // 优先使用“用户访问面板所用的域名/IP”——这是外部客户端一定可达的地址（既然能打开面板）。
+  // hostInfo.public_ipv4 可能是出口网关 IP（Source=egress），并不落在本机网卡、也未做端口转发，
+  // 用它当 SSH 宿主会导致外部连不上。因此仅在后端给了独立公网 IPv4 时采用，其余回退到面板访问地址。
+  const panelReachableHost = PUBLIC_HOST
+  const backendPublicIPv4 = hostInfo?.network.public_ipv4 || ''
+  const usesIndependentIPv4 = assignedIPv4List.length > 0
+  const publicHost = usesIndependentIPv4 ? assignedIPv4List[0] : (panelReachableHost || backendPublicIPv4)
   const ipv6List = (container.ipv6_addresses || [])
     .map((item) => item.address)
     .filter(Boolean)
@@ -1185,6 +1332,19 @@ export default function ContainerDetail() {
               <Camera className="w-3.5 h-3.5" />
               快照
             </ActionButton>
+            <ActionButton onClick={() => setShowBackups(true)} disabled={!!taskStatus || !!backupBusy || isSubUserPolicyBlocked || readOnly}>
+              <HardDrive className="w-3.5 h-3.5" />
+              备份
+            </ActionButton>
+            {isKVM && !isSubUser && (
+              <ActionButton
+                onClick={openRescue}
+                disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly || rescueBusy}
+              >
+                <LifeBuoy className="w-3.5 h-3.5" />
+                {container?.rescue_enabled ? '退出救援' : '救援模式'}
+              </ActionButton>
+            )}
             <ActionButton onClick={openReinstall} disabled={!!taskStatus || isExpired || isSubUserPolicyBlocked || readOnly}>
               <RefreshCw className="w-3.5 h-3.5" />
               {isExpired ? '已到期' : taskStatus === 'reinstall' ? taskActionLabels['reinstall'] : '重装'}
@@ -1687,6 +1847,82 @@ export default function ContainerDetail() {
               onRestore={handleRestoreSnapshot}
               onDelete={handleDeleteSnapshot}
             />
+          </div>
+        </Modal>
+      )}
+
+      {showBackups && (
+        <Modal title="备份管理" onClose={() => setShowBackups(false)}>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="保留份数（0 = 全部保留）">
+                <input
+                  type="number"
+                  min={0}
+                  value={backupKeep}
+                  onChange={(e) => setBackupKeep(Math.max(0, Number(e.target.value) || 0))}
+                  className={inputClass}
+                />
+              </Field>
+              <button
+                onClick={handleCreateBackup}
+                disabled={!!backupBusy || isSubUserPolicyBlocked || readOnly}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-black text-white rounded-md hover:bg-gray-800 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                {backupBusy === 'create' ? '备份中...' : '新建备份'}
+              </button>
+              <p className="w-full text-xs text-gray-400">
+                完整磁盘备份会临时停机（完成后自动重启）。备份独立保存，可在误删/重装后还原至该实例。
+              </p>
+            </div>
+
+            {backups.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-gray-400">暂无备份</p>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-gray-200 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                    <tr>
+                      <TableHead>备份时间</TableHead>
+                      <TableHead>类型</TableHead>
+                      <TableHead>大小</TableHead>
+                      <TableHead>来源</TableHead>
+                      <TableHead>操作</TableHead>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backups.map((backup) => (
+                      <tr key={backup.id} className="border-b border-gray-100 last:border-0 dark:border-gray-800">
+                        <td className="px-4 py-2.5">{backup.created_at}</td>
+                        <td className="px-4 py-2.5 uppercase">{backup.kind}</td>
+                        <td className="px-4 py-2.5">{formatBytes(backup.size_bytes)}</td>
+                        <td className="px-4 py-2.5">{backup.created_by}</td>
+                        <td className="px-4 py-2.5 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => handleRestoreBackup(backup)}
+                              disabled={!!backupBusy}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 px-2.5 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40"
+                            >
+                              {backupBusy === backup.id ? '还原中...' : '还原'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBackup(backup)}
+                              disabled={!!backupBusy}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-40"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              删除
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </Modal>
       )}
@@ -2196,6 +2432,52 @@ export default function ContainerDetail() {
                 {reinstalling ? '重装中...' : '确认重装'}
               </button>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {showRescue && (
+        <Modal title={container?.rescue_enabled ? '退出救援模式' : '救援模式'} onClose={() => setShowRescue(false)}>
+          <div className="space-y-4">
+            {container?.rescue_enabled ? (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600">
+                  当前虚拟机正在救援模式运行（从救援 ISO 引导）。退出后将关闭虚拟机并恢复从系统盘正常引导。
+                </p>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowRescue(false)} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md">取消</button>
+                  <button onClick={() => submitRescue(false)} disabled={rescueBusy} className="px-4 py-2 text-sm bg-black text-white rounded-md hover:bg-gray-800 disabled:opacity-50">
+                    {rescueBusy ? '处理中...' : '退出救援模式'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600">
+                  进入救援模式会关闭当前虚拟机，并用所选救援 ISO（如 SystemRescue / live 系统）引导，
+                  便于修复启动失败、重置密码、挂载数据盘等操作。系统盘不会被改动。
+                </p>
+                <Field label="选择救援 ISO">
+                  <select value={selectedRescueISO} onChange={(e) => setSelectedRescueISO(e.target.value)} className={inputClass}>
+                    <option value="">{rescueBusy ? '加载中...' : '请选择 ISO 镜像'}</option>
+                    {rescueISOs.map((iso) => (
+                      <option key={iso.id} value={iso.id}>{iso.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                {rescueISOs.length === 0 && !rescueBusy && (
+                  <p className="text-xs text-amber-600">
+                    暂无可用 ISO，请先在“ISO 镜像”页面上传救援镜像后再进行操作。
+                  </p>
+                )}
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowRescue(false)} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md">取消</button>
+                  <button onClick={() => submitRescue(true)} disabled={rescueBusy} className="px-4 py-2 text-sm bg-black text-white rounded-md hover:bg-gray-800 disabled:opacity-50">
+                    {rescueBusy ? '处理中...' : '进入救援模式'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}

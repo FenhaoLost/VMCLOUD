@@ -530,7 +530,8 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		if err := createWindowsUnattendISO(unattendPath, cfg.Name, winAdminPassword, mac, ipv6List, ipv4List, IsWindows11Image(image.ID)); err != nil {
 			return nil, err
 		}
-		xml = windowsDomainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, ImagePath(image.ID), unattendPath, mac, cfg.IOReadMBps, cfg.IOWriteMBps, cfg.NetworkDownMbps, cfg.NetworkUpMbps)
+		dataDiskPath, _ := m.prepareCreateDataDisk(vmName, cfg)
+		xml = windowsDomainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, dataDiskPath, ImagePath(image.ID), unattendPath, mac, cfg.IOReadMBps, cfg.IOWriteMBps, cfg.NetworkDownMbps, cfg.NetworkUpMbps)
 	} else {
 		if image.Desktop != "" {
 			if cfg.RAMMB < 2048 {
@@ -544,11 +545,12 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		if err := createOverlayDisk(ImagePath(image.ID), diskPath, cfg.DiskGB); err != nil {
 			return nil, err
 		}
+		dataDiskPath, dataDiskMountPath := m.prepareCreateDataDisk(vmName, cfg)
 		cfg.ReportProgress("cloud_init", "生成 cloud-init 初始化配置")
-		if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, sshPublicKey, mac, ipv6List, ipv4List, *image, sshAuthMode, cfg.CloudInitUserData); err != nil {
+		if err := createSeedISO(seedPath, vmName, cfg.Name, sshPassword, sshPublicKey, mac, ipv6List, ipv4List, *image, sshAuthMode, cfg.CloudInitUserData, dataDiskMountPath); err != nil {
 			return nil, err
 		}
-		xml = domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, seedPath, mac, cfg.IOReadMBps, cfg.IOWriteMBps, cfg.NetworkDownMbps, cfg.NetworkUpMbps, image.Desktop != "")
+		xml = domainXML(vmName, int(cfg.VCPU), cfg.RAMMB, diskPath, dataDiskPath, seedPath, mac, cfg.IOReadMBps, cfg.IOWriteMBps, cfg.NetworkDownMbps, cfg.NetworkUpMbps, "", image.Desktop != "")
 	}
 	xmlPath := filepath.Join(m.instanceDir(vmName), "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
@@ -604,34 +606,36 @@ func (m *Manager) defineContainer(id int, vmName string, cfg lxc.ContainerConfig
 		}
 	}
 	container := &config.Container{
-		ID:               id,
-		UUID:             config.NewContainerUUID(),
-		Name:             cfg.Name,
-		Virtualization:   config.VirtualizationKVM,
-		KVMName:          vmName,
-		DiskImage:        diskPath,
-		StoragePoolID:    storagePoolID,
-		StoragePath:      m.instanceDir(vmName),
-		MACAddress:       mac,
-		Template:         cfg.TemplateID,
-		VCPU:             cfg.VCPU,
-		RAMMB:            cfg.RAMMB,
-		DiskGB:           cfg.DiskGB,
-		NetworkBWMbps:    cfg.NetworkBWMbps,
-		NetworkDownMbps:  cfg.NetworkDownMbps,
-		NetworkUpMbps:    cfg.NetworkUpMbps,
-		MonthlyTrafficGB: cfg.MonthlyTrafficGB,
-		TrafficMode:      trafficMode,
-		TrafficInGB:      cfg.TrafficInGB,
-		TrafficOutGB:     cfg.TrafficOutGB,
-		TrafficResetDate: now[:7],
-		IOSpeedMBps:      cfg.IOSpeedMBps,
-		IOReadMBps:       cfg.IOReadMBps,
-		IOWriteMBps:      cfg.IOWriteMBps,
-		PublicIPv4s:      publicIPv4s,
-		IPv6Addresses:    ipv6Assignments,
-		Status:           "stopped",
-		SSHPort:          sshPort,
+		ID:                id,
+		UUID:              config.NewContainerUUID(),
+		Name:              cfg.Name,
+		Virtualization:    config.VirtualizationKVM,
+		KVMName:           vmName,
+		DiskImage:         diskPath,
+		StoragePoolID:     storagePoolID,
+		StoragePath:       m.instanceDir(vmName),
+		MACAddress:        mac,
+		Template:          cfg.TemplateID,
+		VCPU:              cfg.VCPU,
+		RAMMB:             cfg.RAMMB,
+		DiskGB:            cfg.DiskGB,
+		DataDiskGB:        cfg.DataDiskGB,
+		DataDiskMountPath: kvmDataDiskMountPoint(cfg.DataDiskMountPath),
+		NetworkBWMbps:     cfg.NetworkBWMbps,
+		NetworkDownMbps:   cfg.NetworkDownMbps,
+		NetworkUpMbps:     cfg.NetworkUpMbps,
+		MonthlyTrafficGB:  cfg.MonthlyTrafficGB,
+		TrafficMode:       trafficMode,
+		TrafficInGB:       cfg.TrafficInGB,
+		TrafficOutGB:      cfg.TrafficOutGB,
+		TrafficResetDate:  now[:7],
+		IOSpeedMBps:       cfg.IOSpeedMBps,
+		IOReadMBps:        cfg.IOReadMBps,
+		IOWriteMBps:       cfg.IOWriteMBps,
+		PublicIPv4s:       publicIPv4s,
+		IPv6Addresses:     ipv6Assignments,
+		Status:            "stopped",
+		SSHPort:           sshPort,
 		SSHPassword: func() string {
 			if winAdminPassword != "" {
 				return winAdminPassword
@@ -825,6 +829,100 @@ func (m *Manager) RestartContainer(id int) error {
 	return m.StartContainer(id)
 }
 
+// startWithoutGuestInit 以 libvirt 直接启动域，不等待 IP/SSH/cloud-init。
+// 用于救援模式引导（救援 ISO 内无受管 guest，等待步骤无法完成）。
+func (m *Manager) startWithoutGuestInit(name string) error {
+	status, _ := m.GetContainerStatus(name)
+	if status == "running" {
+		return nil
+	}
+	cmd := exec.Command("virsh", "start", name)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if !strings.Contains(strings.ToLower(string(output)), "domain is already active") {
+			return fmt.Errorf("virsh start failed: %v, output: %s", err, string(output))
+		}
+	}
+	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--live").Run()
+	_ = exec.Command("virsh", "dommemstat", name, "--period", "10", "--config").Run()
+	return nil
+}
+
+// EnterRescue 进入救援模式：用传入的 ISO 引导 VM（关闭 → 重定义域从光驱引导 → 启动）。
+// 仅支持 Linux KVM VM；Windows VM 不支持救援引导并返回明确错误。
+func (m *Manager) EnterRescue(id int, isoID, isoPath string) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return fmt.Errorf("rescue mode is only supported for KVM VMs")
+	}
+	if IsWindowsImage(c.Template) {
+		return fmt.Errorf("rescue mode is not supported for Windows VMs; use the ISO attach feature instead")
+	}
+	if isoID == "" || isoPath == "" {
+		return fmt.Errorf("a rescue ISO is required")
+	}
+	if _, err := os.Stat(isoPath); err != nil {
+		return fmt.Errorf("rescue ISO not accessible: %v", err)
+	}
+	name := c.VirshName()
+	if err := m.StopContainer(id); err != nil {
+		return fmt.Errorf("failed to stop VM before rescue: %v", err)
+	}
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+		for i := range cfg.Containers {
+			if cfg.Containers[i].ID == id {
+				cfg.Containers[i].RescueEnabled = true
+				cfg.Containers[i].RescueISOID = isoID
+				cfg.Containers[i].RescueISOPath = isoPath
+			}
+		}
+	})
+	if err := config.SaveConfig(); err != nil {
+		return err
+	}
+	if curr := config.FindContainer(id); curr != nil {
+		if err := m.redefineContainer(curr); err != nil {
+			return fmt.Errorf("failed to redefine VM for rescue boot: %v", err)
+		}
+	}
+	return m.startWithoutGuestInit(name)
+}
+
+// ExitRescue 退出救援模式：恢复从系统盘正常引导。
+func (m *Manager) ExitRescue(id int) error {
+	c := config.FindContainer(id)
+	if c == nil {
+		return fmt.Errorf("container not found: %d", id)
+	}
+	if !c.IsKVM() {
+		return fmt.Errorf("rescue mode is only supported for KVM VMs")
+	}
+	name := c.VirshName()
+	if err := m.StopContainer(id); err != nil {
+		return fmt.Errorf("failed to stop VM before exiting rescue: %v", err)
+	}
+	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
+		for i := range cfg.Containers {
+			if cfg.Containers[i].ID == id {
+				cfg.Containers[i].RescueEnabled = false
+				cfg.Containers[i].RescueISOID = ""
+				cfg.Containers[i].RescueISOPath = ""
+			}
+		}
+	})
+	if err := config.SaveConfig(); err != nil {
+		return err
+	}
+	if curr := config.FindContainer(id); curr != nil {
+		if err := m.redefineContainer(curr); err != nil {
+			return fmt.Errorf("failed to restore VM boot definition: %v", err)
+		}
+	}
+	return m.startWithoutGuestInit(name)
+}
+
 func (m *Manager) DestroyContainer(id int) error {
 	c := config.FindContainer(id)
 	if c == nil {
@@ -979,16 +1077,40 @@ func (m *Manager) ApplyContainerLimits(c *config.Container) error {
 	if c.DiskImage == "" || c.MACAddress == "" {
 		return nil
 	}
+	return m.redefineContainer(c)
+}
+
+// resolveDataDiskPath returns the data disk path for an existing VM if it has
+// been provisioned, otherwise an empty string.
+func (m *Manager) resolveDataDiskPath(vmName string) string {
+	p := filepath.Join(m.instanceDir(vmName), "data.qcow2")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
+}
+
+func (m *Manager) redefineContainer(c *config.Container) error {
+	if c == nil || !c.IsKVM() || c.DiskImage == "" {
+		return nil
+	}
+	config.NormalizeContainerResourceAliases(c)
+	vmName := c.VirshName()
 	var xml string
+	dataDiskPath := m.resolveDataDiskPath(vmName)
 	if IsWindowsImage(c.Template) {
 		winISO := ImagePath(c.Template)
-		unattendISO := existingWindowsUnattendISO(m.instanceDir(c.VirshName()))
-		xml = windowsDomainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, winISO, unattendISO, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps)
+		unattendISO := existingWindowsUnattendISO(m.instanceDir(vmName))
+		xml = windowsDomainXML(vmName, int(c.VCPU), c.RAMMB, c.DiskImage, dataDiskPath, winISO, unattendISO, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps)
 	} else {
-		seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
-		xml = domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps, isKVMDesktopTemplate(c.Template))
+		seedPath := filepath.Join(m.instanceDir(vmName), "seed.iso")
+		rescueISOPath := ""
+		if c.RescueEnabled && c.RescueISOPath != "" {
+			rescueISOPath = c.RescueISOPath
+		}
+		xml = domainXML(vmName, int(c.VCPU), c.RAMMB, c.DiskImage, dataDiskPath, seedPath, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps, rescueISOPath, isKVMDesktopTemplate(c.Template))
 	}
-	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
+	xmlPath := filepath.Join(m.instanceDir(vmName), "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
 		return err
 	}
@@ -1003,25 +1125,7 @@ func (m *Manager) ensureDomainDefinition(c *config.Container) error {
 	if c == nil || !c.IsKVM() || c.DiskImage == "" || c.MACAddress == "" {
 		return nil
 	}
-	config.NormalizeContainerResourceAliases(c)
-	var xml string
-	xmlPath := filepath.Join(m.instanceDir(c.VirshName()), "domain.xml")
-	if IsWindowsImage(c.Template) {
-		winISO := ImagePath(c.Template)
-		unattendISO := existingWindowsUnattendISO(m.instanceDir(c.VirshName()))
-		xml = windowsDomainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, winISO, unattendISO, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps)
-	} else {
-		seedPath := filepath.Join(m.instanceDir(c.VirshName()), "seed.iso")
-		xml = domainXML(c.VirshName(), int(c.VCPU), c.RAMMB, c.DiskImage, seedPath, c.MACAddress, c.IOReadMBps, c.IOWriteMBps, c.NetworkDownMbps, c.NetworkUpMbps, isKVMDesktopTemplate(c.Template))
-	}
-	if err := os.WriteFile(xmlPath, []byte(xml), 0644); err != nil {
-		return err
-	}
-	cmd := exec.Command("virsh", "define", xmlPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("virsh define failed: %v, output: %s", err, string(output))
-	}
-	return nil
+	return m.redefineContainer(c)
 }
 
 func (m *Manager) CreateSnapshot(id int, createdBy string, scheduled bool, rotateLimit int, storagePoolID ...string) (config.Snapshot, error) {
@@ -1848,6 +1952,30 @@ func createEmptyDisk(target string, diskGB float64) error {
 	return nil
 }
 
+// kvmDataDiskMountPoint returns the in-guest mount path for a data disk,
+// defaulting to "data" (/data) when not specified.
+func kvmDataDiskMountPoint(mountPath string) string {
+	p := strings.Trim(strings.TrimSpace(mountPath), "/")
+	if p == "" {
+		return "data"
+	}
+	return p
+}
+
+// prepareCreateDataDisk creates a dedicated blank qcow2 data disk for a VM.
+// Returns the disk path (empty when no data disk requested) and its mount path.
+func (m *Manager) prepareCreateDataDisk(vmName string, cfg lxc.ContainerConfig) (string, string) {
+	if cfg.DataDiskGB <= 0 {
+		return "", ""
+	}
+	dataPath := filepath.Join(m.instanceDir(vmName), "data.qcow2")
+	if err := createEmptyDisk(dataPath, cfg.DataDiskGB); err != nil {
+		fmt.Printf("Warning: failed to create KVM data disk for %s: %v\n", vmName, err)
+		return "", ""
+	}
+	return dataPath, kvmDataDiskMountPoint(cfg.DataDiskMountPath)
+}
+
 func createWindowsUnattendISO(target, hostname, adminPassword, mac string, ipv6s []string, ipv4s []string, windows11 bool) error {
 	tool := firstAvailableCommand("genisoimage", "mkisofs", "xorriso")
 	if tool == "" {
@@ -2185,9 +2313,12 @@ func shellQuoteWindows(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
 }
 
-func createSeedISO(seedPath, instanceID, hostname, password, publicKey, mac string, ipv6s []string, ipv4s []string, image Image, sshAuthMode, customUserData string) error {
+func createSeedISO(seedPath, instanceID, hostname, password, publicKey, mac string, ipv6s []string, ipv4s []string, image Image, sshAuthMode, customUserData, dataMountPath string) error {
 	disablePubkey := sshAuthMode == "password" || sshAuthMode == "auto_password"
 	guestSetup := kvmSSHSetupScript(password, disablePubkey, publicKey)
+	if dataDiskSetup := kvmDataDiskSetupScript(dataMountPath); dataDiskSetup != "" {
+		guestSetup += "\n" + dataDiskSetup
+	}
 	if desktopSetup := kvmDesktopSetupScript(image); desktopSetup != "" {
 		guestSetup += "\n" + desktopSetup
 	}
@@ -2346,7 +2477,7 @@ func isKVMDesktopTemplate(templateID string) bool {
 	return image != nil && image.Desktop != ""
 }
 
-func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string, ioReadMBps int, ioWriteMBps int, networkDownMbps int, networkUpMbps int, desktop bool) string {
+func domainXML(name string, vcpu int, ramMB int, diskPath, dataDiskPath, seedPath, mac string, ioReadMBps int, ioWriteMBps int, networkDownMbps int, networkUpMbps int, rescueISOPath string, desktop bool) string {
 	if vcpu < 1 {
 		vcpu = 1
 	}
@@ -2407,6 +2538,40 @@ func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string,
       <readonly/>
     </disk>`, xmlEscape(seedPath))
 	}
+	dataDisk := ""
+	if dataDiskPath != "" {
+		dataDisk = fmt.Sprintf(`
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none'/>
+      <source file='%s'/>
+      <target dev='vdc' bus='virtio'/>
+    </disk>`, xmlEscape(dataDiskPath))
+	}
+	// 救援模式：附加救援 ISO 作为可引导光盘并优先从光驱引导。
+	bootDev := "<boot dev='hd'/>"
+	rescueDisk := ""
+	if rescueISOPath != "" {
+		bootDev = "<boot dev='cdrom'/>"
+		if runtime.GOARCH == "arm64" {
+			rescueDisk = fmt.Sprintf(`
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='vdd' bus='virtio'/>
+      <readonly/>
+      <boot order='1'/>
+    </disk>`, xmlEscape(rescueISOPath))
+		} else {
+			rescueDisk = fmt.Sprintf(`
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='%s'/>
+      <target dev='sda' bus='ide'/>
+      <readonly/>
+      <boot order='1'/>
+    </disk>`, xmlEscape(rescueISOPath))
+		}
+	}
 	return fmt.Sprintf(`<domain type='kvm'>
   <name>%s</name>
   %s
@@ -2416,7 +2581,7 @@ func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string,
   <cputune><shares>2048</shares></cputune>
   <os%s>
     <type arch='%s' machine='%s'>hvm</type>
-    <boot dev='hd'/>
+    %s
   </os>
   %s
   <cpu mode='host-passthrough' check='none'/>
@@ -2426,12 +2591,13 @@ func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string,
   <on_crash>restart</on_crash>
   <devices>
     <emulator>%s</emulator>
+    %s
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' cache='none'/>
       <source file='%s'/>
       <target dev='vda' bus='virtio'/>%s
     </disk>
-    %s
+    %s%s
     <interface type='network'>
       <mac address='%s'/>
       <source network='default'/>
@@ -2448,10 +2614,10 @@ func domainXML(name string, vcpu int, ramMB int, diskPath, seedPath, mac string,
     <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>%s
     %s
   </devices>
-</domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, osAttrs, kvmLibvirtArch(), kvmMachineType(), features, xmlEscape(kvmEmulatorPath()), xmlEscape(diskPath), iotune, seedDisk, xmlEscape(mac), bandwidth, input, video)
+</domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, osAttrs, kvmLibvirtArch(), kvmMachineType(), bootDev, features, xmlEscape(kvmEmulatorPath()), rescueDisk, xmlEscape(diskPath), iotune, seedDisk, dataDisk, xmlEscape(mac), bandwidth, input, video)
 }
 
-func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, winISOPath, unattendISOPath, mac string, ioReadMBps int, ioWriteMBps int, networkDownMbps int, networkUpMbps int) string {
+func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, dataDiskPath, winISOPath, unattendISOPath, mac string, ioReadMBps int, ioWriteMBps int, networkDownMbps int, networkUpMbps int) string {
 	if vcpu < 1 {
 		vcpu = 1
 	}
@@ -2487,6 +2653,15 @@ func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, winISOPath, un
       </bandwidth>`, strings.Join(parts, "\n"))
 	}
 	virtioWinISO := virtioWinISOPath()
+	dataDisk := ""
+	if dataDiskPath != "" {
+		dataDisk = fmt.Sprintf(`
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='none'/>
+      <source file='%s'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>`, xmlEscape(dataDiskPath))
+	}
 	unattendDisk := ""
 	if strings.TrimSpace(unattendISOPath) != "" {
 		unattendDisk = fmt.Sprintf(`
@@ -2545,7 +2720,7 @@ func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, winISOPath, un
       <source file='%s'/>
       <target dev='hdc' bus='ide'/>
       <readonly/>
-    </disk>%s
+    </disk>%s%s
     <interface type='network'>
       <mac address='%s'/>
       <source network='default'/>
@@ -2560,7 +2735,7 @@ func windowsDomainXML(name string, vcpu int, ramMB int, diskPath, winISOPath, un
   </devices>
 </domain>`, xmlEscape(name), domainUUIDXML(name), ramMB, ramMB, vcpu, vcpu, vcpu,
 		xmlEscape(diskPath), iotune,
-		xmlEscape(winISOPath), xmlEscape(virtioWinISO), unattendDisk, xmlEscape(mac), bandwidth)
+		xmlEscape(winISOPath), xmlEscape(virtioWinISO), dataDisk, unattendDisk, xmlEscape(mac), bandwidth)
 }
 
 func xmlEscape(value string) string {
@@ -3938,6 +4113,28 @@ func (m *Manager) applyGuestIPv6OverSSH(c *config.Container) error {
 	}
 	defer client.Close()
 	return runKVMSSHScript(client, kvmIPv6SetupScript(c.IPv6AddressStrings()), "KVM IPv6", 60*time.Second)
+}
+
+func kvmDataDiskSetupScript(mountPath string) string {
+	mount := strings.Trim(strings.TrimSpace(mountPath), "/")
+	if mount == "" {
+		mount = "data"
+	}
+	// Runs once inside the guest on first boot (via cloud-init runcmd).
+	// Formats the blank virtio data disk and makes the mount persistent.
+	return fmt.Sprintf(`set +e
+DATA_DEV=/dev/vdc
+[ -e "$DATA_DEV" ] || DATA_DEV=$(ls /dev/vd[a-z] /dev/sd[a-z] 2>/dev/null | tail -n1)
+[ -n "$DATA_DEV" ] || exit 0
+if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+  mkfs.ext4 -F "$DATA_DEV" >/dev/null 2>&1
+fi
+[ -b "$DATA_DEV" ] || exit 0
+DATA_MNT="/%s"
+mkdir -p "$DATA_MNT"
+grep -q " $DATA_MNT " /etc/fstab 2>/dev/null || echo "$DATA_DEV $DATA_MNT ext4 defaults 0 0" >> /etc/fstab
+mount "$DATA_MNT" 2>/dev/null || mount "$DATA_DEV" "$DATA_MNT" 2>/dev/null || true
+`, mount)
 }
 
 func kvmIPv6SetupScript(ipv6s []string) string {

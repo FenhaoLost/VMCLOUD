@@ -23,6 +23,7 @@ const actionLabels: Record<string, string> = {
   raise_ram: '提升内存',
   adjust_bw: '调整带宽',
   shutdown: '自动关机',
+  notify: '仅告警',
 }
 
 const scopeLabels: Record<string, string> = {

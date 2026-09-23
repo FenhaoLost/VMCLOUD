@@ -454,6 +454,23 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// AdminSessionMiddleware 要求**交互式管理员会话**（登录后的管理员 JWT），
+// 拒绝子用户 token 与 API Key token。
+//
+// 用于高敏感、需本人亲自确认的操作（如两步验证/TOTP 的开启、关闭与备份码换发等）。
+// 这类操作若对持 `*` 共享 scope 的 API Key 开放，会形成凭据接管面：非人工调用方可改写
+// 管理员 2FA 状态、重设 TOTP 密钥或换发备份码，从而绕过管理员第二因素。
+func AdminSessionMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		ctx, _ := authContextFromRequest(r)
+		if ctx.Type != authTypeAdmin {
+			jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: "此操作仅限管理员本人会话（API Key 与子用户不可用）"})
+			return
+		}
+		next(w, r)
+	})
+}
+
 // validateStrongPassword 企业级密码策略：至少 10 位，且同时包含字母与数字。
 func validateStrongPassword(password string) error {
 	if len(password) < 10 {

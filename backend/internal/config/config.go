@@ -119,6 +119,8 @@ type Container struct {
 	VCPU                          float64                `json:"vcpu"`
 	RAMMB                         int                    `json:"ram_mb"`
 	DiskGB                        float64                `json:"disk_gb"`
+	DataDiskGB                    float64                `json:"data_disk_gb,omitempty"`
+	DataDiskMountPath             string                 `json:"data_disk_mount_path,omitempty"`
 	NetworkBWMbps                 int                    `json:"network_bw_mbps"`
 	NetworkDownMbps               int                    `json:"network_down_mbps"`
 	NetworkUpMbps                 int                    `json:"network_up_mbps"`
@@ -170,6 +172,9 @@ type Container struct {
 	PolicyBlockedReason           string                 `json:"policy_blocked_reason,omitempty"`
 	PolicyBlockedAt               string                 `json:"policy_blocked_at,omitempty"`
 	CloudInitUserData             string                 `json:"cloud_init_user_data,omitempty"`
+	RescueEnabled                 bool                   `json:"rescue_enabled,omitempty"`  // 是否处于救援模式（KVM 从救援 ISO 引导）
+	RescueISOID                   string                 `json:"rescue_iso_id,omitempty"`   // 当前使用的救援 ISO 目录条目 ID
+	RescueISOPath                 string                 `json:"rescue_iso_path,omitempty"` // 救援 ISO 的本地绝对路径
 }
 
 const (
@@ -799,6 +804,10 @@ func defaultPrimaryStoragePool() StoragePool {
 // AuditRetentionDefault is the default number of days audit/login logs are kept (0 = keep all).
 const AuditRetentionDefault = 90
 
+// MetricRetentionDefault is the default number of days hourly metric rollups are
+// kept (0 = keep all). Raw per-sample metrics are kept for a short window only.
+const MetricRetentionDefault = 90
+
 // BackupRecord represents an on-disk configuration backup snapshot.
 type BackupRecord struct {
 	ID        string `json:"id"`
@@ -806,6 +815,22 @@ type BackupRecord struct {
 	SizeBytes int64  `json:"size_bytes"`
 	Kind      string `json:"kind"` // "config"
 	CreatedAt string `json:"created_at"`
+}
+
+// InstanceBackup is a portable, keep-N archivable full-disk backup of a
+// container instance. Backups are created from a consistent snapshot and
+// archived into the instance-backup store so they survive container deletion,
+// reinstall, or even node loss (they can be restored onto a fresh instance).
+type InstanceBackup struct {
+	ID            string `json:"id"`
+	ContainerID   int    `json:"container_id"`
+	ContainerName string `json:"container_name"`
+	Kind          string `json:"kind"` // "lxc" | "kvm"
+	CreatedAt     string `json:"created_at"`
+	CreatedBy     string `json:"created_by"`
+	Scheduled     bool   `json:"scheduled,omitempty"`
+	Path          string `json:"path"`       // archive file on disk (.tar)
+	SizeBytes     int64  `json:"size_bytes"` // archive file size
 }
 
 // BackupSettings controls automatic configuration backups.
@@ -870,7 +895,36 @@ type Node struct {
 	DiskTotalGB    float64 `json:"disk_total_gb,omitempty"`
 	DiskUsedGB     float64 `json:"disk_used_gb,omitempty"`
 	ContainerCount int     `json:"container_count,omitempty"`
+	RegionID       string  `json:"region_id,omitempty"` // 所属区域，见 Regions
 	CreatedAt      string  `json:"created_at,omitempty"`
+}
+
+// Region 是一个逻辑区域，用于把节点/存储/容器按地域分组管理。
+type Region struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Location  string `json:"location,omitempty"`  // 展示用地域（城市/机房）
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// IPGroup 定义一组可故障切换（failover）的公网 IP。组内 IP 与跨容器移动由面板管理。
+type IPGroup struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	FaultOpen string   `json:"fault_open,omitempty"` // 当前故障保持的 IP（enable）
+	Enable    []string `json:"enable,omitempty"`     // 当前生效 IP
+	Standby   []string `json:"standby,omitempty"`    // 备用 IP（未生效）
+	CreatedAt string   `json:"created_at,omitempty"`
+}
+
+// ISOFile 是一份可挂载到 KVM 虚拟机的 ISO 镜像（安装/驱动盘）。
+type ISOFile struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Path      string `json:"path,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
+	OS        string `json:"os,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // EyvescloudConfig is the main configuration structure
@@ -917,11 +971,28 @@ type EyvescloudConfig struct {
 	PolicyRules          []PolicyRule           `json:"policy_rules"`
 	PolicyHistory        []PolicyTriggerRecord  `json:"policy_history"`
 	Nodes                []Node                 `json:"nodes,omitempty"`
+	Regions              []Region               `json:"regions,omitempty"`
+	IPGroups             []IPGroup              `json:"ip_groups,omitempty"`
+	ISOFiles             []ISOFile              `json:"iso_files,omitempty"`
+	MetricRetentionDays  int                    `json:"metric_retention_days"`
 	AuditRetentionDays   int                    `json:"audit_retention_days"`
 	BackupSettings       BackupSettings         `json:"backup_settings"`
 	Backups              []BackupRecord         `json:"backups,omitempty"`
+	InstanceBackups      []InstanceBackup       `json:"instance_backups,omitempty"`
 	APIRateLimit         APIRateLimitConfig     `json:"api_rate_limit"`
 	Tenants              []Tenant               `json:"tenants,omitempty"`
+	MemoryOvercommitRatio float64                `json:"memory_overcommit_ratio"` // 内存超售比：可分配内存 = 物理内存 × 该值（1.0=不变，2.0=2倍）
+	MemoryOvercommitEnabled bool                `json:"memory_overcommit_enabled"` // 是否启用内存超售（默认关闭，保守）
+	KSMTuning            KSMTuningConfig        `json:"ksm_tuning"`
+}
+
+// KSMTuningConfig 控制 Linux KSM（Kernel Samepage Merging）调优，用于在内存超售
+// 场景下合并重复内存页、降低实际占用。写入 /sys/kernel/mm/ksm/*。
+type KSMTuningConfig struct {
+	Enabled         bool   `json:"enabled"`
+	PagesToScan     int    `json:"pages_to_scan"`      // ksm/pages_to_scan
+	SleepMillisecs  int    `json:"sleep_millisecs"`    // ksm/sleep_millisecs
+	UseTuneKSM      bool   `json:"use_tune_ksm"`       // 若系统有 tuneksm 则优先使用
 }
 
 const (
@@ -1146,8 +1217,9 @@ func InitConfig() (*EyvescloudConfig, error) {
 			TrustedProxies: []string{},
 		},
 		TaskConcurrency: DefaultTaskConcurrency,
-		StoragePools:    []StoragePool{defaultPrimaryStoragePool()},
-		AuditRetentionDays: AuditRetentionDefault,
+		StoragePools:         []StoragePool{defaultPrimaryStoragePool()},
+		MetricRetentionDays:  MetricRetentionDefault,
+		AuditRetentionDays:   AuditRetentionDefault,
 		BackupSettings: BackupSettings{
 			Enabled:       false,
 			IntervalHours: 24,
@@ -1159,6 +1231,14 @@ func InitConfig() (*EyvescloudConfig, error) {
 			PerMinute: 120,
 		},
 		Tenants: []Tenant{},
+		MemoryOvercommitEnabled: false,
+		MemoryOvercommitRatio:  1.0,
+		KSMTuning: KSMTuningConfig{
+			Enabled:        false,
+			PagesToScan:    100,
+			SleepMillisecs: 20,
+			UseTuneKSM:     true,
+		},
 	}
 
 	if err := SaveConfig(); err != nil {
@@ -1297,6 +1377,22 @@ func normalizeConfigDefaults(dataDir string) bool {
 		AppConfig.CustomLXCImages = make([]CustomLXCImage, 0)
 		changed = true
 	}
+	if AppConfig.Regions == nil {
+		AppConfig.Regions = make([]Region, 0)
+		changed = true
+	}
+	if AppConfig.IPGroups == nil {
+		AppConfig.IPGroups = make([]IPGroup, 0)
+		changed = true
+	}
+	if AppConfig.ISOFiles == nil {
+		AppConfig.ISOFiles = make([]ISOFile, 0)
+		changed = true
+	}
+	if AppConfig.MetricRetentionDays < 0 {
+		AppConfig.MetricRetentionDays = MetricRetentionDefault
+		changed = true
+	}
 	if AppConfig.Language == "" {
 		AppConfig.Language = "zh"
 		changed = true
@@ -1329,8 +1425,21 @@ func normalizeConfigDefaults(dataDir string) bool {
 		AppConfig.Tenants = make([]Tenant, 0)
 		changed = true
 	}
+	if AppConfig.MemoryOvercommitRatio <= 0 {
+		AppConfig.MemoryOvercommitRatio = 1.0
+		changed = true
+	}
+	if !AppConfig.KSMTuning.Enabled && AppConfig.KSMTuning.PagesToScan == 0 {
+		AppConfig.KSMTuning.PagesToScan = 100
+		AppConfig.KSMTuning.SleepMillisecs = 20
+		changed = true
+	}
 	if AppConfig.Backups == nil {
 		AppConfig.Backups = make([]BackupRecord, 0)
+		changed = true
+	}
+	if AppConfig.InstanceBackups == nil {
+		AppConfig.InstanceBackups = make([]InstanceBackup, 0)
 		changed = true
 	}
 	if normalizeSSLDefaults() {
@@ -1705,6 +1814,22 @@ func ListCustomKVMImages() []CustomKVMImage {
 	return append([]CustomKVMImage(nil), AppConfig.CustomKVMImages...)
 }
 
+// FindCustomKVMImage returns a copy of a custom KVM image by ID, or nil.
+func FindCustomKVMImage(id string) *CustomKVMImage {
+	allocationMu.Lock()
+	defer allocationMu.Unlock()
+	if AppConfig == nil {
+		return nil
+	}
+	for i := range AppConfig.CustomKVMImages {
+		if AppConfig.CustomKVMImages[i].ID == id {
+			img := AppConfig.CustomKVMImages[i]
+			return &img
+		}
+	}
+	return nil
+}
+
 func AddCustomKVMImage(image CustomKVMImage) error {
 	allocationMu.Lock()
 	defer allocationMu.Unlock()
@@ -1752,6 +1877,22 @@ func ListCustomLXCImages() []CustomLXCImage {
 		return nil
 	}
 	return append([]CustomLXCImage(nil), AppConfig.CustomLXCImages...)
+}
+
+// FindCustomLXCImage returns a copy of a custom LXC image by ID, or nil.
+func FindCustomLXCImage(id string) *CustomLXCImage {
+	allocationMu.Lock()
+	defer allocationMu.Unlock()
+	if AppConfig == nil {
+		return nil
+	}
+	for i := range AppConfig.CustomLXCImages {
+		if AppConfig.CustomLXCImages[i].ID == id {
+			img := AppConfig.CustomLXCImages[i]
+			return &img
+		}
+	}
+	return nil
 }
 
 func AddCustomLXCImage(image CustomLXCImage) error {
@@ -1841,6 +1982,40 @@ func GetJWTSecret() string {
 	AppConfigMu.RLock()
 	defer AppConfigMu.RUnlock()
 	return AppConfig.JWTSecret
+}
+
+// GetMetricRetentionDays returns the configured metric rollup retention in days.
+func GetMetricRetentionDays() int {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil || AppConfig.MetricRetentionDays <= 0 {
+		return MetricRetentionDefault
+	}
+	return AppConfig.MetricRetentionDays
+}
+
+// GetMemoryOvercommit returns whether memory oversubscription is enabled and the
+// configured ratio (physical memory × ratio = allocatable memory ceiling).
+func GetMemoryOvercommit() (enabled bool, ratio float64) {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil {
+		return false, 1.0
+	}
+	if AppConfig.MemoryOvercommitRatio <= 0 {
+		return AppConfig.MemoryOvercommitEnabled, 1.0
+	}
+	return AppConfig.MemoryOvercommitEnabled, AppConfig.MemoryOvercommitRatio
+}
+
+// GetKSMTuning returns a snapshot of the KSM tuning configuration.
+func GetKSMTuning() KSMTuningConfig {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil {
+		return KSMTuningConfig{PagesToScan: 100, SleepMillisecs: 20, UseTuneKSM: true}
+	}
+	return AppConfig.KSMTuning
 }
 
 // GetBackupSettings returns a snapshot of the automatic-backup settings.
@@ -2037,6 +2212,76 @@ func ContainerSnapshots(containerID int) []Snapshot {
 	}
 	AppConfigMu.RUnlock()
 	return result
+}
+
+// ListInstanceBackups returns a shallow copy of all instance backups.
+func ListInstanceBackups() []InstanceBackup {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil {
+		return nil
+	}
+	return append([]InstanceBackup(nil), AppConfig.InstanceBackups...)
+}
+
+// ContainerInstanceBackups returns the backups belonging to a container, newest first.
+func ContainerInstanceBackups(containerID int) []InstanceBackup {
+	result := make([]InstanceBackup, 0)
+	for _, b := range ListInstanceBackups() {
+		if b.ContainerID == containerID {
+			result = append(result, b)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		ti, _ := time.ParseInLocation("2006-01-02 15:04:05", result[i].CreatedAt, time.Local)
+		tj, _ := time.ParseInLocation("2006-01-02 15:04:05", result[j].CreatedAt, time.Local)
+		return ti.After(tj)
+	})
+	return result
+}
+
+// FindInstanceBackup returns a copy of an instance backup by ID, or nil.
+func FindInstanceBackup(id string) *InstanceBackup {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil {
+		return nil
+	}
+	for i := range AppConfig.InstanceBackups {
+		if AppConfig.InstanceBackups[i].ID == id {
+			b := AppConfig.InstanceBackups[i]
+			return &b
+		}
+	}
+	return nil
+}
+
+// AddInstanceBackup appends a backup record and persists it.
+func AddInstanceBackup(b InstanceBackup) error {
+	AppConfigMu.Lock()
+	AppConfig.InstanceBackups = append(AppConfig.InstanceBackups, b)
+	AppConfigMu.Unlock()
+	return SaveConfig()
+}
+
+// RemoveInstanceBackup removes a backup record by ID and persists. Returns whether found.
+func RemoveInstanceBackup(id string) bool {
+	AppConfigMu.Lock()
+	found := false
+	filtered := make([]InstanceBackup, 0, len(AppConfig.InstanceBackups))
+	for _, b := range AppConfig.InstanceBackups {
+		if b.ID == id {
+			found = true
+			continue
+		}
+		filtered = append(filtered, b)
+	}
+	AppConfig.InstanceBackups = filtered
+	AppConfigMu.Unlock()
+	if found {
+		SaveConfig()
+	}
+	return found
 }
 
 func removeContainerSnapshotMetadata(containerID int) {

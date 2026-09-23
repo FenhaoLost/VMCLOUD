@@ -19,13 +19,21 @@ import {
 } from 'lucide-react'
 import {
   createNode,
+  createNodeContainer,
   deleteNode,
+  getEnabledImages,
   getNodeContainers,
+  getNodeImages,
   getNodeInstallScript,
   getNodes,
+  nodeColdBackup,
   nodeContainerAction,
+  syncNodeImages,
   type Container,
+  type CreateContainerRequest,
   type ManagedNode,
+  type NodeCatalogImage,
+  type Template,
 } from '../services/api'
 import { useDialog } from '../components/Dialog'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -41,6 +49,18 @@ function formatGB(gb?: number) {
   if (gb === undefined || gb === null || gb <= 0) return '-'
   if (gb >= 1024) return `${(gb / 1024).toFixed(1)} TB`
   return `${gb.toFixed(1)} GB`
+}
+
+function formatGBBytes(bytes?: number) {
+  if (!bytes || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = bytes
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(1)} ${units[i]}`
 }
 
 export default function NodeManagement() {
@@ -59,6 +79,17 @@ export default function NodeManagement() {
   const [nodeContainers, setNodeContainers] = useState<Container[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
   const [busyId, setBusyId] = useState<string>('')
+
+  // 被控节点镜像同步
+  const [nodeImages, setNodeImages] = useState<{ lxc?: NodeCatalogImage[]; kvm?: NodeCatalogImage[] }>({})
+  const [imagesLoading, setImagesLoading] = useState(false)
+  const [syncingImages, setSyncingImages] = useState(false)
+
+  // 在主控上对指定被控节点开通（发机）容器
+  const [createTarget, setCreateTarget] = useState<ManagedNode | null>(null)
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [createForm, setCreateForm] = useState<CreateContainerRequest | null>(null)
+  const [creatingContainer, setCreatingContainer] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -143,6 +174,7 @@ export default function NodeManagement() {
   const loadDetail = async (node: ManagedNode) => {
     setDetailNode(node)
     setNodeContainers([])
+    setNodeImages({})
     setDetailLoading(true)
     try {
       const res = await getNodeContainers(node.id)
@@ -152,6 +184,7 @@ export default function NodeManagement() {
     } finally {
       setDetailLoading(false)
     }
+    loadImages(node)
   }
 
   const runAction = async (container: Container, action: 'start' | 'stop' | 'restart') => {
@@ -185,6 +218,139 @@ export default function NodeManagement() {
       await alert(t('操作失败'), e?.response?.data?.message || String(e))
     } finally {
       setBusyId('')
+    }
+  }
+
+  // 查询被控节点当前镜像清单
+  const loadImages = async (node: ManagedNode) => {
+    setImagesLoading(true)
+    try {
+      const res = await getNodeImages(node.id)
+      setNodeImages(res.data.data || {})
+    } catch (e: any) {
+      await alert(t('加载镜像失败'), e?.response?.data?.message || String(e))
+    } finally {
+      setImagesLoading(false)
+    }
+  }
+
+  // 把主控的镜像清单下发给被控并触发同步
+  const syncImages = async (node: ManagedNode) => {
+    if (syncingImages) return
+    setSyncingImages(true)
+    try {
+      const res = await syncNodeImages(node.id)
+      const d = res.data?.data
+      await alert(
+        t('镜像同步完成'),
+        `${t('新增')} ${d?.added ?? 0} · ${t('更新')} ${d?.updated ?? 0} · ${t('拉取')} ${d?.pulled?.length ?? 0}${(d?.failed?.length ?? 0) > 0 ? ` · ${t('失败')} ${d?.failed?.length}` : ''}`
+      )
+      await loadImages(node)
+    } catch (e: any) {
+      await alert(t('镜像同步失败'), e?.response?.data?.message || String(e))
+    } finally {
+      setSyncingImages(false)
+    }
+  }
+
+  // 节点级冷备份：触发被控对其全部容器做完整备份（重装/重建前保全）。
+  const coldBackupNode = async (node: ManagedNode) => {
+    const ok = await confirm(t('节点冷备份'), `${t('将对该节点全部容器创建完整备份（会逐个临时停机）。是否继续？')}`)
+    if (!ok) return
+    setBusyId('node-cold-backup')
+    try {
+      const res = await nodeColdBackup(node.id)
+      const d = res.data?.data
+      await alert(
+        t('冷备份完成'),
+        `${t('已备份')} ${d?.backed_up ?? 0}/${d?.container_cnt ?? 0} 个容器${(d?.total_bytes ?? 0) > 0 ? `，${formatGBBytes(d?.total_bytes ?? 0)}` : ''}${(d?.failed?.length ?? 0) > 0 ? `，${t('失败')} ${d?.failed?.length}` : ''}`
+      )
+    } catch (e: any) {
+      await alert(t('冷备份失败'), e?.response?.data?.message || String(e))
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  // 打开对该被控节点的发机表单
+  const openCreateContainer = async (node: ManagedNode) => {
+    setCreateTarget(node)
+    setCreateForm({
+      name: '',
+      virtualization: 'lxc',
+      template_id: '',
+      storage_pool_id: '',
+      vcpu: 1,
+      cpu_percent: 100,
+      ram_mb: 512,
+      disk_gb: 10,
+      data_disk_gb: 0,
+      data_disk_mount_path: '',
+      network_bw_mbps: 0,
+      network_down_mbps: 0,
+      network_up_mbps: 0,
+      monthly_traffic_gb: 0,
+      traffic_mode: 'total',
+      traffic_in_gb: 0,
+      traffic_out_gb: 0,
+      io_speed_mbps: 0,
+      io_read_mbps: 0,
+      io_write_mbps: 0,
+      extra_ports: [],
+      nat_port_mappings: [],
+      management_port: 0,
+      port_mapping_count: 2,
+      assign_nat: true,
+      lan_ipv4_mode: '',
+      lan_interface: '',
+      lan_ipv4_address: '',
+      lan_ipv4_prefix_len: 24,
+      lan_ipv4_gateway: '',
+      snapshot_limit: 1,
+      assign_ipv4: false,
+      ipv4_count: 1,
+      public_ipv4s: [],
+      assign_ipv6: false,
+      ipv6_count: 1,
+      ipv6_addresses: [],
+      ssh_auth_mode: 'auto_password',
+      ssh_password: '',
+      ssh_public_key: '',
+      cloud_init_user_data: '',
+      allowed_image_ids: [],
+      image_limit_configured: false,
+      expires_at: '',
+    } as CreateContainerRequest)
+    try {
+      const res = await getEnabledImages('lxc')
+      setTemplates(res.data.data || [])
+    } catch {
+      setTemplates([])
+    }
+  }
+
+  // 在主控上对被控节点发起创建（发机）
+  const handleCreateContainer = async () => {
+    if (!createTarget || !createForm) return
+    const name = createForm.name.trim()
+    if (!name) {
+      await alert(t('提示'), t('请填写容器名称'))
+      return
+    }
+    if (!createForm.template_id) {
+      await alert(t('提示'), t('请选择镜像模板'))
+      return
+    }
+    setCreatingContainer(true)
+    try {
+      await createNodeContainer(createTarget.id, createForm)
+      await alert(t('完成'), t('已在被控节点开通新容器'))
+      setCreateTarget(null)
+      if (detailNode?.id === createTarget.id) await loadDetail(detailNode)
+    } catch (e: any) {
+      await alert(t('发机失败'), e?.response?.data?.message || String(e))
+    } finally {
+      setCreatingContainer(false)
     }
   }
 
@@ -433,6 +599,32 @@ export default function NodeManagement() {
                 </button>
               </div>
             </div>
+            {/* 被控操作：发机 + 镜像同步 */}
+            <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-5 py-2.5 dark:border-gray-700">
+              <button
+                onClick={() => openCreateContainer(detailNode)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('开通容器')}
+              </button>
+              <button
+                onClick={() => syncImages(detailNode)}
+                disabled={syncingImages}
+                className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                {syncingImages ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {t('同步镜像')}
+              </button>
+              <button
+                onClick={() => coldBackupNode(detailNode)}
+                disabled={busyId === 'node-cold-backup'}
+                className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+              >
+                {busyId === 'node-cold-backup' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <HardDrive className="h-3.5 w-3.5" />}
+                {t('冷备份')}
+              </button>
+            </div>
             <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
               {detailLoading ? (
                 <div className="flex items-center justify-center py-10">
@@ -494,6 +686,45 @@ export default function NodeManagement() {
                   ))}
                 </div>
               )}
+
+              {/* 被控镜像清单 */}
+              <div className="mt-6 border-t border-gray-100 pt-4 dark:border-gray-700">
+                <div className="mb-2 flex items-center justify-between">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    {t('被控镜像')}
+                    <button
+                      onClick={() => loadImages(detailNode)}
+                      disabled={imagesLoading}
+                      className="ml-2 inline-flex items-center gap-1 rounded border border-gray-200 px-1.5 py-0.5 text-[11px] font-normal normal-case text-gray-500 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
+                      title={t('刷新镜像清单')}
+                    >
+                      <RefreshCw className={`h-3 w-3 ${imagesLoading ? 'animate-spin' : ''}`} />
+                      {t('刷新')}
+                    </button>
+                  </h4>
+                </div>
+                {imagesLoading ? (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                  </div>
+                ) : (nodeImages.lxc || []).length === 0 && (nodeImages.kvm || []).length === 0 ? (
+                  <p className="py-4 text-center text-xs text-gray-400">{t('被控节点暂无镜像')}</p>
+                ) : (
+                  <div className="space-y-1">
+                    {[...(nodeImages.lxc || []).map((img) => ({ ...img, kind: 'LXC' })), ...(nodeImages.kvm || []).map((img) => ({ ...img, kind: 'KVM' }))].map((img) => (
+                      <div key={`${img.kind}-${img.id}`} className="flex items-center justify-between gap-2 rounded-md border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">{img.kind}</span>
+                            <span className="truncate text-sm text-black dark:text-white">{img.name || img.id}</span>
+                          </div>
+                          {img.sha256 && <div className="mt-0.5 truncate font-mono text-[10px] text-gray-400" title={img.sha256}>{img.sha256}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="flex justify-end border-t border-gray-100 bg-gray-50 px-5 py-3 dark:border-gray-700 dark:bg-gray-800">
               <button
@@ -501,6 +732,115 @@ export default function NodeManagement() {
                 className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-700"
               >
                 {t('关闭')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 在被控节点开通（发机）容器 */}
+      {createTarget && createForm && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 p-4 dark:bg-black/70">
+          <div className="w-full max-w-md overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-700">
+              <h3 className="text-sm font-semibold text-black dark:text-white">
+                {t('开通容器')} · {createTarget.name}
+              </h3>
+              <button onClick={() => setCreateTarget(null)} className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-black dark:hover:bg-gray-800 dark:hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div>
+                <label className="mb-1.5 block text-xs text-gray-500">{t('容器名称')}</label>
+                <input
+                  value={createForm.name}
+                  onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
+                  placeholder="ct-1"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs text-gray-500">{t('镜像模板')}</label>
+                <select
+                  value={createForm.template_id}
+                  onChange={(e) => setCreateForm({ ...createForm, template_id: e.target.value })}
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                >
+                  <option value="">{t('请选择镜像')}</option>
+                  {templates.map((tmpl) => (
+                    <option key={tmpl.id} value={tmpl.id}>{tmpl.name || tmpl.id}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="mb-1.5 block text-xs text-gray-500">vCPU</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={createForm.vcpu}
+                    onChange={(e) => setCreateForm({ ...createForm, vcpu: Number(e.target.value) || 0 })}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs text-gray-500">{t('内存 (MB)')}</label>
+                  <input
+                    type="number"
+                    min={128}
+                    value={createForm.ram_mb}
+                    onChange={(e) => setCreateForm({ ...createForm, ram_mb: Number(e.target.value) || 0 })}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs text-gray-500">{t('磁盘 (GB)')}</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={createForm.disk_gb}
+                    onChange={(e) => setCreateForm({ ...createForm, disk_gb: Number(e.target.value) || 0 })}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs text-gray-500">{t('数据盘 (GB)')}</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={createForm.data_disk_gb ?? 0}
+                    onChange={(e) => setCreateForm({ ...createForm, data_disk_gb: Number(e.target.value) || 0 })}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs text-gray-500">{t('数据盘挂载路径')}</label>
+                  <input
+                    type="text"
+                    placeholder="/data"
+                    value={createForm.data_disk_mount_path ?? ''}
+                    onChange={(e) => setCreateForm({ ...createForm, data_disk_mount_path: e.target.value })}
+                    className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black outline-none focus:border-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-gray-400">{t('镜像需已通过「同步镜像」下发到该被控节点，否则发机可能失败。')}</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 px-5 py-3 dark:border-gray-700 dark:bg-gray-800">
+              <button
+                onClick={() => setCreateTarget(null)}
+                className="rounded-md px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                {t('取消')}
+              </button>
+              <button
+                onClick={handleCreateContainer}
+                disabled={creatingContainer}
+                className="inline-flex items-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-gray-200"
+              >
+                {creatingContainer && <Loader2 className="h-4 w-4 animate-spin" />}
+                {t('开通')}
               </button>
             </div>
           </div>

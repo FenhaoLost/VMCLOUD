@@ -52,6 +52,7 @@ const (
 	PolicyActionRaiseRAM = "raise_ram"
 	PolicyActionAdjustBW = "adjust_bw"
 	PolicyActionShutdown = "shutdown"
+	PolicyActionNotify   = "notify"
 
 	PolicyHistoryLimit = 500
 )

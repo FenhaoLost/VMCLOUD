@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"eyvescloud/internal/cli"
 	"eyvescloud/internal/config"
 	"eyvescloud/internal/server"
 	"eyvescloud/internal/version"
@@ -27,20 +29,23 @@ type agentConfig struct {
 	Token      string `json:"token"`
 	Name       string `json:"name"`
 	Address    string `json:"address"`
+	// AllowInsecureHTTP 允许与主控通过明文 http 通信（仅当主控不提供 TLS 时显式开启）。
+	AllowInsecureHTTP bool `json:"allow_insecure_http,omitempty"`
 }
 
 // Run 启动被控节点 agent 模式：注册到主控、上报心跳、运行本地面板。
-// 用法: eyvescloud agent --controller=http://master:18999 [--install-key=xxx] [--name=node1] [--addr=http://1.2.3.4:8999]
+// 用法: eyvescloud agent --controller=https://master:18999 [--install-key=xxx] [--name=node1] [--addr=http://1.2.3.4:8999] [--allow-insecure-http]
 func Run(args []string) {
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
-	controller := fs.String("controller", "", "主控地址，如 http://1.2.3.4:18999")
+	controller := fs.String("controller", "", "主控地址，如 https://1.2.3.4:18999")
 	installKey := fs.String("install-key", "", "安装密钥（首次注册时使用）")
 	name := fs.String("name", "", "节点名称（默认使用主机名）")
 	addr := fs.String("addr", "", "本节点面板地址，如 http://1.2.3.4:8999")
+	allowInsecureHTTP := fs.Bool("allow-insecure-http", false, "允许与主控用明文 http 通信（不安全，仅在主控不提供 TLS 时使用）")
 	_ = fs.Parse(args)
 
 	if strings.TrimSpace(*controller) == "" {
-		fmt.Fprintln(os.Stderr, "agent 模式需要 --controller 主控地址")
+		fmt.Fprintln(os.Stderr, "agent 模式需要 --controller 主控地址（建议用 https://）")
 		os.Exit(1)
 	}
 
@@ -57,8 +62,17 @@ func Run(args []string) {
 		needRegister = true
 	}
 
+	if !*allowInsecureHTTP && ac != nil && ac.AllowInsecureHTTP {
+		// 已在本地做了不安全豁免，本次未显式要求关闭，沿用持久化的决定。
+		*allowInsecureHTTP = true
+	}
+	if err := initSecureTransport(strings.TrimSpace(*controller), *allowInsecureHTTP); err != nil {
+		fmt.Fprintf(os.Stderr, "主控通道安全检查失败: %v\n", err)
+		os.Exit(1)
+	}
+
 	if needRegister {
-		nc, err := register(strings.TrimSpace(*controller), strings.TrimSpace(*installKey), strings.TrimSpace(*name), strings.TrimSpace(*addr))
+		nc, err := register(strings.TrimSpace(*controller), strings.TrimSpace(*installKey), strings.TrimSpace(*name), strings.TrimSpace(*addr), *allowInsecureHTTP)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "注册到主控失败: %v\n", err)
 			os.Exit(1)
@@ -73,6 +87,11 @@ func Run(args []string) {
 
 	go heartbeatLoop(ac)
 
+	// 被控节点自动更新：可选。仅在非交互环境下、且以分钟级间隔启用。
+	if autoUpdateMinutes() > 0 {
+		go autoUpdateLoop(autoUpdateMinutes())
+	}
+
 	// 被控自身也是完整面板，运行本地 Web 服务。
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Web server error: %v\n", err)
@@ -80,7 +99,42 @@ func Run(args []string) {
 	}
 }
 
-func register(controller, installKey, name, addr string) (*agentConfig, error) {
+// autoUpdateMinutes 读取 EYVESCLOUD_AUTO_UPDATE 环境变量（分钟）。0 或未设置表示关闭。
+func autoUpdateMinutes() int {
+	raw := strings.TrimSpace(os.Getenv("EYVESCLOUD_AUTO_UPDATE"))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 60 {
+		// 至少 60 分钟一次，避免频繁检查 GitHub。
+		return 0
+	}
+	return n
+}
+
+// autoUpdateLoop 定期非交互检查并更新被控节点自身二进制。
+func autoUpdateLoop(minutes int) {
+	interval := time.Duration(minutes) * time.Minute
+	// 启动先等一个心跳周期，给注册和服务稳定留出时间。
+	time.Sleep(30 * time.Second)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		latest, upgraded, err := cli.SelfUpdateOnce()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "自动更新检查失败（下次重试）: %v\n", err)
+			continue
+		}
+		if upgraded {
+			fmt.Printf("被控节点已自动更新到 %s\n", latest)
+			// 二进制与配置已替换，重启服务后本 goroutine 所在进程结束。
+			return
+		}
+	}
+}
+
+func register(controller, installKey, name, addr string, allowInsecureHTTP bool) (*agentConfig, error) {
 	if installKey == "" {
 		return nil, fmt.Errorf("首次注册需要 --install-key 安装密钥")
 	}
@@ -102,7 +156,11 @@ func register(controller, installKey, name, addr string) (*agentConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client, err := secureControllerClient(controller, allowInsecureHTTP)
+	if err != nil {
+		return nil, err
+	}
+	client.Timeout = 15 * time.Second
 	resp, err := client.Post(strings.TrimSuffix(controller, "/")+"/api/nodes/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -123,11 +181,12 @@ func register(controller, installKey, name, addr string) (*agentConfig, error) {
 		return nil, fmt.Errorf("主控返回: %s", out.Message)
 	}
 	return &agentConfig{
-		Controller: controller,
-		NodeID:     out.Data.NodeID,
-		Token:      out.Data.Token,
-		Name:       name,
-		Address:    addr,
+		Controller:        controller,
+		NodeID:            out.Data.NodeID,
+		Token:             out.Data.Token,
+		Name:              name,
+		Address:           addr,
+		AllowInsecureHTTP: allowInsecureHTTP || !strings.HasPrefix(strings.ToLower(controller), "https://"),
 	}, nil
 }
 
@@ -145,6 +204,11 @@ func sendHeartbeat(ac *agentConfig) {
 	if err != nil {
 		return
 	}
+	client, err := secureControllerClient(ac.Controller, ac.AllowInsecureHTTP)
+	if err != nil {
+		return
+	}
+	client.Timeout = 10 * time.Second
 	req, err := http.NewRequest(http.MethodPost,
 		strings.TrimSuffix(ac.Controller, "/")+"/api/nodes/"+ac.NodeID+"/heartbeat",
 		bytes.NewReader(body))
@@ -153,12 +217,37 @@ func sendHeartbeat(ac *agentConfig) {
 	}
 	req.Header.Set("Authorization", "Bearer "+ac.Token)
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
 	resp.Body.Close()
+}
+
+// initSecureTransport 对主控通道做传输层安全检查：默认要求 https，杜绝节点 token 明文传输。
+// 仅当显式 `--allow-insecure-http` 时才允许 http（并打印醒目警告）。
+func initSecureTransport(controller string, allowInsecureHTTP bool) error {
+	u := strings.ToLower(controller)
+	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		return fmt.Errorf("主控地址需以 http:// 或 https:// 开头")
+	}
+	if strings.HasPrefix(u, "https://") {
+		return nil
+	}
+	if !allowInsecureHTTP {
+		return fmt.Errorf("主控使用明文 http 将导致节点 token 明文传输，拒绝连接；请改用 https://，或显式传入 --allow-insecure-http（不推荐）")
+	}
+	fmt.Fprintln(os.Stderr, "警告：正在与主控通过明文 http 通信，节点 token 与心跳可能被中间人截获（仅适用于无 TLS 的主控）。")
+	return nil
+}
+
+// secureControllerClient 构造指向主控的 HTTP 客户端。
+// Go 的默认 Transport 对 https 总是校验证书；http（明文）仅在显式允许时放行。
+func secureControllerClient(controller string, allowInsecureHTTP bool) (*http.Client, error) {
+	if err := initSecureTransport(controller, allowInsecureHTTP); err != nil {
+		return nil, err
+	}
+	return &http.Client{Transport: http.DefaultTransport}, nil
 }
 
 func collectNodeStatus() map[string]interface{} {

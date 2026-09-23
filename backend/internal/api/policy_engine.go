@@ -209,6 +209,10 @@ func triggerPolicyAction(rule config.PolicyRule, containerID int, containerName 
 			config.UpdateContainerStatus(containerID, "stopped")
 		}
 		detail = fmt.Sprintf("%s 已按策略关机", containerName)
+	case config.PolicyActionNotify:
+		// 仅告警：不修改任何资源，只推送外部通知并记录（安全无副作用）。
+		pushPolicyNotification(rule, containerName, value)
+		detail = fmt.Sprintf("%s 仅告警", containerName)
 	default:
 		return
 	}

@@ -22,6 +22,8 @@ const defaultForm: CreateContainerRequest = {
   cpu_percent: 100,
   ram_mb: 512,
   disk_gb: 10,
+  data_disk_gb: 0,
+  data_disk_mount_path: '',
   network_bw_mbps: 0,
   network_down_mbps: 0,
   network_up_mbps: 0,
@@ -1156,6 +1158,23 @@ export default function CreateContainerModal({ isOpen, onClose, onSuccess, exist
               />
               {resourceErrors.disk_gb && <p className="mt-1 text-xs text-red-500">{resourceErrors.disk_gb}</p>}
             </Field>
+            <Field label="数据盘 (GB)">
+              <NumberInput
+                value={form.data_disk_gb ?? 0}
+                min={0}
+                step={form.virtualization === 'lxc' ? 0.25 : 1}
+                onChange={(value) => setForm({ ...form, data_disk_gb: value })}
+              />
+            </Field>
+            <Field label="数据盘挂载路径">
+              <input
+                type="text"
+                value={form.data_disk_mount_path ?? ''}
+                placeholder="/data"
+                onChange={(event) => setForm({ ...form, data_disk_mount_path: event.target.value })}
+                className={inputClass}
+              />
+            </Field>
             <Field label="下行带宽 (Mbps)">
               <NumberInput value={form.network_down_mbps} min={0} onChange={(value) => setForm({ ...form, network_down_mbps: value, network_bw_mbps: symmetricLimit(value, form.network_up_mbps) })} />
             </Field>
@@ -1489,6 +1508,10 @@ function normalizeCreateForm(form: CreateContainerRequest): CreateContainerReque
     vcpu: normalized.virtualization === 'kvm' ? Math.round(normalized.vcpu) : normalizeLXCvCPU(normalized.vcpu),
     ram_mb: Math.round(normalized.ram_mb),
     disk_gb: normalized.virtualization === 'kvm' ? Math.round(normalized.disk_gb) : normalizeLXCDisk(normalized.disk_gb),
+    data_disk_gb: normalized.data_disk_gb != null && Number.isFinite(normalized.data_disk_gb) && normalized.data_disk_gb > 0
+      ? (normalized.virtualization === 'kvm' ? Math.round(normalized.data_disk_gb) : normalizeLXCDisk(normalized.data_disk_gb))
+      : 0,
+    data_disk_mount_path: normalized.data_disk_gb != null && normalized.data_disk_gb > 0 ? (normalized.data_disk_mount_path || '').trim() : '',
     assign_nat: wantsNAT,
     port_mapping_count: portMappingCount,
     extra_ports: [],

@@ -49,6 +49,33 @@ func notificationEnabled() bool {
 	return cfg.SecurityAlertsEnabled && (cfg.WebhookURL != "" || cfg.SMTPEnabled)
 }
 
+// pushPolicyNotification 推送策略“仅告警”类通知（webhook + smtp），不做任何资源变更。
+func pushPolicyNotification(rule config.PolicyRule, containerName string, value float64) {
+	if !notificationEnabled() {
+		return
+	}
+	alert := SecurityAlert{
+		ID:            "policy-" + rule.ID,
+		ContainerName: containerName,
+		Type:          rule.Metric,
+		Severity:      "high",
+		SourceIP:      "",
+		TargetIP:      "",
+		TargetPort:    0,
+		Detail:        fmt.Sprintf("策略触发: %s (%s %s %.2f)", rule.Name, rule.Metric, rule.Operator, value),
+		Timestamp:     time.Now().Format("2006-01-02 15:04:05"),
+	}
+	go func() {
+		cfg := config.AppConfig.Notifications
+		if cfg.WebhookURL != "" {
+			_ = sendWebhookNotification(cfg.WebhookURL, alert)
+		}
+		if cfg.SMTPEnabled {
+			_ = sendSMTPNotification(cfg, alert)
+		}
+	}()
+}
+
 // notifySeverityOK reports whether the alert severity meets the configured threshold.
 func notifySeverityOK(alert SecurityAlert) bool {
 	min := strings.ToLower(strings.TrimSpace(config.AppConfig.Notifications.MinSeverity))

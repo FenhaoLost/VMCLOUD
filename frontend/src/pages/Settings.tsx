@@ -97,7 +97,7 @@ export default function Settings() {
 
   // 两步验证 (TOTP)
   const [twoFA, setTwoFA] = useState<TwoFAStatus | null>(null)
-  const [twoFASetup, setTwoFASetup] = useState<{ secret: string; otpauth_uri: string } | null>(null)
+  const [twoFASetup, setTwoFASetup] = useState<{ secret: string; otpauth_uri: string; qr_data_url?: string } | null>(null)
   const [twoFACode, setTwoFACode] = useState('')
   const [backupCodes, setBackupCodes] = useState<string[]>([])
   const [verifyCode, setVerifyCode] = useState('')
@@ -1344,7 +1344,7 @@ function formatUptime(seconds: number): string {
 
 interface TwoFactorCardProps {
   twoFA: TwoFAStatus | null
-  twoFASetup: { secret: string; otpauth_uri: string } | null
+  twoFASetup: { secret: string; otpauth_uri: string; qr_data_url?: string } | null
   verifyCode: string
   twoFACode: string
   disableCode: string
@@ -1401,8 +1401,18 @@ function TwoFactorCard(props: TwoFactorCardProps) {
       {props.twoFASetup && !enabled && (
         <div className="mt-4 space-y-4">
           <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300">
-            用身份验证器 App（如 Google Authenticator、Microsoft Authenticator、1Password）扫码，或手动输入下方密钥。
+            用 <strong>Google Authenticator</strong>（或 Microsoft Authenticator、1Password 等兼容 App）扫描下方二维码，或手动输入密钥。
           </div>
+          {props.twoFASetup.qr_data_url && (
+            <div className="flex justify-center rounded-md border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-950">
+              {/* eslint-disable-next-line jsx-a11y/alt-text */}
+              <img
+                src={props.twoFASetup.qr_data_url}
+                alt="TOTP 二维码"
+                className="h-48 w-48 rounded"
+              />
+            </div>
+          )}
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">otpauth:// 链接（或二维码中内容）</label>

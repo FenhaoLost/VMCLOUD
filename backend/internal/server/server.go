@@ -70,12 +70,12 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/ssl", corsMiddleware(api.AdminMiddleware(api.HandleSSLSettings)))
 	mux.HandleFunc("/api/webssh-origins", corsMiddleware(api.AdminMiddleware(api.HandleWebSSHOriginSettings)))
 	mux.HandleFunc("/api/access-policy", corsMiddleware(api.AdminMiddleware(api.HandlePanelAccessPolicy)))
-	// 管理员两步验证（TOTP）
-	mux.HandleFunc("/api/2fa/status", corsMiddleware(api.AdminMiddleware(api.Handle2FAStatus)))
-	mux.HandleFunc("/api/2fa/setup", corsMiddleware(api.AdminMiddleware(api.Handle2FASetup)))
-	mux.HandleFunc("/api/2fa/enable", corsMiddleware(api.AdminMiddleware(api.Handle2FAEnable)))
-	mux.HandleFunc("/api/2fa/disable", corsMiddleware(api.AdminMiddleware(api.Handle2FADisable)))
-	mux.HandleFunc("/api/2fa/regenerate-backup-codes", corsMiddleware(api.AdminMiddleware(api.Handle2FARegenerateBackupCodes)))
+	// 管理员两步验证（TOTP / Google Authenticator）
+	mux.HandleFunc("/api/2fa/status", corsMiddleware(api.AdminSessionMiddleware(api.Handle2FAStatus)))
+	mux.HandleFunc("/api/2fa/setup", corsMiddleware(api.AdminSessionMiddleware(api.Handle2FASetup)))
+	mux.HandleFunc("/api/2fa/enable", corsMiddleware(api.AdminSessionMiddleware(api.Handle2FAEnable)))
+	mux.HandleFunc("/api/2fa/disable", corsMiddleware(api.AdminSessionMiddleware(api.Handle2FADisable)))
+	mux.HandleFunc("/api/2fa/regenerate-backup-codes", corsMiddleware(api.AdminSessionMiddleware(api.Handle2FARegenerateBackupCodes)))
 	mux.HandleFunc("/api/containers", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleContainers))))
 	mux.HandleFunc("/api/containers/list", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleContainerListAlias))))
 	mux.HandleFunc("/api/containers/", corsMiddleware(api.AuthMiddleware(api.SubUserMiddleware(api.HandleSingleContainer))))
@@ -169,10 +169,26 @@ func setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nodes/", corsMiddleware(api.HandleNodeSubRoutes))
 	mux.HandleFunc("/api/nodes/binary", corsMiddleware(api.HandleNodeBinary))
 
+	// 批次3 网络管理：区域 / IP组与故障切换 / ISO 目录
+	mux.HandleFunc("/api/metrics/retention", corsMiddleware(api.AdminMiddleware(api.HandleMetricRetentionSettings)))
+	mux.HandleFunc("/api/overcommit/settings", corsMiddleware(api.AdminMiddleware(api.HandleOvercommitSettings)))
+	mux.HandleFunc("/api/regions", corsMiddleware(api.AdminMiddleware(api.HandleRegions)))
+	mux.HandleFunc("/api/regions/", corsMiddleware(api.AdminMiddleware(api.HandleRegionItem)))
+	mux.HandleFunc("/api/ip-groups", corsMiddleware(api.AdminMiddleware(api.HandleIPGroups)))
+	mux.HandleFunc("/api/ip-groups/", corsMiddleware(api.AdminMiddleware(api.HandleIPGroupSubRoutes)))
+	mux.HandleFunc("/api/isos", corsMiddleware(api.AdminMiddleware(api.HandleISOs)))
+	mux.HandleFunc("/api/isos/upload", corsMiddleware(api.AdminMiddleware(api.HandleISOUpload)))
+	mux.HandleFunc("/api/isos/", corsMiddleware(api.AdminMiddleware(api.HandleISOItem)))
+	mux.HandleFunc("/api/isos/attach", corsMiddleware(api.AdminMiddleware(api.HandleContainerISOAction)))
+	mux.HandleFunc("/api/containers/rescue", corsMiddleware(api.AdminMiddleware(api.HandleContainerRescue)))
+
 	// 被控（Agent）专用 API：仅主控通过节点 token 调用
 	mux.HandleFunc("/api/agent/containers", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentContainers)))
 	mux.HandleFunc("/api/agent/containers/", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentContainerAction)))
 	mux.HandleFunc("/api/agent/action", corsMiddleware(api.AgentTokenMiddleware(api.AgentContainerActionFromQuery)))
+	mux.HandleFunc("/api/agent/images", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentImages)))
+	mux.HandleFunc("/api/agent/images/sync", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentImageSync)))
+	mux.HandleFunc("/api/agent/node-backup", corsMiddleware(api.AgentTokenMiddleware(api.HandleAgentNodeBackup)))
 
 	// Versioned external API routes
 	mux.HandleFunc("/api/v1/dashboard", corsMiddleware(api.AuthMiddleware(api.HandleDashboard)))
@@ -266,9 +282,16 @@ func setupRoutes(mux *http.ServeMux) {
 
 // limitRequestBody 限制请求体大小，防止超大请求体导致内存占用（DoS）。
 func limitRequestBody(next http.Handler) http.Handler {
-	const maxBodyBytes = 64 << 20 // 64 MiB
+	const maxBodyBytes = 64 << 20            // 64 MiB
+	const maxStreamingUpload = (20 << 30) + (1024 << 20) // ~20 GiB ISO 上传/备份还原
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		// 大文件流式上传/还原端点不受通用 64 MiB 限制（受各自 handler 内部独立上限约束）。
+		if strings.HasPrefix(r.URL.Path, "/api/isos/upload") ||
+			strings.HasPrefix(r.URL.Path, "/api/v1/isos/upload") {
+			r.Body = http.MaxBytesReader(w, r.Body, maxStreamingUpload)
+		} else {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -295,6 +318,7 @@ func Run() error {
 	webFS = GetEmbeddedFS()
 	api.StartHostMetricSampler()
 	api.StartContainerMetricSampler()
+	api.StartMetricRollup()
 	api.StartPolicyEngine()
 	api.StartAuditRetention()
 	api.StartBackupScheduler()

@@ -189,6 +189,7 @@ func normalizePolicyRule(req *config.PolicyRule) error {
 			return fmt.Errorf("adjust_bw_mbps is required for adjust_bw action")
 		}
 	case config.PolicyActionShutdown:
+	case config.PolicyActionNotify:
 	default:
 		return fmt.Errorf("invalid action: %s", req.Action)
 	}

@@ -200,6 +200,8 @@ func ensureSchema() error {
 			vcpu REAL,
 			ram_mb INTEGER,
 			disk_gb REAL,
+			data_disk_gb REAL NOT NULL DEFAULT 0,
+			data_disk_mount_path TEXT,
 			network_bw_mbps INTEGER,
 			network_down_mbps INTEGER NOT NULL DEFAULT 0,
 			network_up_mbps INTEGER NOT NULL DEFAULT 0,
@@ -242,7 +244,10 @@ func ensureSchema() error {
 			policy_blocked_reason TEXT,
 			policy_blocked_at TEXT,
 			allowed_image_ids TEXT,
-			image_limit_configured INTEGER NOT NULL DEFAULT 0
+			image_limit_configured INTEGER NOT NULL DEFAULT 0,
+			rescue_enabled INTEGER NOT NULL DEFAULT 0,
+			rescue_iso_id TEXT,
+			rescue_iso_path TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS port_mappings (
 			container_id INTEGER NOT NULL,
@@ -430,6 +435,21 @@ func ensureSchema() error {
 			disk_write REAL NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_container_metrics_key_ts ON container_metrics (container_key, ts)`,
+		`CREATE TABLE IF NOT EXISTS container_metrics_hourly (
+			container_key TEXT NOT NULL,
+			hour INTEGER NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0,
+			avg_cpu REAL NOT NULL DEFAULT 0,
+			max_cpu REAL NOT NULL DEFAULT 0,
+			avg_memory REAL NOT NULL DEFAULT 0,
+			max_memory REAL NOT NULL DEFAULT 0,
+			avg_network_rx REAL NOT NULL DEFAULT 0,
+			avg_network_tx REAL NOT NULL DEFAULT 0,
+			avg_disk_read REAL NOT NULL DEFAULT 0,
+			avg_disk_write REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (container_key, hour)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_metrics_hourly_hour ON container_metrics_hourly (hour)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -501,6 +521,11 @@ func ensureSchemaMigrations() error {
 		{"containers", "lan_ipv4_prefix_len", "INTEGER NOT NULL DEFAULT 0"},
 		{"containers", "lan_ipv4_gateway", "TEXT NOT NULL DEFAULT ''"},
 		{"containers", "cloud_init_user_data", "TEXT"},
+		{"containers", "data_disk_gb", "REAL NOT NULL DEFAULT 0"},
+		{"containers", "data_disk_mount_path", "TEXT"},
+		{"containers", "rescue_enabled", "INTEGER NOT NULL DEFAULT 0"},
+		{"containers", "rescue_iso_id", "TEXT"},
+		{"containers", "rescue_iso_path", "TEXT"},
 	} {
 		wasAdded, err := ensureColumn(column.table, column.name, column.def)
 		if err != nil {
@@ -631,13 +656,31 @@ func loadConfigFromDB() (*EyvescloudConfig, bool, error) {
 		SecurityAutoShutdown: atob(meta["security_auto_shutdown"]),
 		TaskConcurrency:      atoi(meta["task_concurrency"]),
 		Language:             meta["language"],
+		MetricRetentionDays:  atoi(meta["metric_retention_days"]),
 		AuditRetentionDays:   atoi(meta["audit_retention_days"]),
+		MemoryOvercommitEnabled: atob(meta["memory_overcommit_enabled"]),
+		MemoryOvercommitRatio:   atof(meta["memory_overcommit_ratio"]),
+	}
+	if raw := strings.TrimSpace(meta["ksm_tuning"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.KSMTuning)
+	}
+	if raw := strings.TrimSpace(meta["regions"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.Regions)
+	}
+	if raw := strings.TrimSpace(meta["ip_groups"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.IPGroups)
+	}
+	if raw := strings.TrimSpace(meta["iso_files"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.ISOFiles)
 	}
 	if raw := strings.TrimSpace(meta["backup_settings"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.BackupSettings)
 	}
 	if raw := strings.TrimSpace(meta["backups"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.Backups)
+	}
+	if raw := strings.TrimSpace(meta["instance_backups"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &cfg.InstanceBackups)
 	}
 	if raw := strings.TrimSpace(meta["api_rate_limit"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.APIRateLimit)
@@ -789,11 +832,16 @@ func saveMeta(tx *sql.Tx) error {
 	policyRulesJSON, _ := json.Marshal(AppConfig.PolicyRules)
 	policyHistoryJSON, _ := json.Marshal(AppConfig.PolicyHistory)
 	nodesJSON, _ := json.Marshal(AppConfig.Nodes)
+	regionsJSON, _ := json.Marshal(AppConfig.Regions)
+	ipGroupsJSON, _ := json.Marshal(AppConfig.IPGroups)
+	isoFilesJSON, _ := json.Marshal(AppConfig.ISOFiles)
 	nCIbackup, _ := json.Marshal(AppConfig.AdminBackupCodes)
 	backupSettingsJSON, _ := json.Marshal(AppConfig.BackupSettings)
 	backupsJSON, _ := json.Marshal(AppConfig.Backups)
+	instanceBackupsJSON, _ := json.Marshal(AppConfig.InstanceBackups)
 	rateLimitJSON, _ := json.Marshal(AppConfig.APIRateLimit)
 	tenantsJSON, _ := json.Marshal(AppConfig.Tenants)
+	ksmTuningJSON, _ := json.Marshal(AppConfig.KSMTuning)
 	values := map[string]string{
 		"admin_user":             AppConfig.AdminUser,
 		"admin_pass_hash":        AppConfig.AdminPassHash,
@@ -827,12 +875,20 @@ func saveMeta(tx *sql.Tx) error {
 		"policy_rules":           string(policyRulesJSON),
 		"policy_history":         string(policyHistoryJSON),
 		"nodes":                  string(nodesJSON),
+		"regions":                string(regionsJSON),
+		"ip_groups":              string(ipGroupsJSON),
+		"iso_files":              string(isoFilesJSON),
+		"metric_retention_days":  strconv.Itoa(AppConfig.MetricRetentionDays),
 		"audit_retention_days":   strconv.Itoa(AppConfig.AuditRetentionDays),
 		"backup_settings":        string(backupSettingsJSON),
 		"backups":                string(backupsJSON),
-		"api_rate_limit":         string(rateLimitJSON),
-		"tenants":                string(tenantsJSON),
-		"schema_version":         "1",
+		"instance_backups":       string(instanceBackupsJSON),
+		"api_rate_limit":          string(rateLimitJSON),
+		"tenants":                 string(tenantsJSON),
+		"memory_overcommit_enabled": btoa(AppConfig.MemoryOvercommitEnabled),
+		"memory_overcommit_ratio":   strconv.FormatFloat(AppConfig.MemoryOvercommitRatio, 'f', -1, 64),
+		"ksm_tuning":               string(ksmTuningJSON),
+		"schema_version":          "1",
 		"updated_at":             time.Now().Format("2006-01-02 15:04:05"),
 	}
 	for k, v := range values {
@@ -860,8 +916,9 @@ func saveContainers(tx *sql.Tx) error {
 			snapshot_schedule_last_run, snapshot_schedule_next_run, snapshot_schedule_created_by,
 			policy_blocked, policy_blocked_reason, policy_blocked_at,
 			firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured,
-			tenant, cloud_init_user_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			tenant, cloud_init_user_data, data_disk_gb, data_disk_mount_path,
+			rescue_enabled, rescue_iso_id, rescue_iso_path
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			c.ID, c.UUID, c.Name, c.Virtualization, c.LXCName, c.KVMName, c.DiskImage, c.StoragePoolID, c.StoragePath, c.MACAddress, c.Template,
 			c.VCPU, c.RAMMB, c.DiskGB, c.NetworkBWMbps, c.NetworkDownMbps, c.NetworkUpMbps,
 			c.MonthlyTrafficGB, c.TrafficMode, c.TrafficInGB,
@@ -874,7 +931,8 @@ func saveContainers(tx *sql.Tx) error {
 			c.SnapshotScheduleLastRun, c.SnapshotScheduleNextRun, c.SnapshotScheduleCreatedBy,
 			boolInt(c.PolicyBlocked), c.PolicyBlockedReason, c.PolicyBlockedAt,
 			boolInt(c.FirewallEnabled), normalizeFirewallDefaultAction(c.FirewallDefaultAction), marshalFirewallRules(c.FirewallRules), allowedImageIDs, boolInt(c.ImageLimitConfigured),
-			c.Tenant, c.CloudInitUserData,
+			c.Tenant, c.CloudInitUserData, c.DataDiskGB, c.DataDiskMountPath,
+			boolInt(c.RescueEnabled), c.RescueISOID, c.RescueISOPath,
 		); err != nil {
 			return err
 		}
@@ -1091,7 +1149,8 @@ func loadContainers() ([]Container, error) {
 		snapshot_schedule_last_run, snapshot_schedule_next_run, snapshot_schedule_created_by,
 		policy_blocked, policy_blocked_reason, policy_blocked_at,
 		firewall_enabled, firewall_default_action, firewall_rules, allowed_image_ids, image_limit_configured,
-		tenant, cloud_init_user_data
+		tenant, cloud_init_user_data, data_disk_gb, data_disk_mount_path,
+		rescue_enabled, rescue_iso_id, rescue_iso_path
 		FROM containers ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1110,6 +1169,9 @@ func loadContainers() ([]Container, error) {
 		var lanIPv4PrefixLen sql.NullInt64
 		var tenant sql.NullString
 		var cloudInitUserData sql.NullString
+		var dataDiskMountPath sql.NullString
+		var rescueEnabled int
+		var rescueISOID, rescueISOPath sql.NullString
 		if err := rows.Scan(
 			&c.ID, &c.UUID, &c.Name, &c.Virtualization, &c.LXCName, &c.KVMName, &c.DiskImage, &storagePoolID, &storagePath, &c.MACAddress, &c.Template,
 			&c.VCPU, &c.RAMMB, &c.DiskGB, &c.NetworkBWMbps, &c.NetworkDownMbps, &c.NetworkUpMbps,
@@ -1123,11 +1185,16 @@ func loadContainers() ([]Container, error) {
 			&c.SnapshotScheduleLastRun, &c.SnapshotScheduleNextRun, &c.SnapshotScheduleCreatedBy,
 			&policyBlocked, &c.PolicyBlockedReason, &c.PolicyBlockedAt,
 			&firewallEnabled, &firewallDefaultAction, &firewallRulesJSON, &allowedImageIDs, &imageLimitConfigured,
-			&tenant, &cloudInitUserData,
+			&tenant, &cloudInitUserData, &c.DataDiskGB, &dataDiskMountPath,
+			&rescueEnabled, &rescueISOID, &rescueISOPath,
 		); err != nil {
 			return nil, err
 		}
 		c.CloudInitUserData = cloudInitUserData.String
+		c.DataDiskMountPath = dataDiskMountPath.String
+		c.RescueEnabled = rescueEnabled != 0
+		c.RescueISOID = rescueISOID.String
+		c.RescueISOPath = rescueISOPath.String
 		c.Tenant = tenant.String
 		c.StoragePoolID = storagePoolID.String
 		c.StoragePath = storagePath.String
@@ -1584,5 +1651,10 @@ func atob(value string) bool {
 
 func atoi(value string) int {
 	n, _ := strconv.Atoi(value)
+	return n
+}
+
+func atof(value string) float64 {
+	n, _ := strconv.ParseFloat(value, 64)
 	return n
 }

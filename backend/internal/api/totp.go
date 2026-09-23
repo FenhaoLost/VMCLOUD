@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -71,7 +73,7 @@ func validTOTP(secret, code string) bool {
 	return false
 }
 
-// totpSetupURI 生成用于录入 Authenticator 的 otpauth:// URI。
+// totpSetupURI 生成用于录入 Authenticator（Google Authenticator 兼容）的 otpauth:// URI。
 func totpSetupURI(secret, account string) string {
 	label := url.PathEscape(totpIssuer + ":" + account)
 	q := url.Values{}
@@ -81,6 +83,19 @@ func totpSetupURI(secret, account string) string {
 	q.Set("digits", "6")
 	q.Set("period", "30")
 	return "otpauth://totp/" + label + "?" + q.Encode()
+}
+
+// totpQRDataURL 将 otpauth:// URI 渲染为 PNG 二维码，返回 data:image/png;base64 数据 URL，
+// 供用户用 Google Authenticator 等 App 扫码录入。出错时返回空字符串（前端回退为手动输入）。
+func totpQRDataURL(otpauthURI string) string {
+	if otpauthURI == "" {
+		return ""
+	}
+	png, err := qrcode.Encode(otpauthURI, qrcode.Medium, 256)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 }
 
 // generateBackupCodes 生成 n 个一次性备份码（每个 16 位十六进制）。

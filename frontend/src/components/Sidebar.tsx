@@ -7,6 +7,7 @@ import {
   Cpu,
   Camera,
   Building2,
+  Globe,
   HardDrive,
   LayoutDashboard,
   LogOut,
@@ -21,6 +22,9 @@ import {
   Sun,
   UserCog,
   MoveRight,
+  Layers,
+  Disc3,
+  Activity,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -298,6 +302,54 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
             >
               <Building2 className="w-4 h-4" />
               {!collapsed && <span>多租户</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/regions')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/regions')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Globe className="w-4 h-4" />
+              {!collapsed && <span>区域管理</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/ip-groups')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/ip-groups')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Layers className="w-4 h-4" />
+              {!collapsed && <span>IP 组</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/isos')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/isos')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Disc3 className="w-4 h-4" />
+              {!collapsed && <span>ISO 镜像</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('/metric-retention')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-colors ${
+                location.pathname.startsWith('/metric-retention')
+                  ? 'bg-black text-white dark:bg-white dark:text-black'
+                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+              }`}
+            >
+              <Activity className="w-4 h-4" />
+              {!collapsed && <span>指标留存</span>}
             </button>
 
             <button

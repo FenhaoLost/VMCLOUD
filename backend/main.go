@@ -16,6 +16,7 @@ import (
 	"eyvescloud/internal/kvm"
 	"eyvescloud/internal/lxc"
 	"eyvescloud/internal/server"
+	"eyvescloud/internal/version"
 
 	"golang.org/x/term"
 )
@@ -30,6 +31,7 @@ func main() {
 	noWebAutostart := false
 	isAgentMode := false
 	isAccessPolicyCommand := len(os.Args) > 1 && os.Args[1] == "access-policy"
+	isAccountCommand := len(os.Args) > 1 && (os.Args[1] == "account" || os.Args[1] == "kvm")
 	for _, arg := range os.Args[1:] {
 		if arg == "server" || arg == "-s" || arg == "--server" {
 			isServerMode = true
@@ -60,6 +62,25 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// 快捷账号命令：遗忘账号/密码时的非交互恢复（也可用 `kvm` 作为别名）。
+	// 必须先于本质上的 server/CLI 分支执行，config 初始化在此前已完成。
+	if isAccountCommand {
+		if err := cli.RunAccountCommand(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Account command error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// 版本查询：`eyvescloud --version | -v | version`。必须早于配置初始化，
+	// 以便在只读/最小化环境中也能安全打印版本（也用于被控安装脚本的完整性校验）。
+	for _, arg := range os.Args[1:] {
+		if arg == "--version" || arg == "-v" || arg == "version" {
+			fmt.Println("EyvesCloud " + version.Current())
+			return
+		}
 	}
 
 	// 被控节点 agent 模式：注册到主控 + 心跳 + 本地面板

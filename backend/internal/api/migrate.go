@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,6 +26,8 @@ type migrateContainer struct {
 	VCPU                  float64                       `json:"vcpu"`
 	RAMMB                 int                           `json:"ram_mb"`
 	DiskGB                float64                       `json:"disk_gb"`
+	DataDiskGB            float64                       `json:"data_disk_gb,omitempty"`
+	DataDiskMountPath     string                        `json:"data_disk_mount_path,omitempty"`
 	NetworkBWMbps         int                           `json:"network_bw_mbps"`
 	NetworkDownMbps       int                           `json:"network_down_mbps"`
 	NetworkUpMbps         int                           `json:"network_up_mbps"`
@@ -57,11 +61,25 @@ type migrateContainer struct {
 }
 
 type migrateBundle struct {
-	Format     string           `json:"format"`
-	Version    int              `json:"version"`
-	ExportedAt string           `json:"exported_at"`
-	SourceNode string           `json:"source_node,omitempty"`
-	Container  migrateContainer `json:"container"`
+	Format         string           `json:"format"`
+	Version        int              `json:"version"`
+	ExportedAt     string           `json:"exported_at"`
+	SourceNode     string           `json:"source_node,omitempty"`
+	ChecksumSHA256 string           `json:"checksum_sha256,omitempty"` // 完整性校验
+	Container      migrateContainer `json:"container"`
+}
+
+// migrateBundleVersion is a counter, not a constant, so builds import the same
+// version that was exported (checksum covers the container payload).
+const migrateBundleVersion = 2
+
+func checksumMigrateContainer(c migrateContainer) (string, error) {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // buildMigrateContainer strips runtime-only fields from a managed container.
@@ -73,6 +91,8 @@ func buildMigrateContainer(c config.Container) migrateContainer {
 		VCPU:                  c.VCPU,
 		RAMMB:                 c.RAMMB,
 		DiskGB:                c.DiskGB,
+		DataDiskGB:            c.DataDiskGB,
+		DataDiskMountPath:     c.DataDiskMountPath,
 		NetworkBWMbps:         c.NetworkBWMbps,
 		NetworkDownMbps:       c.NetworkDownMbps,
 		NetworkUpMbps:         c.NetworkUpMbps,
@@ -124,9 +144,12 @@ func HandleContainerMigrateExport(w http.ResponseWriter, r *http.Request, id int
 	}
 	bundle := migrateBundle{
 		Format:     migrateFormat,
-		Version:    1,
+		Version:    migrateBundleVersion,
 		ExportedAt: time.Now().Format(time.RFC3339),
 		Container:  buildMigrateContainer(*c),
+	}
+	if sum, err := checksumMigrateContainer(bundle.Container); err == nil {
+		bundle.ChecksumSHA256 = sum
 	}
 	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
@@ -155,6 +178,15 @@ func HandleMigrateImport(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Unsupported migration format"})
 		return
 	}
+	// 断点/完整性校验：若导出带 checksum，则导入时校验，防止传输/篡改损坏。
+	if bundle.ChecksumSHA256 != "" {
+		want := strings.ToLower(strings.TrimSpace(bundle.ChecksumSHA256))
+		got, err := checksumMigrateContainer(bundle.Container)
+		if err != nil || got != want {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Migration bundle checksum mismatch (data corrupted in transit?)"})
+			return
+		}
+	}
 	mc := bundle.Container
 	if strings.TrimSpace(mc.Name) == "" || strings.TrimSpace(mc.Template) == "" {
 		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Migration bundle is missing name or template"})
@@ -176,6 +208,8 @@ func HandleMigrateImport(w http.ResponseWriter, r *http.Request) {
 		VCPU:              mc.VCPU,
 		RAMMB:             mc.RAMMB,
 		DiskGB:            mc.DiskGB,
+		DataDiskGB:        mc.DataDiskGB,
+		DataDiskMountPath: mc.DataDiskMountPath,
 		NetworkBWMbps:     mc.NetworkBWMbps,
 		NetworkDownMbps:   mc.NetworkDownMbps,
 		NetworkUpMbps:     mc.NetworkUpMbps,

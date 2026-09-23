@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"sort"
 	"strconv"
 	"sync"
@@ -46,6 +47,39 @@ func StartContainerMetricSampler() {
 			}
 		}()
 	})
+}
+
+var metricRollupOnce sync.Once
+
+// StartMetricRollup launches the background task that downsamples raw metric
+// samples into hourly buckets and prunes expired hourly rollups according to
+// the configured retention policy (long-term metric retention).
+func StartMetricRollup() {
+	metricRollupOnce.Do(func() {
+		go func() {
+			runMetricRollup()
+			ticker := time.NewTicker(60 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runMetricRollup()
+			}
+		}()
+	})
+}
+
+func runMetricRollup() {
+	// Aggregate raw samples older than the current hour (keeps live samples raw).
+	upto := time.Now().Truncate(time.Hour).UnixMilli()
+	if err := config.RollupMetricSamples(upto); err != nil {
+		fmt.Printf("Warning: metric rollup failed: %v\n", err)
+	}
+	// Prune hourly rollups beyond the configured retention (0 = keep all).
+	if days := config.GetMetricRetentionDays(); days > 0 {
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+		if err := config.PruneMetricHourly(cutoff); err != nil {
+			fmt.Printf("Warning: hourly metric prune failed: %v\n", err)
+		}
+	}
 }
 
 func sampleAllContainerMetrics() {
@@ -185,6 +219,31 @@ func getContainerMetricHistory(c *config.Container) []ContainerMetricPoint {
 		})
 	}
 
+	// 合并小时级聚合，提供长期留存趋势（超出原始留存窗口仍可见）。
+	if hourly, err := config.LoadMetricHourly(key, cutoff); err == nil {
+		nowMs := time.Now().UnixMilli()
+		for _, h := range hourly {
+			if h.Hour < cutoff || h.Hour > nowMs || h.Count == 0 {
+				continue
+			}
+			if seen[h.Hour] {
+				continue
+			}
+			seen[h.Hour] = true
+			merged = append(merged, ContainerMetricPoint{
+				TS:        h.Hour,
+				CPU:       h.AvgCPU,
+				Memory:    h.AvgMemory,
+				NetworkRx: h.AvgNetRx,
+				NetworkTx: h.AvgNetTx,
+				Network:   h.AvgNetRx + h.AvgNetTx,
+				DiskRead:  h.AvgDiskR,
+				DiskWrite: h.AvgDiskW,
+				DiskIO:    h.AvgDiskR + h.AvgDiskW,
+			})
+		}
+	}
+
 	containerMetricMu.RLock()
 	mem := containerMetricHistory[key]
 	for _, p := range mem {
@@ -293,4 +352,51 @@ func positiveNumberFromUsage(usage map[string]interface{}, key string) float64 {
 		return 0
 	}
 	return value
+}
+
+// HandleMetricRetentionSettings reads or updates the long-term (hourly rollup)
+// metric retention policy. 0 means "keep forever"; otherwise raw samples older
+// than one hour are rolled up into hourly buckets and bucketed data older than
+// retention_days days is pruned.
+func HandleMetricRetentionSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		config.AppConfigMu.RLock()
+		days := config.AppConfig.MetricRetentionDays
+		config.AppConfigMu.RUnlock()
+		if days <= 0 {
+			days = config.MetricRetentionDefault
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]interface{}{
+			"retention_days":       days,
+			"sample_interval_secs": int(containerMetricSampleInterval.Seconds()),
+			"raw_history_secs":     int(hostMetricRetention.Seconds()),
+			"retention_notes":      "0 表示永久保留；原始样本每小时聚合成小时级趋势，超过保留期的小时数据会被后台清理",
+		}})
+	case http.MethodPut:
+		if !requireScope(w, r, "admin:access") {
+			return
+		}
+		var req struct {
+			RetentionDays int `json:"retention_days"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid request body"})
+			return
+		}
+		if req.RetentionDays < 0 || req.RetentionDays > 3650 {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "retention_days must be 0-3650"})
+			return
+		}
+		config.MutateGlobal(func(cfg *config.EyvescloudConfig) { cfg.MetricRetentionDays = req.RetentionDays })
+		config.SaveConfig()
+		auditRequest(r, "metric.retention", "metrics", fmt.Sprintf("retention_days=%d", req.RetentionDays), true, "")
+		if req.RetentionDays > 0 {
+			cutoff := time.Now().Add(-time.Duration(req.RetentionDays) * 24 * time.Hour).UnixMilli()
+			_ = config.PruneMetricHourly(cutoff)
+		}
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: map[string]int{"retention_days": req.RetentionDays}})
+	default:
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+	}
 }

@@ -91,6 +91,22 @@ func destroyByRuntime(id int) error {
 	return lxcManager.DestroyContainer(id)
 }
 
+func enterRescueByRuntime(id int, isoID, isoPath string) error {
+	c := config.FindContainer(id)
+	if c != nil && c.IsKVM() {
+		return kvmManager.EnterRescue(id, isoID, isoPath)
+	}
+	return fmt.Errorf("rescue mode is only supported for KVM VMs")
+}
+
+func exitRescueByRuntime(id int) error {
+	c := config.FindContainer(id)
+	if c != nil && c.IsKVM() {
+		return kvmManager.ExitRescue(id)
+	}
+	return fmt.Errorf("rescue mode is only supported for KVM VMs")
+}
+
 func reinstallByRuntime(id int, templateID string, authConfig ...lxc.ContainerConfig) error {
 	c := config.FindContainer(id)
 	if c != nil && c.IsKVM() {

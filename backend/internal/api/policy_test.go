@@ -23,6 +23,11 @@ func TestNormalizePolicyRule(t *testing.T) {
 		t.Fatalf("expected default scope 'all', got %q", valid.TargetScope)
 	}
 
+	// notify(仅告警) 动作应无需额外参数即可通过。
+	if err := normalizePolicyRule(&config.PolicyRule{Name: "alert only", Metric: "cpu", Operator: "gt", Threshold: 95, Action: config.PolicyActionNotify}); err != nil {
+		t.Fatalf("notify action should be valid, got: %v", err)
+	}
+
 	cases := []struct {
 		name string
 		rule config.PolicyRule

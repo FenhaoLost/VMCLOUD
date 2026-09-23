@@ -209,6 +209,8 @@ func HandleSingleContainer(w http.ResponseWriter, r *http.Request) {
 		HandleContainerMigrateExport(w, r, id)
 	case action == "snapshots" || strings.HasPrefix(action, "snapshots/"):
 		handleContainerSnapshots(w, r, id, action)
+	case action == "backups" || strings.HasPrefix(action, "backups/"):
+		handleContainerBackups(w, r, id, action)
 	case action == "port-mappings" && r.Method == http.MethodPost:
 		if !requireScope(w, r, "container:network") {
 			return
@@ -249,6 +251,8 @@ func listContainers(w http.ResponseWriter, r *http.Request) {
 	containers = filterContainersForRequest(r, containers)
 	for i := range containers {
 		sanitizeContainerResponse(r, &containers[i])
+		// 列表为只读汇总视图，一律不回显登录口令（detail/console 需要时单独拉取）。
+		containers[i].SSHPassword = ""
 	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: containers})
 }

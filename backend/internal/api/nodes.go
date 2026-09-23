@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -74,11 +76,116 @@ func HandleNodeSubRoutes(w http.ResponseWriter, r *http.Request) {
 		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { handleNodeInstallScript(w, r, nodeID) })(w, r)
 	case rest == "containers" && r.Method == http.MethodGet:
 		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { handleNodeContainers(w, r, nodeID) })(w, r)
+	case rest == "containers" && r.Method == http.MethodPost:
+		// 主控在被控节点开通（发机）新容器：透传到 agent 的 create 接口。
+		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			node, ok := config.FindNode(nodeID)
+			if !ok {
+				jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Node not found"})
+				return
+			}
+			if node.Status != "" && node.Status != "online" {
+				jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: "节点不在线，无法发机"})
+				return
+			}
+			if node.Address == "" {
+				jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "节点未配置地址，无法代理访问"})
+				return
+			}
+			data, status, err := proxyNodeRequest(r, node, http.MethodPost, "/api/agent/containers/create", r.Body)
+			if err != nil {
+				jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "代理发机失败: " + err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(data)
+		})(w, r)
 	case strings.HasPrefix(rest, "containers/") && r.Method == http.MethodPost:
 		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { handleNodeContainerAction(w, r, nodeID, strings.TrimPrefix(rest, "containers/")) })(w, r)
+	case rest == "images" && r.Method == http.MethodGet:
+		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { handleNodeImageProxy(w, r, nodeID, http.MethodGet, "/api/agent/images", nil) })(w, r)
+	case rest == "images/sync" && r.Method == http.MethodPost:
+		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) { handleNodeImageSyncProxy(w, r, nodeID) })(w, r)
+	case rest == "backup" && r.Method == http.MethodPost:
+		// 节点级冷备份：主控触发被控对全部容器做完整备份（重装/重建前保全）。
+		AdminMiddleware(func(w http.ResponseWriter, r *http.Request) {
+			node, ok := config.FindNode(nodeID)
+			if !ok {
+				jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Node not found"})
+				return
+			}
+			if node.Status != "" && node.Status != "online" {
+				jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: "节点不在线，无法冷备份"})
+				return
+			}
+			if node.Address == "" {
+				jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "节点未配置地址，无法代理访问"})
+				return
+			}
+			data, status, err := proxyNodeRequest(r, node, http.MethodPost, "/api/agent/node-backup", r.Body)
+			if err != nil {
+				jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "冷备份失败: " + err.Error()})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(data)
+		})(w, r)
 	default:
 		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Action not found"})
 	}
+}
+
+// handleNodeImageProxy 代理主控到被控的镜像清单查询 / 同步请求。
+func handleNodeImageProxy(w http.ResponseWriter, r *http.Request, nodeID, method, path string, body io.Reader) {
+	node, ok := config.FindNode(nodeID)
+	if !ok {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Node not found"})
+		return
+	}
+	if node.Address == "" {
+		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "节点未配置地址，无法代理访问"})
+		return
+	}
+	data, status, err := proxyNodeRequest(r, node, method, path, body)
+	if err != nil {
+		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "代理请求被控节点失败: " + err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
+// handleNodeImageSyncProxy 把主控自身的自定义镜像清单下发给被控，触发被控镜像同步。
+func handleNodeImageSyncProxy(w http.ResponseWriter, r *http.Request, nodeID string) {
+	catalog := agentImageCatalog{
+		LXC: config.ListCustomLXCImages(),
+		KVM: config.ListCustomKVMImages(),
+	}
+	body, err := json.Marshal(catalog)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Failed to build image catalog"})
+		return
+	}
+	node, ok := config.FindNode(nodeID)
+	if !ok {
+		jsonResponse(w, http.StatusNotFound, APIResponse{Success: false, Message: "Node not found"})
+		return
+	}
+	if node.Address == "" {
+		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "节点未配置地址，无法代理访问"})
+		return
+	}
+	data, status, err := proxyNodeRequest(r, node, http.MethodPost, "/api/agent/images/sync", bytes.NewReader(body))
+	if err != nil {
+		jsonResponse(w, http.StatusBadGateway, APIResponse{Success: false, Message: "代理请求被控节点失败: " + err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
 }
 
 // handleNodeRegister 由被控 agent 首次接入时调用，使用安装密钥换取节点 token。
@@ -289,6 +396,11 @@ func buildAgentInstallScript(controller, installKey, nodeName, defaultAddr strin
 	addrSQ := shellEscape(defaultAddr)
 	controllerSQ := shellEscape(controller)
 	keySQ := shellEscape(installKey)
+	insecureArg := ""
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(controller)), "http://") {
+		// 主控为明文 http：agent 需显式开启不安全传输。
+		insecureArg = "--allow-insecure-http"
+	}
 	return fmt.Sprintf(`#!/bin/bash
 # EyvesCloud 被控节点一键安装脚本
 # 用法: bash %s.sh [节点名称] [被控面板地址]
@@ -306,12 +418,25 @@ fi
 
 command -v curl >/dev/null 2>&1 || { echo "缺少 curl，请先安装"; exit 1; }
 
+# 自动探测被控宿主架构，用于向主控请求架构匹配的二进制。
+ARCH="$(uname -m 2>/dev/null || echo amd64)"
+case "$ARCH" in
+  x86_64|amd64) ARCH_NORM="amd64" ;;
+  aarch64|arm64) ARCH_NORM="arm64" ;;
+  *) echo "未知架构: $ARCH"; ARCH_NORM="" ;;
+esac
+
 echo "==> [1/3] 下载 EyvesCloud 二进制"
-curl -fsSL -o /usr/local/bin/eyvescloud "$CONTROLLER/api/nodes/binary"
+curl -fsSL -o /usr/local/bin/eyvescloud \
+  "$CONTROLLER/api/nodes/binary?install_key=$INSTALL_KEY&arch=$ARCH_NORM"
 chmod +x /usr/local/bin/eyvescloud
 
+echo "==> [1/3] 校验二进制"
+/usr/local/bin/eyvescloud --version >/dev/null 2>&1 \
+  || { echo "下载的二进制无法运行，架构或产物不匹配（本机 $ARCH）"; exit 1; }
+
 echo "==> [2/3] 注册被控节点"
-/usr/local/bin/eyvescloud agent --controller="$CONTROLLER" --install-key="$INSTALL_KEY" --name="$NODE_NAME" --addr="$NODE_ADDR" || {
+/usr/local/bin/eyvescloud agent --controller="$CONTROLLER" --install-key="$INSTALL_KEY" --name="$NODE_NAME" --addr="$NODE_ADDR" %s || {
   echo "注册失败（已注册过的节点可忽略）";
 }
 
@@ -323,7 +448,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/eyvescloud agent --controller=%s --install-key=%s --name=%s --addr=%s
+ExecStart=/usr/local/bin/eyvescloud agent --controller=%s --install-key=%s --name=%s --addr=%s %s
 Restart=always
 RestartSec=5
 
@@ -342,7 +467,7 @@ echo "  请回到主控面板查看节点状态"
 echo "=============================================="
 `,
 		nameSQ, controllerEsc, keyEsc, name, addr,
-		controllerSQ, keySQ, nameSQ, addrSQ,
+		insecureArg, controllerSQ, keySQ, nameSQ, addrSQ, insecureArg,
 	)
 }
 
@@ -364,12 +489,70 @@ func defaultNodeAddress(r *http.Request) string {
 	return "http://" + host + ":8999"
 }
 
-// HandleNodeBinary 供被控一键安装脚本下载主控二进制（同一二进制支持 agent 模式）。
+// normalizeArch maps common `uname -m` / GOARCH values to the canonical Go
+// architecture name used for release binary builds. Unknown inputs map to "".
+func normalizeArch(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "amd64", "x86_64":
+		return "amd64"
+	case "arm64", "aarch64":
+		return "arm64"
+	default:
+		return ""
+	}
+}
+
+// HandleNodeBinary serves the EyvesCloud binary to a worker node.
+//
+// Security & correctness:
+//   - Requires a valid `install_key` query parameter so that arbitrary hosts
+//     cannot download the controller binary. The key is the same install key
+//     the worker was created with and uses for registration.
+//   - Honors an optional `arch` query parameter. When supplied and it does not
+//     match the controller's own architecture, the request is rejected with a
+//     clear error instead of handing out a binary that cannot run on the
+//     worker (avoids silently installing a mismatched-build).
 func HandleNodeBinary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
 		return
 	}
+
+	// Authenticate using the worker's install key.
+	installKey := strings.TrimSpace(r.URL.Query().Get("install_key"))
+	if installKey == "" {
+		jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "install_key query parameter required"})
+		return
+	}
+	if _, ok := config.FindNodeByInstallKey(installKey); !ok {
+		jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid install key"})
+		return
+	}
+
+	// Architecture guard: reject clearly-incompatible target builds early.
+	if requestedArch := strings.TrimSpace(r.URL.Query().Get("arch")); requestedArch != "" {
+		canon := normalizeArch(requestedArch)
+		if canon == "" {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Unsupported arch: " + requestedArch})
+			return
+		}
+		switch runtime.GOARCH {
+		case "amd64":
+			if canon != "amd64" {
+				jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "主控仅提供 amd64 二进制，无法为 " + canonicalArchLabel(canon) + " 被控提供适配构建"})
+				return
+			}
+		case "arm64":
+			if canon != "arm64" {
+				jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "主控仅提供 arm64 二进制，无法为 " + canonicalArchLabel(canon) + " 被控提供适配构建"})
+				return
+			}
+		default:
+			// Unknown controller architecture: allow the download rather than
+			// hard-failing; the worker install script will verify the binary.
+		}
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -390,6 +573,17 @@ func HandleNodeBinary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename=eyvescloud`)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
 	_, _ = io.Copy(w, f)
+}
+
+func canonicalArchLabel(arch string) string {
+	switch arch {
+	case "amd64":
+		return "x86_64/amd64"
+	case "arm64":
+		return "aarch64/arm64"
+	default:
+		return arch
+	}
 }
 
 func handleNodeContainers(w http.ResponseWriter, r *http.Request, nodeID string) {

@@ -20,6 +20,10 @@ import PolicyManagement from './pages/PolicyManagement'
 import NodeManagement from './pages/NodeManagement'
 import Layout from './components/Layout'
 import Tenants from './pages/Tenants'
+import Regions from './pages/Regions'
+import IPGroups from './pages/IPGroups'
+import ISOs from './pages/ISOs'
+import MetricRetention from './pages/MetricRetention'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -77,6 +81,10 @@ function App() {
         <Route path="host-report" element={<HostReport />} />
         <Route path="sub-users" element={<SubUserManagement />} />
         <Route path="tenants" element={<Tenants />} />
+        <Route path="regions" element={<Regions />} />
+        <Route path="ip-groups" element={<IPGroups />} />
+        <Route path="isos" element={<ISOs />} />
+        <Route path="metric-retention" element={<MetricRetention />} />
         <Route path="settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

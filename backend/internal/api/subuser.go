@@ -914,8 +914,10 @@ func HandleSubUserList(w http.ResponseWriter, r *http.Request) {
 			AllowedImageIDs:      effectiveSubUserAllowedImageIDs(&su),
 			ImageLimitConfigured: su.ImageLimitConfigured,
 			CurrentImageIDs:      subUserCurrentImageIDs(&su),
+			// 访问码用于生成管理分享链接（产品设计，需在列表中提供）；
+			// 登录口令为一次性凭据，仅创建/轮换时返回，列表不回显已落库明文。
 			AccessCode:           su.AccessCode,
-			Password:             su.Password,
+			Password:             "",
 			CreatedAt:            su.CreatedAt,
 		}
 
