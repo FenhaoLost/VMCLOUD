@@ -802,6 +802,10 @@ func ReserveCreateNATPorts(cfg ContainerConfig) (int, func(), error) {
 	createNATReservationMu.Lock()
 	defer createNATReservationMu.Unlock()
 
+	if err := ValidateNATSubnetCapacity([]ContainerConfig{cfg}); err != nil {
+		return 0, nil, err
+	}
+
 	owner := createNATReservationOwner(cfg.Name)
 	requestedReservations := createNATReservationMappings(cfg, cfg.ManagementPort)
 	if queued, ok := queuedCreateNATReservations[owner]; ok {
@@ -834,11 +838,83 @@ func ReserveCreateNATPorts(cfg ContainerConfig) (int, func(), error) {
 	return activateCreateNATReservationLocked(managementPort, reservations)
 }
 
+// ValidateNATSubnetCapacity check that adding the planned containers will not
+// exhaust the NAT subnet DHCP address pool. LXC containers attach to lxcbr0 and
+// KVM containers to virbr0. The pool capacity scales with the configured subnet
+// (default /24 ~ 253 hosts; /22 ~ 1,022; /16 ~ 65,533). Opening many servers
+// beyond that limit would leave the newest containers without a routable IP
+// (link-local / duplicate), breaking WebSSH and egress.
+//
+// When the administrator explicitly enables NAT subnet oversubscription
+// (config.GetNATSubnetOversubscription), the hard guard is lifted so that a
+// batch can still be created over the address pool (e.g. enterprise overselling);
+// logs a warning instead. Default: protected.
+func ValidateNATSubnetCapacity(planned []ContainerConfig) error {
+	lxcAdded := 0
+	kvmAdded := 0
+	for _, cfg := range planned {
+		if !cfg.WantsNAT() {
+			continue // LAN-mode / no-NAT containers do not consume the NAT pool
+		}
+		if strings.EqualFold(strings.TrimSpace(cfg.Virtualization), config.VirtualizationKVM) {
+			kvmAdded++
+		} else {
+			lxcAdded++
+		}
+	}
+	if lxcAdded <= 0 && kvmAdded <= 0 {
+		return nil
+	}
+	if config.GetNATSubnetOversubscription() {
+		return nil
+	}
+
+	lxcUsed := 0
+	kvmUsed := 0
+	for i := range config.AppConfig.Containers {
+		c := &config.AppConfig.Containers[i]
+		if c.IsKVM() {
+			kvmUsed++
+		} else {
+			lxcUsed++
+		}
+	}
+
+	if lxcAdded > 0 {
+		net := config.LXCNATNetwork()
+		if lxcUsed+lxcAdded > net.DHCPMax {
+			return &SubnetExhaustionError{
+				Msg: fmt.Sprintf("LXC NAT 子网 %s 地址池不足: 已用 %d + 本次 %d > 容量 %d，请配置更大网段或开启 NAT 子网超售",
+					net.Subnet, lxcUsed, lxcAdded, net.DHCPMax),
+			}
+		}
+	}
+	if kvmAdded > 0 {
+		net := config.KVMNATNetwork()
+		if kvmUsed+kvmAdded > net.DHCPMax {
+			return &SubnetExhaustionError{
+				Msg: fmt.Sprintf("KVM NAT 子网 %s 地址池不足: 已用 %d + 本次 %d > 容量 %d，请配置更大网段或开启 NAT 子网超售",
+					net.Subnet, kvmUsed, kvmAdded, net.DHCPMax),
+			}
+		}
+	}
+	return nil
+}
+
+// SubnetExhaustionError 标识 NAT 子网地址池不足的明确错误。
+type SubnetExhaustionError struct{ Msg string }
+
+func (e *SubnetExhaustionError) Error() string { return e.Msg }
+
 // ReserveBatchCreateNATPorts resolves every automatic NAT port and reserves
 // the complete batch before any create task is enqueued.
 func ReserveBatchCreateNATPorts(configs []ContainerConfig) ([]ContainerConfig, error) {
 	createNATReservationMu.Lock()
 	defer createNATReservationMu.Unlock()
+
+	if err := ValidateNATSubnetCapacity(configs); err != nil {
+		return nil, err
+	}
 
 	planned := append([]ContainerConfig(nil), configs...)
 	addedOwners := make([]string, 0, len(planned))

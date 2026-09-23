@@ -1,7 +1,7 @@
 package version
 
 var (
-	Version = "1.1.32"
+	Version = "1.1.33"
 	Repo    = "FenhaoLost/VMCLOUD"
 )
 

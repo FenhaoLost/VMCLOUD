@@ -1372,7 +1372,7 @@ export default function ContainerDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Panel
           title="连接信息"
-          extra={!isWindows && !isSubUserPolicyBlocked ? (
+          extra={!isWindows && !isSubUserPolicyBlocked && !readOnly ? (
             <button
               onClick={openResetPassword}
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-100 hover:text-black"

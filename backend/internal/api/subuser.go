@@ -802,9 +802,7 @@ func activeSubUserContainerUUIDs(su *config.SubUser) []string {
 	uuids := make([]string, 0, len(su.ContainerUUIDs))
 	// 租户绑定：可访问该租户下全部容器
 	if strings.TrimSpace(su.Tenant) != "" {
-		config.AppConfigMu.RLock()
-		containers := append([]config.Container(nil), config.AppConfig.Containers...)
-		config.AppConfigMu.RUnlock()
+		containers := config.GetContainers()
 		for _, c := range containers {
 			if strings.TrimSpace(c.Tenant) == strings.TrimSpace(su.Tenant) && c.UUID != "" {
 				uuids = appendUniqueString(uuids, c.UUID)
@@ -1088,6 +1086,10 @@ func HandleSubUserAction(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				cfg.SubUsers[i].Role = role
+				// 角色变更强制其既有 token 失效并重新登录，确保降级立即生效，
+				// 避免旧 operator token 在 24h 内仍持有写权限。
+				cfg.SubUsers[i].Token = ""
+				cfg.SubUsers[i].TokenVersion++
 				updated = cfg.SubUsers[i]
 				return
 			}

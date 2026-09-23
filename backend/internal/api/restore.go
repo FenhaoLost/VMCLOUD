@@ -60,7 +60,7 @@ func RestoreHostBootState() {
 
 	lxcManager := lxc.NewManager()
 	kvmManager := kvm.NewManager()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 
 	for _, c := range containers {
 		if !c.RestoreOnHostBoot {

@@ -192,7 +192,7 @@ func (ss *SecurityScanner) alertCount() int {
 
 func (ss *SecurityScanner) checkAllContainers() {
 	config.AppConfigMu.RLock()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	arpEnabled := config.AppConfig.ARPProtectionEnabled
 	config.AppConfigMu.RUnlock()
 	for _, c := range containers {

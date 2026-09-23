@@ -730,6 +730,36 @@ export const getTaskQueueSettings = () =>
 export const updateTaskQueueSettings = (concurrency: number) =>
   api.put<APIResponse<TaskQueueSettings>>('/task-queue/settings', { concurrency })
 
+export interface OvercommitSettings {
+  memory_overcommit_enabled: boolean
+  memory_overcommit_ratio: number
+  physical_ram_mb: number
+  allocatable_ram_mb: number
+  nat_subnet_oversubscription: boolean
+  disk_overcommit_ratio: number
+  physical_disk_gb: number
+  disk_allocatable_gb: number
+  ksm_tuning: {
+    enabled: boolean
+    pages_to_scan: number
+    sleep_millisecs: number
+    use_tune_ksm: boolean
+  }
+  notes: string
+}
+
+export const getOvercommitSettings = () =>
+  api.get<APIResponse<OvercommitSettings>>('/overcommit/settings')
+
+export const updateOvercommitSettings = (payload: {
+  memory_overcommit_enabled: boolean
+  memory_overcommit_ratio: number
+  nat_subnet_oversubscription: boolean
+  disk_overcommit_ratio: number
+  ksm_tuning: { enabled: boolean; pages_to_scan: number; sleep_millisecs: number; use_tune_ksm: boolean }
+}) =>
+  api.put<APIResponse<OvercommitSettings>>('/overcommit/settings', payload)
+
 export interface SSLCertificateInfo {
   subject: string
   issuer: string

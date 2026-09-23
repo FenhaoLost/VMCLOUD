@@ -1,5 +1,5 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useState } from 'react'
-import { Bell, Clock, Copy, Database, Download, Gauge, Globe, KeyRound, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Smartphone, Terminal, Trash2, Upload, UserCog } from 'lucide-react'
+import { Bell, Clock, Copy, Database, Download, Gauge, Globe, KeyRound, ListTodo, Lock, LogIn, Minus, Monitor, Plus, RefreshCw, Save, Shield, ShieldCheck, Smartphone, Terminal, Trash2, TrendingUp, Upload, UserCog } from 'lucide-react'
 import {
   BackupRecord,
   changePassword,
@@ -13,6 +13,7 @@ import {
   getBackupSettings,
   getHealthDetail,
   getLoginLogs,
+  getOvercommitSettings,
   getNotificationSettings,
   getPanelAccessPolicy,
   getRateLimitSettings,
@@ -29,11 +30,13 @@ import {
   updateRateLimitSettings,
   LoginLog,
   NotificationSettings,
+  OvercommitSettings,
   PanelAccessPolicy,
   SSLSettings,
   TaskQueueSettings,
   testNotification,
   updateNotificationSettings,
+  updateOvercommitSettings,
   updateTaskQueueSettings,
   updateSSLSettings,
   updatePanelAccessPolicy,
@@ -44,7 +47,7 @@ import { useDialog } from '../components/Dialog'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 
-type SettingsSection = 'tasks' | 'account' | 'security' | 'audit' | 'backup' | 'ratelimit' | 'access' | 'webssh' | 'ssl' | 'logs' | 'notify'
+type SettingsSection = 'tasks' | 'account' | 'security' | 'audit' | 'backup' | 'ratelimit' | 'access' | 'webssh' | 'ssl' | 'logs' | 'notify' | 'overcommit'
 
 const settingsSections = [
   { id: 'tasks', label: '任务队列', icon: ListTodo },
@@ -57,6 +60,7 @@ const settingsSections = [
   { id: 'webssh', label: 'WebSSH 访问', icon: Terminal },
   { id: 'ssl', label: 'SSL 证书', icon: ShieldCheck },
   { id: 'notify', label: '告警推送', icon: Bell },
+  { id: 'overcommit', label: '资源超售', icon: TrendingUp },
   { id: 'logs', label: '登录日志', icon: LogIn },
 ] as const
 
@@ -137,6 +141,10 @@ export default function Settings() {
   const [smtpPasswordSet, setSMTPPasswordSet] = useState(false)
   const [savingNotify, setSavingNotify] = useState(false)
   const [testingNotify, setTestingNotify] = useState(false)
+
+  // 资源超售
+  const [overcommit, setOvercommit] = useState<OvercommitSettings | null>(null)
+  const [savingOvercommit, setSavingOvercommit] = useState(false)
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -285,6 +293,18 @@ export default function Settings() {
     }
   }, [])
 
+  const fetchOvercommit = useCallback(async () => {
+    try {
+      const res = await getOvercommitSettings()
+      const data = res.data.data
+      if (data) setOvercommit(data)
+      else setOvercommit(null)
+    } catch (err) {
+      console.error(err)
+      setOvercommit(null)
+    }
+  }, [])
+
   useEffect(() => {
     fetchLogs()
     fetchSSL()
@@ -297,13 +317,14 @@ export default function Settings() {
     fetchBackup()
     fetchRateLimit()
     fetchHealth()
+    fetchOvercommit()
     const logTimer = setInterval(fetchLogs, 15000)
     const taskTimer = setInterval(fetchTaskQueue, 5000)
     return () => {
       clearInterval(logTimer)
       clearInterval(taskTimer)
     }
-  }, [fetch2FA, fetchAccessPolicy, fetchAudit, fetchBackup, fetchHealth, fetchLogs, fetchNotifications, fetchRateLimit, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
+  }, [fetch2FA, fetchAccessPolicy, fetchAudit, fetchBackup, fetchHealth, fetchLogs, fetchNotifications, fetchOvercommit, fetchRateLimit, fetchSSL, fetchTaskQueue, fetchWebSSHOrigins])
 
   const handleSaveTaskQueue = async () => {
     const concurrency = Math.max(1, Math.min(16, Math.round(taskConcurrency || 1)))
@@ -623,6 +644,26 @@ export default function Settings() {
     }
   }
 
+  const handleSaveOvercommit = async (payload: {
+    memory_overcommit_enabled: boolean
+    memory_overcommit_ratio: number
+    nat_subnet_oversubscription: boolean
+    disk_overcommit_ratio: number
+    ksm_tuning: { enabled: boolean; pages_to_scan: number; sleep_millisecs: number; use_tune_ksm: boolean }
+  }) => {
+    setSavingOvercommit(true)
+    try {
+      const res = await updateOvercommitSettings(payload)
+      const data = res.data.data
+      if (data) setOvercommit(data)
+      dialog.alert('完成', '资源超售设置已保存')
+    } catch (err: unknown) {
+      dialog.alert('失败', apiError(err))
+    } finally {
+      setSavingOvercommit(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -840,6 +881,14 @@ export default function Settings() {
               onSMTPToChange={setSMTPTo}
               onSave={handleSaveNotifications}
               onTest={handleTestNotification}
+            />
+          )}
+
+          {activeSection === 'overcommit' && (
+            <OvercommitCard
+              settings={overcommit}
+              saving={savingOvercommit}
+              onSave={handleSaveOvercommit}
             />
           )}
         </section>
@@ -1897,5 +1946,196 @@ function SendIcon({ className = '' }: { className?: string }) {
       <path d="m22 2-7 20-4-9-9-4Z" />
       <path d="M22 2 11 13" />
     </svg>
+  )
+}
+
+interface OvercommitCardProps {
+  settings: OvercommitSettings | null
+  saving: boolean
+  onSave: (payload: {
+    memory_overcommit_enabled: boolean
+    memory_overcommit_ratio: number
+    nat_subnet_oversubscription: boolean
+    disk_overcommit_ratio: number
+    ksm_tuning: { enabled: boolean; pages_to_scan: number; sleep_millisecs: number; use_tune_ksm: boolean }
+  }) => void
+}
+
+function OvercommitCard(props: OvercommitCardProps) {
+  const [draft, setDraft] = useState<OvercommitSettings | null>(null)
+
+  useEffect(() => {
+    if (props.settings && !draft) setDraft(props.settings)
+  }, [props.settings, draft])
+
+  if (!draft) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+        <p className="text-sm text-gray-400">资源超售设置尚未加载</p>
+      </div>
+    )
+  }
+
+  const set = (patch: Partial<OvercommitSettings>) => setDraft((prev) => (prev ? { ...prev, ...patch } : prev))
+  const setKSM = (patch: Partial<OvercommitSettings['ksm_tuning']>) =>
+    setDraft((prev) => (prev ? { ...prev, ksm_tuning: { ...prev.ksm_tuning, ...patch } } : prev))
+  const setBounded = (value: number) => set({ memory_overcommit_ratio: Math.max(1, Math.min(16, value)) })
+  const setDiskBounded = (value: number) => set({ disk_overcommit_ratio: Math.max(1, Math.min(100, value)) })
+
+  const toggleRow = (
+    enabled: boolean,
+    onChange: (value: boolean) => void,
+    title: string,
+    subtitle: string
+  ) => (
+    <div className="flex items-center justify-between gap-4 border-y border-gray-100 py-3 dark:border-gray-800">
+      <div>
+        <div className="text-sm font-medium text-gray-800 dark:text-gray-200">{title}</div>
+        <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{subtitle}</div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        onClick={() => onChange(!enabled)}
+        className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full border transition-colors ${enabled ? 'border-black bg-black dark:border-white dark:bg-white' : 'border-gray-300 bg-gray-300 dark:border-gray-600 dark:bg-gray-700'}`}
+      >
+        <span className={`pointer-events-none absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-5 dark:bg-gray-900' : 'translate-x-0 dark:bg-gray-200'}`} />
+      </button>
+    </div>
+  )
+
+  const handleSave = () => {
+    props.onSave({
+      memory_overcommit_enabled: draft.memory_overcommit_enabled,
+      memory_overcommit_ratio: draft.memory_overcommit_ratio,
+      nat_subnet_oversubscription: draft.nat_subnet_oversubscription,
+      disk_overcommit_ratio: draft.disk_overcommit_ratio,
+      ksm_tuning: {
+        enabled: draft.ksm_tuning.enabled,
+        pages_to_scan: draft.ksm_tuning.pages_to_scan,
+        sleep_millisecs: draft.ksm_tuning.sleep_millisecs,
+        use_tune_ksm: draft.ksm_tuning.use_tune_ksm,
+      },
+    })
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
+      <div className="mb-4">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-black dark:text-white">
+          <TrendingUp className="h-4 w-4" />资源超售
+        </h2>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">内存、磁盘与 NAT 子网的超额分配及 KSM 内存去重调优</p>
+      </div>
+
+      {toggleRow(
+        draft.memory_overcommit_enabled,
+        (v) => set({ memory_overcommit_enabled: v }),
+        '启用内存超售',
+        '按超售比向租户超额分配内存'
+      )}
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">内存超售比（1.0~16.0）</label>
+          <input
+            type="number"
+            min={1}
+            max={16}
+            step={0.5}
+            value={draft.memory_overcommit_ratio}
+            onChange={(e) => setBounded(Number(e.target.value) || 1)}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+          />
+        </div>
+        <div className="rounded-md border border-gray-100 bg-gray-50 p-3 text-xs dark:border-gray-800 dark:bg-gray-950">
+          <span className="text-gray-500 dark:text-gray-400">物理内存</span>
+          <div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{draft.physical_ram_mb} MB</div>
+        </div>
+        <div className="rounded-md border border-gray-100 bg-gray-50 p-3 text-xs dark:border-gray-800 dark:bg-gray-950">
+          <span className="text-gray-500 dark:text-gray-400">可分配内存</span>
+          <div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{draft.allocatable_ram_mb} MB</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">磁盘超售比（1.0~100.0）</label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            step={1}
+            value={draft.disk_overcommit_ratio}
+            onChange={(e) => setDiskBounded(Number(e.target.value) || 1)}
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black dark:border-gray-700 dark:bg-gray-950 dark:text-white"
+          />
+        </div>
+        <div className="rounded-md border border-gray-100 bg-gray-50 p-3 text-xs dark:border-gray-800 dark:bg-gray-950">
+          <span className="text-gray-500 dark:text-gray-400">物理磁盘</span>
+          <div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{draft.physical_disk_gb} GB</div>
+        </div>
+        <div className="rounded-md border border-gray-100 bg-gray-50 p-3 text-xs dark:border-gray-800 dark:bg-gray-950">
+          <span className="text-gray-500 dark:text-gray-400">可分配磁盘</span>
+          <div className="mt-0.5 font-mono text-gray-800 dark:text-gray-200">{draft.disk_allocatable_gb} GB</div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        {toggleRow(
+          draft.nat_subnet_oversubscription,
+          (v) => set({ nat_subnet_oversubscription: v }),
+          'NAT 子网超售',
+          '允许超出物理网络容量分配 NAT 子网'
+        )}
+      </div>
+
+      <div className="mt-4 rounded-md border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+        {toggleRow(
+          draft.ksm_tuning.enabled,
+          (v) => setKSM({ enabled: v }),
+          'KSM 调优',
+          '启用内核同页合并以回收重复内存页'
+        )}
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">pages_to_scan（每周期扫描页数）</label>
+            <input
+              type="number"
+              min={0}
+              value={draft.ksm_tuning.pages_to_scan}
+              onChange={(e) => setKSM({ pages_to_scan: Number(e.target.value) })}
+              disabled={!draft.ksm_tuning.enabled}
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-gray-500 dark:text-gray-400">sleep_millisecs（扫描间隔毫秒）</label>
+            <input
+              type="number"
+              min={0}
+              value={draft.ksm_tuning.sleep_millisecs}
+              onChange={(e) => setKSM({ sleep_millisecs: Number(e.target.value) })}
+              disabled={!draft.ksm_tuning.enabled}
+              className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-950 dark:text-white dark:disabled:bg-gray-800 dark:disabled:text-gray-500"
+            />
+          </div>
+        </div>
+      </div>
+
+      {draft.notes && (
+        <p className="mt-4 rounded-md border border-gray-100 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+          {draft.notes}
+        </p>
+      )}
+
+      <div className="mt-4 flex justify-end">
+        <button onClick={handleSave} disabled={props.saving} className="inline-flex items-center justify-center gap-2 rounded-md bg-black px-4 py-2 text-sm text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-gray-200">
+          <Save className="h-4 w-4" />
+          {props.saving ? '保存中...' : '保存超售设置'}
+        </button>
+      </div>
+    </div>
   )
 }

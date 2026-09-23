@@ -24,7 +24,9 @@ func (m *Manager) CreateSnapshot(id int, createdBy string, scheduled bool, rotat
 	if c == nil {
 		return config.Snapshot{}, fmt.Errorf("container not found: %d", id)
 	}
-	if scheduled && rotateLimit > 0 {
+	// keep-N 保留：无论手动或定时快照，只要达到保留上限就淘汰最旧的，
+	// 防止快照无限增长耗尽快照存储池。rotateLimit 由调用方根据容器配额决定。
+	if rotateLimit > 0 {
 		for {
 			existing := config.ContainerSnapshots(id)
 			if len(existing) < rotateLimit {
@@ -214,7 +216,7 @@ func (m *Manager) StartSnapshotScheduler() {
 
 func (m *Manager) runDueSnapshotSchedules() {
 	now := time.Now()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	for _, c := range containers {
 		if c.IsKVM() || !c.SnapshotScheduleEnabled {
 			continue

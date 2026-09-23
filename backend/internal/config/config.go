@@ -984,6 +984,13 @@ type EyvescloudConfig struct {
 	MemoryOvercommitRatio float64                `json:"memory_overcommit_ratio"` // 内存超售比：可分配内存 = 物理内存 × 该值（1.0=不变，2.0=2倍）
 	MemoryOvercommitEnabled bool                `json:"memory_overcommit_enabled"` // 是否启用内存超售（默认关闭，保守）
 	KSMTuning            KSMTuningConfig        `json:"ksm_tuning"`
+	// NATSubnetOversubscription 允许容器数量超过 NAT 子网 DHCP 地址池容量。
+	// 企业超售几千台时需配合更大的 NAT 网段（如 /22 ~ /16）；开启后不再硬性拦截
+	// 地址耗尽，新容器可能拿不到正常内网 IP，故默认关闭（保守，不易出问题）。
+	NATSubnetOversubscription bool `json:"nat_subnet_oversubscription"`
+	// DiskOvercommitRatio 磁盘超售比：磁盘累计配额上限 = 宿主磁盘总量 × 该值（1.0=不超售）。
+	// 用于企业大批量开通时放宽磁盘配额校验，默认 1.0 不超售。
+	DiskOvercommitRatio float64 `json:"disk_overcommit_ratio"`
 }
 
 // KSMTuningConfig 控制 Linux KSM（Kernel Samepage Merging）调优，用于在内存超售
@@ -1239,6 +1246,8 @@ func InitConfig() (*EyvescloudConfig, error) {
 			SleepMillisecs: 20,
 			UseTuneKSM:     true,
 		},
+		NATSubnetOversubscription: false,
+		DiskOvercommitRatio:       1.0,
 	}
 
 	if err := SaveConfig(); err != nil {
@@ -1970,6 +1979,16 @@ func BackupDirectory() string {
 	return filepath.Join(getDataDir(), "backups")
 }
 
+// GetContainers returns a snapshot (deep copy) of the active container list.
+// Background goroutines (expiry scanner, usage monitor, policy engine, metric
+// sampler, snapshot scheduler, ...) MUST call this instead of slicing
+// AppConfig.Containers directly, so reads never race with concurrent writers.
+func GetContainers() []Container {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return append([]Container(nil), AppConfig.Containers...)
+}
+
 // GetAPIRateLimit returns a snapshot of the versioned-API rate-limit config.
 func GetAPIRateLimit() APIRateLimitConfig {
 	AppConfigMu.RLock()
@@ -2006,6 +2025,23 @@ func GetMemoryOvercommit() (enabled bool, ratio float64) {
 		return AppConfig.MemoryOvercommitEnabled, 1.0
 	}
 	return AppConfig.MemoryOvercommitEnabled, AppConfig.MemoryOvercommitRatio
+}
+
+// GetNATSubnetOversubscription 返回是否允许 NAT 子网地址超售（容器数量超过 DHCP 池容量）。
+func GetNATSubnetOversubscription() bool {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	return AppConfig != nil && AppConfig.NATSubnetOversubscription
+}
+
+// GetDiskOvercommitRatio 返回磁盘超售比（>=1，1 表示不超售）。
+func GetDiskOvercommitRatio() float64 {
+	AppConfigMu.RLock()
+	defer AppConfigMu.RUnlock()
+	if AppConfig == nil || AppConfig.DiskOvercommitRatio < 1.0 {
+		return 1.0
+	}
+	return AppConfig.DiskOvercommitRatio
 }
 
 // GetKSMTuning returns a snapshot of the KSM tuning configuration.

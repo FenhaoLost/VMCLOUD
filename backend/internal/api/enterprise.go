@@ -663,7 +663,7 @@ func HandleTenants(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		config.AppConfigMu.RLock()
 		tenants := append([]config.Tenant(nil), config.AppConfig.Tenants...)
-		containers := append([]config.Container(nil), config.AppConfig.Containers...)
+		containers := config.GetContainers()
 		config.AppConfigMu.RUnlock()
 		if tenants == nil {
 			tenants = []config.Tenant{}
@@ -791,7 +791,7 @@ func HandleTenantItem(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		// 仅允许删除空租户（未绑定任何容器）。
 		config.AppConfigMu.RLock()
-		containers := append([]config.Container(nil), config.AppConfig.Containers...)
+		containers := config.GetContainers()
 		config.AppConfigMu.RUnlock()
 		for _, c := range containers {
 			if c.Tenant == id {
@@ -862,7 +862,7 @@ func checkTenantQuota(tenantID string, vcpu float64, ramMB int, diskGB float64) 
 			break
 		}
 	}
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 	if !found {
 		return fmt.Errorf("租户 %q 不存在", tenantID)

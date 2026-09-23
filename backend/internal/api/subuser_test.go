@@ -55,3 +55,55 @@ func TestFilterSubUserLoginLogsExactMatch(t *testing.T) {
 		t.Fatalf("got %+v, want only exact 'alice'", got)
 	}
 }
+
+// TestSubUserScopeAllowedViewerReadOnly 保障只读(viewer)子用户不能执行密码重置、
+// 重装、电源控制、网络等写操作，仅保留读类与连接类能力；operator 不受限制。
+func TestSubUserScopeAllowedViewerReadOnly(t *testing.T) {
+	writeScopes := []string{
+		"container:password",
+		"container:power",
+		"container:reinstall",
+		"container:network",
+		"snapshot:create",
+		"snapshot:delete",
+		"snapshot:restore",
+		"snapshot:schedule",
+	}
+	readScopes := []string{
+		"container:read",
+		"dashboard:read",
+		"image:read",
+		"task:read",
+		"snapshot:read",
+		"terminal:ssh",
+		"terminal:vnc",
+	}
+
+	// viewer：所有写 scope 必须拒绝
+	for _, scope := range writeScopes {
+		if subUserScopeAllowed(scope, "viewer") {
+			t.Errorf("viewer must NOT be granted write scope %q", scope)
+		}
+	}
+	// viewer：所有读 scope 必须放行
+	for _, scope := range readScopes {
+		if !subUserScopeAllowed(scope, "viewer") {
+			t.Errorf("viewer must be granted read scope %q", scope)
+		}
+	}
+
+	// operator：写 scope 与读 scope 均应放行
+	for _, scope := range append(append([]string{}, writeScopes...), readScopes...) {
+		if !subUserScopeAllowed(scope, "operator") {
+			t.Errorf("operator must be granted scope %q", scope)
+		}
+	}
+	// 空角色按 operator 处理
+	if !subUserScopeAllowed("container:password", "") {
+		t.Errorf("empty role should default to operator and allow password reset")
+	}
+	// 管理员专属 scope 一律拒绝子用户
+	if subUserScopeAllowed("admin:access", "operator") {
+		t.Errorf("sub-user must never hold admin scope")
+	}
+}

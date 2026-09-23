@@ -43,6 +43,31 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// AdminRoute 仅允许内置管理员访问；子用户（含仅授权容器）越权直达管理路由时
+// 重定向到其容器视图，避免出现空管理员页面或泄露入口。数据接口仍由后端 scope 兜底。
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading, isSubUser, containerIdentifiers } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-gray-950">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-black dark:border-white"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+
+  if (isSubUser) {
+    const firstContainer = containerIdentifiers[0]
+    return <Navigate to={firstContainer ? `/container/${encodeURIComponent(firstContainer)}` : '/containers'} replace />
+  }
+
+  return <>{children}</>
+}
+
 function HomeRoute() {
   const { isSubUser, containerIdentifiers } = useAuth()
   if (isSubUser) {
@@ -66,26 +91,26 @@ function App() {
       >
         <Route index element={<HomeRoute />} />
         <Route path="containers" element={<Containers />} />
-        <Route path="images" element={<ImageManagement />} />
         <Route path="container/:id" element={<ContainerDetail />} />
 
-        <Route path="security" element={<Security />} />
-        <Route path="snapshots" element={<Snapshots />} />
-        <Route path="routing" element={<Routing />} />
-        <Route path="migration" element={<NodeMigration />} />
-        <Route path="nodes" element={<NodeManagement />} />
-        <Route path="policies" element={<PolicyManagement />} />
-        <Route path="storage" element={<Storage />} />
-        <Route path="audit-logs" element={<AuditLogs />} />
-        <Route path="api-integration" element={<ApiIntegration />} />
-        <Route path="host-report" element={<HostReport />} />
-        <Route path="sub-users" element={<SubUserManagement />} />
-        <Route path="tenants" element={<Tenants />} />
-        <Route path="regions" element={<Regions />} />
-        <Route path="ip-groups" element={<IPGroups />} />
-        <Route path="isos" element={<ISOs />} />
-        <Route path="metric-retention" element={<MetricRetention />} />
-        <Route path="settings" element={<Settings />} />
+        <Route path="images" element={<AdminRoute><ImageManagement /></AdminRoute>} />
+        <Route path="security" element={<AdminRoute><Security /></AdminRoute>} />
+        <Route path="snapshots" element={<AdminRoute><Snapshots /></AdminRoute>} />
+        <Route path="routing" element={<AdminRoute><Routing /></AdminRoute>} />
+        <Route path="migration" element={<AdminRoute><NodeMigration /></AdminRoute>} />
+        <Route path="nodes" element={<AdminRoute><NodeManagement /></AdminRoute>} />
+        <Route path="policies" element={<AdminRoute><PolicyManagement /></AdminRoute>} />
+        <Route path="storage" element={<AdminRoute><Storage /></AdminRoute>} />
+        <Route path="audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+        <Route path="api-integration" element={<AdminRoute><ApiIntegration /></AdminRoute>} />
+        <Route path="host-report" element={<AdminRoute><HostReport /></AdminRoute>} />
+        <Route path="sub-users" element={<AdminRoute><SubUserManagement /></AdminRoute>} />
+        <Route path="tenants" element={<AdminRoute><Tenants /></AdminRoute>} />
+        <Route path="regions" element={<AdminRoute><Regions /></AdminRoute>} />
+        <Route path="ip-groups" element={<AdminRoute><IPGroups /></AdminRoute>} />
+        <Route path="isos" element={<AdminRoute><ISOs /></AdminRoute>} />
+        <Route path="metric-retention" element={<AdminRoute><MetricRetention /></AdminRoute>} />
+        <Route path="settings" element={<AdminRoute><Settings /></AdminRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

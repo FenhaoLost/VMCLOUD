@@ -1139,7 +1139,9 @@ func (m *Manager) CreateSnapshot(id int, createdBy string, scheduled bool, rotat
 	if !c.IsKVM() {
 		return config.Snapshot{}, fmt.Errorf("container is not a KVM VM: %d", id)
 	}
-	if scheduled && rotateLimit > 0 {
+	// keep-N 保留：无论手动或定时快照，只要达到保留上限就淘汰最旧的，
+	// 防止快照无限增长耗尽快照存储池。与 LXC 侧保持一致的轮转语义。
+	if rotateLimit > 0 {
 		for {
 			existing := config.ContainerSnapshots(id)
 			if len(existing) < rotateLimit {
@@ -1343,7 +1345,7 @@ func (m *Manager) StartSnapshotScheduler() {
 
 func (m *Manager) runDueSnapshotSchedules() {
 	now := time.Now()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	for _, c := range containers {
 		if !c.IsKVM() || !c.SnapshotScheduleEnabled {
 			continue
@@ -3499,7 +3501,7 @@ func (m *Manager) AccumulateTraffic() {
 	// counter update through MutateContainerNoSave so the mutation is serialized
 	// with the expiry scanner, policy engine and HTTP handlers.
 	config.AppConfigMu.RLock()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 
 	for _, c := range containers {

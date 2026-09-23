@@ -42,11 +42,15 @@ export default function ImageManagement() {
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
   const [storageLoading, setStorageLoading] = useState(true)
   const [customModalOpen, setCustomModalOpen] = useState<'lxc' | 'kvm' | null>(null)
+  const [hasDownloads, setHasDownloads] = useState(false)
 
   const fetchImages = useCallback(async () => {
     try {
       const res = await getImages()
-      setImages(res.data.data || [])
+      const next = res.data.data || []
+      setImages(next)
+      // 用布尔态驱动轮询间隔，避免 images 每轮变化导致 interval 反复重建。
+      setHasDownloads(next.some((img: ImageInfo) => img.downloading))
       setError('')
     } catch {
       setError('获取镜像列表失败')
@@ -73,10 +77,9 @@ export default function ImageManagement() {
   }, [fetchImages, fetchStorage])
 
   useEffect(() => {
-    const hasDownloads = images.some((img) => img.downloading)
     const interval = setInterval(fetchImages, hasDownloads ? 1500 : 5000)
     return () => clearInterval(interval)
-  }, [fetchImages, images])
+  }, [fetchImages, hasDownloads])
 
   const handleDownload = async (templateId: string) => {
     setActionLoading(templateId)

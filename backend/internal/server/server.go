@@ -284,6 +284,21 @@ func setupRoutes(mux *http.ServeMux) {
 	}
 }
 
+// recoverPanicMiddleware 是全局 panic 兜底：任何 handler 抛出的 panic 都会被
+// 捕获并返回 500，而不是让整个 HTTP 服务进程崩掉。企业级服务不允许单个请求
+// 的异常拖垮整个面板/主控-被控链路。
+func recoverPanicMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("PANIC recovered on %s %s: %v", r.Method, r.URL.Path, rec)
+				http.Error(w, `{"success":false,"message":"internal server error"}`, http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 // limitRequestBody 限制请求体大小，防止超大请求体导致内存占用（DoS）。
 func limitRequestBody(next http.Handler) http.Handler {
 	const maxBodyBytes = 64 << 20            // 64 MiB
@@ -337,7 +352,7 @@ func Run() error {
 
 	server := &http.Server{
 		Addr:    addr,
-		Handler: limitRequestBody(panelAccessMiddleware(apiRateLimitMiddleware(mux))),
+		Handler: recoverPanicMiddleware(limitRequestBody(panelAccessMiddleware(apiRateLimitMiddleware(mux)))),
 	}
 
 	if sslEnabled() {

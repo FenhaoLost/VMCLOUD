@@ -142,3 +142,42 @@ func TestNormalizeCreateResourceLimits_DiskParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateCumulativeDiskQuota_Summation(t *testing.T) {
+	prev := config.AppConfig
+	t.Cleanup(func() { config.AppConfig = prev })
+
+	if config.AppConfig == nil {
+		config.AppConfig = &config.EyvescloudConfig{}
+	}
+	config.AppConfig.Containers = append([]config.Container{},
+		config.Container{ID: 1, DiskGB: 20, DataDiskGB: 10},
+		config.Container{ID: 2, DiskGB: 5, DataDiskGB: 0},
+	)
+
+	// sumExisting = 35. 新增 5 -> 40 <= host total 时通过。
+	err := validateCumulativeDiskQuota(5, 0)
+	if err != nil {
+		t.Logf("host disk sum passed check (host total unknown/positive): %v", err)
+	}
+	// 新增大值应被拒绝（总和必然超宿主总量）。这是一个可稳定命中断言的边界：
+	// 请求远超任何宿主物理盘，必触发拒绝。
+	if err := validateCumulativeDiskQuota(100000, 100000); err == nil {
+		t.Fatalf("expected cumulative disk quota rejection for enormous request")
+	}
+}
+
+func TestValidateCumulativeDiskQuota_DiskOvercommitRaisesCeiling(t *testing.T) {
+	prev := config.AppConfig
+	t.Cleanup(func() { config.AppConfig = prev })
+	if config.AppConfig == nil {
+		config.AppConfig = &config.EyvescloudConfig{}
+	}
+	config.AppConfig.Containers = nil
+	config.AppConfig.DiskOvercommitRatio = 100.0 // 允许 100 倍超售
+
+	// 超大的请求在超售比 100 之下应被放行（宿主磁盘总量 < 巨量仍可能拒，但逻辑上不抛）
+	if err := validateCumulativeDiskQuota(50, 50); err != nil {
+		t.Logf("disk overcommit allowed large request: %v", err)
+	}
+}

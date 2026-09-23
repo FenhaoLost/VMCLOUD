@@ -111,7 +111,9 @@ func createContainerSnapshot(w http.ResponseWriter, r *http.Request, containerID
 			return
 		}
 	}
-	snapshot, err := createSnapshotByRuntime(containerID, user, false, 0, req.StoragePoolID)
+	// keep-N：手动快照同样按容器保留配额（SnapshotLimit）轮转，防止无限快照耗尽快照存储。
+	limit := config.ContainerSnapshotLimit(config.FindContainer(containerID))
+	snapshot, err := createSnapshotByRuntime(containerID, user, false, limit, req.StoragePoolID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return

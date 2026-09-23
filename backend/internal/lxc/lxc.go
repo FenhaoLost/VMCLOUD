@@ -74,7 +74,7 @@ func (m *Manager) StartUsageMonitor() {
 // WarmRunningContainersSSH prepares sshd for containers that were already running
 // when eyvescloud started, such as after host boot or service restart.
 func (m *Manager) WarmRunningContainersSSH() {
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	for _, container := range containers {
 		c := container
 		if c.IsKVM() {
@@ -3609,7 +3609,7 @@ func (m *Manager) ImportExistingEyvescloudContainers() ([]config.Container, erro
 	existingLXCNames := make(map[string]bool)
 	config.AppConfigMu.RLock()
 	maxID := config.AppConfig.NextContainerID - 1
-	containersSnapshot := append([]config.Container(nil), config.AppConfig.Containers...)
+	containersSnapshot := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 	for _, c := range containersSnapshot {
 		existingIDs[c.ID] = true
@@ -4292,7 +4292,7 @@ func (m *Manager) AccumulateTraffic() {
 	defer lastTrafficSnapshotMu.Unlock()
 
 	config.AppConfigMu.RLock()
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 
 	changed := false

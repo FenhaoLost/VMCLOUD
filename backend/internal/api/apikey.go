@@ -131,6 +131,10 @@ func createApiKey(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().Format("2006-01-02 15:04:05")
 	scopes := normalizeRequestedScopes(req.Scopes, defaultApiKeyScopes)
+	if err := validateKeyGrantScopes(r, scopes); err != nil {
+		jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
 	key := config.ApiKeyConfig{
 		ID:             generateShortID(),
 		Name:           strings.TrimSpace(req.Name),
@@ -174,6 +178,14 @@ func updateApiKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var updated *config.ApiKeyConfig
+	// 若本次提交了新 scopes，先校验授予方是否有权授予（受限 Key 只能授予自身子集）。
+	if len(req.Scopes) > 0 {
+		newScopes := normalizeStringSlice(req.Scopes)
+		if err := validateKeyGrantScopes(r, newScopes); err != nil {
+			jsonResponse(w, http.StatusForbidden, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+	}
 	config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 		for i := range cfg.ApiKeys {
 			if cfg.ApiKeys[i].ID != keyID {
@@ -509,6 +521,43 @@ func normalizeRequestedScopes(scopes []string, fallback []string) []string {
 		return append([]string(nil), fallback...)
 	}
 	return result
+}
+
+// isManagementScope 判断 scope 是否属于管理员/管理面权限（不应由受限 API Key 授予）。
+func isManagementScope(scope string) bool {
+	scope = strings.TrimSpace(scope)
+	if scope == "*" || scope == "admin:access" || scope == "admin:*" {
+		return true
+	}
+	return strings.HasPrefix(scope, "apikey:") ||
+		strings.HasPrefix(scope, "admin:")
+}
+
+// validateKeyGrantScopes 校验当前调用方是否有权创建/更新一个携带 requested scopes 的 API Key。
+//   - 真管理员会话(authTypeAdmin)：可授予任意 scope。
+//   - 受限 API Key / 子用户：只能授予其自身已拥有 scope 的子集，且禁止授予管理类 scope，
+//     防止 apikey:create/update 权限被滥用为自我提权到 "*" / "admin:access"。
+func validateKeyGrantScopes(r *http.Request, requested []string) error {
+	ctx, ok := authContextFromRequest(r)
+	if !ok {
+		return fmt.Errorf("无法识别授予方身份")
+	}
+	if ctx.Type == authTypeAdmin {
+		return nil
+	}
+	callerScopes := []string(append([]string{}, ctx.Scopes...))
+	for _, scope := range requested {
+		if isManagementScope(scope) {
+			return fmt.Errorf("禁止授予管理类权限 %q：仅管理员可创建/更新此类作用域", scope)
+		}
+		if ctx.Type == authTypeAPIKey {
+			allowed := scopeAllowed(callerScopes, scope)
+			if !allowed {
+				return fmt.Errorf("无权授予超出自身权限的作用域 %q：受限 API Key 只能授予自己已拥有作用域的子集", scope)
+			}
+		}
+	}
+	return nil
 }
 
 func normalizeStringSlice(values []string) []string {

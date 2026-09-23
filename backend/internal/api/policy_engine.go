@@ -40,7 +40,7 @@ func seedPolicyLastTrigger() {
 	}
 	config.AppConfigMu.RLock()
 	rules := append([]config.PolicyRule(nil), config.AppConfig.PolicyRules...)
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 	policyTriggerMu.Lock()
 	defer policyTriggerMu.Unlock()
@@ -75,7 +75,7 @@ func evaluatePolicyRules() {
 	// (HTTP handlers, metric samplers) cannot tear the slices being evaluated.
 	config.AppConfigMu.RLock()
 	rules := append([]config.PolicyRule(nil), config.AppConfig.PolicyRules...)
-	containers := append([]config.Container(nil), config.AppConfig.Containers...)
+	containers := config.GetContainers()
 	config.AppConfigMu.RUnlock()
 	now := time.Now()
 

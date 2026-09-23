@@ -551,3 +551,28 @@ Mofang 模块是独立高风险面（webssh.php 无鉴权任意 WebSocket 代理
   - `containerIPLooksUnusable()` 统一判定 link-local/loopback/unspecified 地址族，避免用不可路由地址去连。
 - 该改动使后续新开容器即使 DHCP 暂未完成，也不会再"假死"在 preparing 界面；连接失败会给出真实错误而非无限等待。
 - 验证：`go build ./...`、`go vet ./internal/api`、`go test -race ./internal/api` 全绿。
+
+## 十六轮复核（全量源码再审计 + 并发/竞态治理，v1.1.33，2026-09-23）
+
+> 按「以后发布更新版本」的要求做全量再审计，重点收敛前一版残留的后端基础设施风险与前端状态一致性问题。冷链 `go build / go vet / go test -race ./...`、前端 `tsc --noEmit` + `vite build` 全绿。
+
+### 后端并发/竞态治理
+| 编号 | 级别 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| B1 | 高 | **后台 goroutine 无锁读 `AppConfig.Containers`**：expiry 扫描、usage 监控、policy engine、指标采样、快照调度、节点冷备份、host-boot restore 等 17 处 `append([]config.Container(nil), config.AppConfig.Containers...)` 未持锁读取共享切片，与并发写（创建/删除/迁移改写切片）形成数据竞争。 | ✅ 修：新增 `config.GetContainers()`（持有 `AppConfigMu.RLock` 的深拷贝快照），17 处全部改走它；对先前额外包了 `AppConfigMu.RLock` 的 2 处（`subuser.go`/`container_metrics.go`）去掉重复加锁（避免嵌套 RLock）。 |
+| B2 | 中 | **手动快照不 keep-N**：`CreateSnapshot` 仅在 `scheduled && rotateLimit>0` 时轮转，手动（`scheduled=false`）快照永不清理，无限增长耗尽快照池；KVM 侧亦同。 | ✅ 修：轮转条件改为 `rotateLimit>0`（不论手动/定时）；`snapshots.go` 手动快照以容器保留配额 `ContainerSnapshotLimit` 作为 rotateLimit。保留备份流程的临时快照不受影响（其自带即时回收）。 |
+| B3 | 中 | **无全局 panic recover**：任一 handler panic 会让整个 HTTP 服务进程崩溃，拖垮面板与主控-被控链路。 | ✅ 修：`server.go` 新增 `recoverPanicMiddleware`，包在最外层，捕获 panic 记日志并回 500。 |
+
+### 前端状态一致性
+| 编号 | 级别 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| F1 | 中 | **刷新后仅凭 JWT claims 重建角色**：`/check-auth` 只回 `success`，前端靠 `atob` 解本地 JWT 判断 `isSubUser/isReadOnly`，角色已变更（如 viewer→operator）刷新后旧 claims 仍生效。 | ✅ 修：`HandleCheckAuth` 以 `authContextFromRequest` 为准返回 `type/role/container_uuids/permission_scopes`；`AuthContext.tsx` 刷新时优先采纳服务端返回，校验失败才回退本地 JWT。 |
+| F2 | 低 | **logout 未重置 `isReadOnly`**：登出只清 token、未复位只读态，残留 viewer 限制影响下一次登录。 | ✅ 修：`logout` 显式 `setIsReadOnly(false)`。 |
+| F3 | 低 | **轮询 interval 反复重建**：`Containers.tsx` 的 `fetchTasks` 依赖 `containers`（每轮变化），`ImageManagement.tsx` 的 interval 依赖 `images` 数组，导致 setInterval 被反复 clear/re-create，放大请求 + 抖动。 | ✅ 修：`Containers` 用 `containersRef` 镜像供 `syncQueuedCreates` 读取、`fetchTasks` 依赖收敛为空；`ImageManagement` 用布尔 `hasDownloads` 驱动 interval。 |
+
+### 验证
+- `go build ./...`、`go vet ./...`、`go test -race ./...` 全绿（无数据竞争、无死锁）。
+- 前端 `tsc --noEmit` 与 `vite build` 通过。
+- 版本号 `1.1.32 → 1.1.33`（`version.go` / `frontend/package.json`）。
+
+> 说明：`FindContainer`/`FindContainerByUUID` 等在锁内返回共享指针（`RLock` 内取值、返回指针）的既有设计仍属「读-写分离约定」：写入一律经 `MutateContainer*`/`UpdateContainer*` 锁内完成。本轮将**后台只读快照**统一收敛到 `GetContainers()`，消除了最主要的高频竞态面。

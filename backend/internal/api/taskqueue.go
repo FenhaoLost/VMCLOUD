@@ -754,6 +754,8 @@ func HandleBatchCreate(w http.ResponseWriter, r *http.Request) {
 	activeCreateNames := globalQueue.ActiveCreateNames()
 	requestNames := make(map[string]bool)
 	requestNATPorts := make(map[string]string)
+	var batchDiskSum float64
+	var batchDataDiskSum float64
 	for i := range req.Containers {
 		name := strings.TrimSpace(req.Containers[i].Name)
 		req.Containers[i].Name = name
@@ -868,6 +870,12 @@ func HandleBatchCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		requestNames[name] = true
+		batchDiskSum += req.Containers[i].DiskGB
+		batchDataDiskSum += req.Containers[i].DataDiskGB
+	}
+	if err := validateCumulativeDiskQuota(batchDiskSum, batchDataDiskSum); err != nil {
+		jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: "batch: " + err.Error()})
+		return
 	}
 	planned, err := lxc.ReserveBatchCreateNATPorts(req.Containers)
 	if err != nil {

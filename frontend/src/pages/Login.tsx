@@ -26,9 +26,14 @@ export default function Login() {
 
   // Check for access code in URL
   const urlParams = new URLSearchParams(window.location.search)
-  const accessCode = urlParams.get('code') || ''
+  const urlAccessCode = urlParams.get('code') || ''
 
-  const isAccessCodeLogin = !!accessCode
+  const isAccessCodeLogin = !!urlAccessCode
+  // 用户可手动在登录页输入访问码进入「容器管理（子用户）」登录
+  const [inputCodeMode, setInputCodeMode] = useState(isAccessCodeLogin)
+  const [inputCode, setInputCode] = useState(urlAccessCode)
+  const effectiveAccessCode = isAccessCodeLogin ? urlAccessCode : inputCode
+  const effectiveIsAccessCode = isAccessCodeLogin || inputCodeMode
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -36,8 +41,8 @@ export default function Login() {
     setLoading(true)
 
     try {
-      if (isAccessCodeLogin) {
-        await accessCodeLogin(accessCode, password)
+      if (effectiveIsAccessCode) {
+        await accessCodeLogin(effectiveAccessCode, password)
       } else if (twoFARequired) {
         await loginWith2FA(username, password, twoFACode)
       } else {
@@ -56,7 +61,7 @@ export default function Login() {
         setTwoFACode('')
         setError(t('账户已启用两步验证，请输入 6 位动态口令'))
       } else if (error.response?.status === 401) {
-        setError(t(isAccessCodeLogin ? '访问码或密码错误' : '用户名或密码或验证码错误'))
+        setError(t(effectiveIsAccessCode ? '访问码或密码错误' : '用户名或密码或验证码错误'))
       } else {
         setError(data?.message || t('登录失败，请检查用户名和密码'))
       }
@@ -66,6 +71,13 @@ export default function Login() {
   }
 
   const handleBackToCredentials = () => {
+    setTwoFARequired(false)
+    setTwoFACode('')
+    setError('')
+  }
+
+  const toggleAccessCodeMode = () => {
+    setInputCodeMode((prev) => !prev)
     setTwoFARequired(false)
     setTwoFACode('')
     setError('')
@@ -90,7 +102,7 @@ export default function Login() {
                 <AppIcon className="w-10 h-10" />
               </div>
               <h1 className="text-2xl font-bold text-brand-600">EyvesCloud</h1>
-              <p className="text-gray-500 mt-1 text-sm">{isAccessCodeLogin ? '容器管理登录' : '云容器管理平台'}</p>
+              <p className="text-gray-500 mt-1 text-sm">{effectiveIsAccessCode ? t('容器管理登录（访问码）') : t('云容器管理平台')}</p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
@@ -100,7 +112,7 @@ export default function Login() {
                 </div>
               )}
 
-              {!isAccessCodeLogin && !twoFARequired && (
+              {!effectiveIsAccessCode && !twoFARequired && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
                     {t('用户名')}
@@ -122,7 +134,31 @@ export default function Login() {
                 </div>
               )}
 
-              {twoFARequired && !isAccessCodeLogin && (
+              {effectiveIsAccessCode && !twoFARequired && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    {t('访问码')}
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <div className="text-gray-400">🔑</div>
+                    </div>
+                    <input
+                      type="text"
+                      value={inputCode}
+                      onChange={(event) => setInputCode(event.target.value)}
+                      className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-md text-black bg-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm"
+                      placeholder={t('输入访问码')}
+                      disabled={isAccessCodeLogin}
+                      required
+                      autoComplete="off"
+                    />
+                  </div>
+                  <p className="mt-1.5 text-xs text-gray-400">{t('访问码由管理员在「管理链接」中提供')}</p>
+                </div>
+              )}
+
+              {twoFARequired && !effectiveIsAccessCode && (
                 <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800">
                   <div className="flex items-center gap-1.5 font-medium">
                     <Smartphone className="h-3.5 w-3.5" />{t('两步验证')}
@@ -151,7 +187,7 @@ export default function Login() {
               </div>
             </div>
 
-            {twoFARequired && !isAccessCodeLogin && (
+            {twoFARequired && !effectiveIsAccessCode && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
                   {t('动态口令 / 备份码')}
@@ -188,6 +224,18 @@ export default function Login() {
             >
               {loading ? t('登录中...') : t('登录')}
             </button>
+
+            {!isAccessCodeLogin && (
+              <button
+                type="button"
+                onClick={toggleAccessCodeMode}
+                className="w-full text-center text-xs text-gray-500 hover:text-black underline"
+              >
+                {inputCodeMode
+                  ? t('使用管理员账号登录')
+                  : t('使用访问码登录已授权的容器')}
+              </button>
+            )}
           </form>
         </div>
 

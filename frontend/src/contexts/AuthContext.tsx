@@ -2,6 +2,16 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { useNavigate } from 'react-router'
 import api, { login as apiLogin, checkAuth, LoginResponse } from '../services/api'
 
+// CheckAuthData 与服务端 /check-auth 返回的解析结果对应。
+type CheckAuthData = {
+  type?: string
+  username?: string
+  sub_user?: boolean
+  role?: string
+  container_uuids?: string[]
+  permission_scopes?: string[]
+}
+
 interface AuthContextType {
   isAuthenticated: boolean
   isLoading: boolean
@@ -43,17 +53,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const savedToken = localStorage.getItem('eyvescloud_token')
     const savedUsername = localStorage.getItem('eyvescloud_username')
     if (savedToken) {
-      const payload = decodeTokenPayload(savedToken)
-      const nextUsername = payload?.username || payload?.sub_user || savedUsername || null
-      const nextContainerIdentifiers = Array.isArray(payload?.container_uuids) ? payload.container_uuids : []
-
       setToken(savedToken)
-      setUsername(nextUsername)
-      setIsSubUser(!!payload?.sub_user)
-      setIsReadOnly(!!payload?.sub_user && payload?.role === 'viewer')
-      setContainerIdentifiers(nextContainerIdentifiers)
+      // 刷新时以服务端 /check-auth 为唯一权威重建角色/只读态/绑定容器，
+      // 而非仅凭可能过期的 JWT claims，避免旧 role 导致 UI 状态失真。
       checkAuth()
-        .then(() => {
+        .then((res) => {
+          const data = (res.data as { data?: CheckAuthData }).data
+          if (data) {
+            setUsername(data.username || savedUsername || null)
+            setIsSubUser(!!data.sub_user)
+            setIsReadOnly(!!data.sub_user && (data.role || '') === 'viewer')
+            setContainerIdentifiers(Array.isArray(data.container_uuids) ? data.container_uuids : [])
+          } else {
+            const payload = decodeTokenPayload(savedToken)
+            setUsername(payload?.username || payload?.sub_user || savedUsername || null)
+            setIsSubUser(!!payload?.sub_user)
+            setIsReadOnly(!!payload?.sub_user && payload?.role === 'viewer')
+            setContainerIdentifiers(Array.isArray(payload?.container_uuids) ? payload.container_uuids : [])
+          }
           setIsAuthenticated(true)
         })
         .catch(() => {
@@ -62,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setToken(null)
           setUsername(null)
           setIsSubUser(false)
+          setIsReadOnly(false)
           setContainerIdentifiers([])
         })
         .finally(() => setIsLoading(false))
@@ -110,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null)
     setUsername(null)
     setIsSubUser(false)
+    setIsReadOnly(false) // 重置只读态，防止登出后残留 viewer 限制影响下一次登录
     setContainerIdentifiers([])
     setIsAuthenticated(false)
     navigate('/login')

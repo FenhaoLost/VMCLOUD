@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import {
   ArrowDown,
@@ -40,6 +40,9 @@ export default function Containers() {
   const navigate = useNavigate()
   const { isSubUser } = useAuth()
   const [containers, setContainers] = useState<Container[]>([])
+  // containersRef 镜像 containers，用于不触发轮询 interval 重建的读取（L8 优化）。
+  const containersRef = useRef<Container[]>([])
+  useEffect(() => { containersRef.current = containers }, [containers])
   const [usageByName, setUsageByName] = useState<Record<string, ContainerUsage>>({})
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -153,14 +156,16 @@ export default function Containers() {
     }
   }
 
-  const fetchTasks = useCallback(async () => {
+  const fetchTasks = useCallback(async (): Promise<void> => {
     try {
       const res = await getTasks()
       const nextTasks = res.data.data || []
       setTasks(nextTasks)
-      setQueuedCreates((current) => syncQueuedCreates(current, nextTasks, containers))
+      // 读取 ref 镜像而非 state，使 fetchTasks 的引用在容器列表变更时保持稳定，
+      // 避免每轮轮询都重建 setInterval（interval 被反复 clear/re-create 会放大请求）。
+      setQueuedCreates((current) => syncQueuedCreates(current, nextTasks, containersRef.current))
     } catch { /* ignore */ }
-  }, [containers])
+  }, [])
 
   useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks, 2000); return () => clearInterval(t) }, [fetchTasks])
 

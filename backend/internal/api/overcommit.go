@@ -23,7 +23,7 @@ const (
 	maxOvercommitRatio = 16.0
 )
 
-// HandleOvercommitSettings 读取/更新内存超售与 KSM 调优配置。
+// HandleOvercommitSettings 读取/更新内存、磁盘与网络子网的超售/调优配置。
 func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -35,6 +35,8 @@ func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			MemoryOvercommitEnabled bool     `json:"memory_overcommit_enabled"`
 			MemoryOvercommitRatio   float64  `json:"memory_overcommit_ratio"`
+			NATSubnetOversubscription bool   `json:"nat_subnet_oversubscription"`
+			DiskOvercommitRatio     float64  `json:"disk_overcommit_ratio"`
 			KSMTuning               *struct {
 				Enabled        bool `json:"enabled"`
 				PagesToScan    int  `json:"pages_to_scan"`
@@ -48,6 +50,10 @@ func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.MemoryOvercommitRatio < 1.0 || req.MemoryOvercommitRatio > maxOvercommitRatio {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: fmt.Sprintf("memory_overcommit_ratio must be %.2f - %.2f", 1.0, maxOvercommitRatio)})
+			return
+		}
+		if req.DiskOvercommitRatio < 1.0 || req.DiskOvercommitRatio > 100.0 {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "disk_overcommit_ratio must be 1.00 - 100.00"})
 			return
 		}
 		var ksm config.KSMTuningConfig
@@ -72,6 +78,8 @@ func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 		config.MutateGlobal(func(cfg *config.EyvescloudConfig) {
 			cfg.MemoryOvercommitEnabled = req.MemoryOvercommitEnabled
 			cfg.MemoryOvercommitRatio = req.MemoryOvercommitRatio
+			cfg.NATSubnetOversubscription = req.NATSubnetOversubscription
+			cfg.DiskOvercommitRatio = req.DiskOvercommitRatio
 			cfg.KSMTuning = ksm
 		})
 		if err := config.SaveConfig(); err != nil {
@@ -81,8 +89,10 @@ func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 		// 保存后立即尝试应用 KSM 内核参数（不可写时返回警告而非失败）。
 		applyWarnings := applyKSMTuning(ksm)
 		auditRequest(r, "overcommit.settings", "resources", fmt.Sprintf(
-			"overcommit=%v ratio=%.2f ksm=%v apply_warnings=%v",
-			req.MemoryOvercommitEnabled, req.MemoryOvercommitRatio, ksm.Enabled, applyWarnings), true, "")
+			"overcommit=%v ratio=%.2f nat_subnet_over=%v disk_over_ratio=%.2f ksm=%v apply_warnings=%v",
+			req.MemoryOvercommitEnabled, req.MemoryOvercommitRatio,
+			req.NATSubnetOversubscription, req.DiskOvercommitRatio,
+			ksm.Enabled, applyWarnings), true, "")
 
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: overcommitSettingsResponse()})
 	default:
@@ -93,18 +103,24 @@ func HandleOvercommitSettings(w http.ResponseWriter, r *http.Request) {
 func overcommitSettingsResponse() map[string]interface{} {
 	enabled, ratio := config.GetMemoryOvercommit()
 	ksm := config.GetKSMTuning()
+	host := getHostInfo()
+	diskAllowable := float64(host.Disk.TotalGB) * config.GetDiskOvercommitRatio()
 	return map[string]interface{}{
 		"memory_overcommit_enabled": enabled,
 		"memory_overcommit_ratio":   ratio,
 		"physical_ram_mb":           hostRAMTotalMB(),
 		"allocatable_ram_mb":        alocatableRAMMB(enabled, ratio),
+		"nat_subnet_oversubscription": config.GetNATSubnetOversubscription(),
+		"disk_overcommit_ratio":       config.GetDiskOvercommitRatio(),
+		"physical_disk_gb":            host.Disk.TotalGB,
+		"disk_allocatable_gb":         diskAllowable,
 		"ksm_tuning": map[string]interface{}{
 			"enabled":         ksm.Enabled,
 			"pages_to_scan":   ksm.PagesToScan,
 			"sleep_millisecs": ksm.SleepMillisecs,
 			"use_tune_ksm":    ksm.UseTuneKSM,
 		},
-		"notes": "内存超售可分配上限 = 物理内存 × 超售比；KSM 合并重复内存页降低实际占用。",
+		"notes": "内存可分配=物理内存×超售比；磁盘可分配=物理磁盘×磁盘超售比；开启 NAT 子网超售可超过子网地址池容量（配合更大网段，如 /22~ /16，以支持超售数千台）。",
 	}
 }
 

@@ -266,9 +266,7 @@ func pruneContainerMetricHistory() {
 	cutoff := time.Now().Add(-hostMetricRetention).UnixMilli()
 	valid := map[string]bool{}
 	if config.AppConfig != nil {
-		config.AppConfigMu.RLock()
-		containers := append([]config.Container(nil), config.AppConfig.Containers...)
-		config.AppConfigMu.RUnlock()
+		containers := config.GetContainers()
 		for _, c := range containers {
 			valid[containerMetricKey(c)] = true
 		}

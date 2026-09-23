@@ -660,6 +660,8 @@ func loadConfigFromDB() (*EyvescloudConfig, bool, error) {
 		AuditRetentionDays:   atoi(meta["audit_retention_days"]),
 		MemoryOvercommitEnabled: atob(meta["memory_overcommit_enabled"]),
 		MemoryOvercommitRatio:   atof(meta["memory_overcommit_ratio"]),
+		NATSubnetOversubscription: atob(meta["nat_subnet_oversubscription"]),
+		DiskOvercommitRatio:       atof(meta["disk_overcommit_ratio"]),
 	}
 	if raw := strings.TrimSpace(meta["ksm_tuning"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &cfg.KSMTuning)
@@ -887,6 +889,8 @@ func saveMeta(tx *sql.Tx) error {
 		"tenants":                 string(tenantsJSON),
 		"memory_overcommit_enabled": btoa(AppConfig.MemoryOvercommitEnabled),
 		"memory_overcommit_ratio":   strconv.FormatFloat(AppConfig.MemoryOvercommitRatio, 'f', -1, 64),
+		"nat_subnet_oversubscription": btoa(AppConfig.NATSubnetOversubscription),
+		"disk_overcommit_ratio":       strconv.FormatFloat(AppConfig.DiskOvercommitRatio, 'f', -1, 64),
 		"ksm_tuning":               string(ksmTuningJSON),
 		"schema_version":          "1",
 		"updated_at":             time.Now().Format("2006-01-02 15:04:05"),
@@ -962,7 +966,7 @@ func saveSubUsers(tx *sql.Tx) error {
 	for _, su := range AppConfig.SubUsers {
 		allowedImageIDs := encodeStringSlice(su.AllowedImageIDs)
 		if _, err := tx.Exec(`INSERT INTO sub_users(id, username, password, pass_hash, access_code, created_at, token_version, allowed_image_ids, image_limit_configured, role, tenant)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, su.ID, su.Username, su.Password, su.PassHash, su.AccessCode, su.CreatedAt, su.TokenVersion, allowedImageIDs, boolInt(su.ImageLimitConfigured), subUserRoleForStorage(su.Role), su.Tenant); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, su.ID, su.Username, "", su.PassHash, su.AccessCode, su.CreatedAt, su.TokenVersion, allowedImageIDs, boolInt(su.ImageLimitConfigured), subUserRoleForStorage(su.Role), su.Tenant); err != nil {
 			return err
 		}
 		for i, name := range su.ContainerNames {
@@ -1325,6 +1329,9 @@ func loadSubUsers() ([]SubUser, error) {
 		}
 		su.AllowedImageIDs = decodeStringSlice(allowedImageIDs.String)
 		su.ImageLimitConfigured = imageLimitConfigured != 0
+		// 明文口令不以持久化凭据为准：既有库中可能残留的历史明文一律清空，
+		// 仅保留 bcrypt pass_hash 用于登录校验，降低 DB 泄露面。
+		su.Password = ""
 		result = append(result, su)
 	}
 	if err := rows.Err(); err != nil {

@@ -41,6 +41,7 @@ type AuthContext struct {
 	Actor          string
 	Scopes         []string
 	ContainerUUIDs []string
+	Role           string // 子用户角色 operator/viewer；仅登录凭据持有的写权限受其约束
 }
 
 const (
@@ -87,7 +88,7 @@ func hasScope(r *http.Request, scope string) bool {
 	case authTypeAdmin:
 		return true
 	case authTypeSubUser:
-		return subUserScopeAllowed(scope)
+		return subUserScopeAllowed(scope, ctx.Role)
 	case authTypeAPIKey:
 		return scopeAllowed(ctx.Scopes, scope)
 	default:
@@ -95,12 +96,18 @@ func hasScope(r *http.Request, scope string) bool {
 	}
 }
 
-func subUserScopeAllowed(scope string) bool {
+// subUserScopeAllowed 判断子用户是否拥有某 scope。operator 拥有容器读写、
+// 密码/网络/重装/快照等操作权限；viewer（只读）仅允许读类与连接类 scope，
+// 拒绝密码重置、重装、电源控制等写操作，避免只读子用户越权修改服务器。
+func subUserScopeAllowed(scope string, role string) bool {
+	viewer := strings.EqualFold(strings.TrimSpace(role), "viewer")
 	switch scope {
-	case "container:read", "container:power", "container:reinstall", "container:password", "container:network",
-		"dashboard:read", "image:read", "task:read", "snapshot:read", "snapshot:create", "snapshot:delete", "snapshot:restore", "snapshot:schedule",
+	case "container:read", "dashboard:read", "image:read", "task:read", "snapshot:read",
 		"terminal:ssh", "terminal:vnc":
 		return true
+	case "container:power", "container:reinstall", "container:password", "container:network",
+		"snapshot:create", "snapshot:delete", "snapshot:restore", "snapshot:schedule":
+		return !viewer
 	default:
 		return false
 	}
@@ -315,7 +322,9 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	config.AppConfigMu.RUnlock()
 	if totpEnabled {
 		// 未提供验证码时，明确告知前端需进入两步验证步骤。
+		// 同时记录一次失败以纳入登录限流，避免被利用为「密码正确性」探针。
 		if strings.TrimSpace(req.TwoFACode) == "" {
+			loginLimiter.recordFail(rateKey)
 			jsonResponse(w, http.StatusUnauthorized, APIResponse{
 				Success: false, Message: "Two-factor verification required",
 				Data: map[string]bool{"twofa_required": true},
@@ -399,9 +408,50 @@ func HandleChangePassword(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Password changed successfully"})
 }
 
-// HandleCheckAuth checks if the user is authenticated
+// HandleCheckAuth checks if the user is authenticated and returns the resolved
+// auth context (type / role / bound containers). The frontend rebuilds its UI
+// state from this server-authoritative response on refresh, so a stale JWT
+// claim (e.g. an outdated role) is corrected immediately rather than trusted.
 func HandleCheckAuth(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "Authenticated"})
+	ctx, ok := authContextFromRequest(r)
+	if !ok {
+		jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Authentication required"})
+		return
+	}
+	role := ""
+	if ctx.Type == authTypeSubUser {
+		role = ctx.Role
+	}
+	jsonResponse(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Authenticated",
+		Data: map[string]interface{}{
+			"type":              ctx.Type,
+			"username":          ctx.Username,
+			"sub_user":          ctx.Type == authTypeSubUser,
+			"role":              role,
+			"container_uuids":   ctx.ContainerUUIDs,
+			"permission_scopes": defaultScopesForType(ctx),
+		},
+	})
+}
+
+// defaultScopesForType returns the effective scope set for the given auth type
+// so the frontend can reflect read-only / operator state consistently.
+func defaultScopesForType(ctx AuthContext) []string {
+	switch ctx.Type {
+	case authTypeAdmin:
+		return []string{"*"}
+	case authTypeSubUser:
+		switch strings.ToLower(strings.TrimSpace(ctx.Role)) {
+		case "viewer":
+			return []string{"container:read", "dashboard:read", "image:read", "snapshot:read", "terminal:ssh", "terminal:vnc"}
+		default: // operator
+			return []string{"container:read", "container:power", "container:reinstall", "container:password", "container:network", "dashboard:read", "image:read", "snapshot:read", "snapshot:create", "snapshot:delete", "snapshot:restore", "snapshot:schedule", "terminal:ssh", "terminal:vnc"}
+		}
+	default:
+		return append([]string(nil), ctx.Scopes...)
+	}
 }
 
 // AuthMiddleware extracts JWT from cookies or Authorization header
@@ -411,6 +461,9 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if claims, ok := claimsFromToken(tokenString); ok {
 			if subUser, _ := claims["sub_user"].(string); subUser != "" {
 				auth := AuthContext{Type: authTypeSubUser, Username: subUser, Actor: "user:" + subUser}
+				if role, _ := claims["role"].(string); role != "" {
+					auth.Role = role
+				}
 				if values, ok := claims["container_uuids"].([]interface{}); ok {
 					for _, value := range values {
 						if uuid, ok := value.(string); ok {
