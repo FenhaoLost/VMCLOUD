@@ -1462,6 +1462,10 @@ export interface CheckUpdateResult {
 export const checkUpdate = () =>
   api.get<APIResponse<CheckUpdateResult>>('/v1/check-update')
 
+// 面板内直接升级（管理员）：触发下载→解压→备份→就地替换→重启，返回"已开始"。
+export const updatePanel = () =>
+  api.post<APIResponse<{ message?: string }>>('/v1/update', {})
+
 // ---- CPU/带宽策略 (Policy) ----
 export interface PolicyRule {
   id?: string

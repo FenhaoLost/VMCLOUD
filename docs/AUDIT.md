@@ -576,3 +576,22 @@ Mofang 模块是独立高风险面（webssh.php 无鉴权任意 WebSocket 代理
 - 版本号 `1.1.32 → 1.1.33`（`version.go` / `frontend/package.json`）。
 
 > 说明：`FindContainer`/`FindContainerByUUID` 等在锁内返回共享指针（`RLock` 内取值、返回指针）的既有设计仍属「读-写分离约定」：写入一律经 `MutateContainer*`/`UpdateContainer*` 锁内完成。本轮将**后台只读快照**统一收敛到 `GetContainers()`，消除了最主要的高频竞态面。
+
+## 十七轮复核（面板内直接升级，v1.1.34，2026-09-23）
+
+> 需求：面板提示"有可用更新"，但只能在面板跳转 GitHub release 页、再手动下载替换，无法直接在面板内完成升级。
+
+### 问题
+- 后端此前只有**检测**接口 `/api/check-update`（`HandleCheckUpdate`），返回 `current/latest/has_update`，无执行升级的入口。
+- 已具备完整升级能力（`cli.SelfUpdateOnce`：下载→解压→备份→替换→重启），但**直接复用有隐患**：`upgradeFromReleaseAsset` 先 `stopService` 再替换二进制。本机面板正是被升级的服务，先停服务会终止正在执行升级的自身进程，导致替换中断、升级半途而废。
+
+### 修复
+| 编号 | 内容 | 状态 |
+| --- | --- | --- |
+| U1 | 后端 `cli.PanelSelfUpdateOnce` + `upgradeFromReleaseAssetInPlace`：**先就地替换二进制、再 detached 触发 `systemctl restart`**，由 systemd 完成"停旧起新"；替换动作在服务终止前完成，不会被自身进程被杀打断。无 systemctl 环境明确报错并提示使用 install.sh/CLI。 | ✅ |
+| U2 | 新增 `POST /api/update`、`/api/v1/update`（管理员门禁）`HandlePanelUpdate`：后台 goroutine 执行升级、返回"已开始"；互斥锁防止并发触发互相覆盖二进制；升级/失败写审计日志。 | ✅ |
+| U3 | 前端：侧边栏"有更新"由**外链跳转**改为**可点击按钮**，调用 `/v1/update`；显示"升级中"与结果提示。 | ✅ |
+
+### 验证
+- `go build ./...`、`go vet ./...`、`go test ./internal/{cli,api,server}` 通过；前端 `tsc` + `vite build` 通过。
+- 版本号 `1.1.33 → 1.1.34`。

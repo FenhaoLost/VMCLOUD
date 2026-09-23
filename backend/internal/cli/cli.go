@@ -915,6 +915,107 @@ func SelfUpdateOnce() (newVersion string, upgraded bool, err error) {
 	return latest, true, nil
 }
 
+// PanelSelfUpdateOnce 供面板「有更新 → 立即更新」按钮调用。
+// 与 SelfUpdateOnce 的区别在于升级顺序：本机面板进程就是被升级的服务，
+// 若先 stopService 再替换，会把正在执行升级的自身进程杀掉，导致替换中断。
+// 因此这里采用「先就地替换二进制、再 detached 式触发 systemctl restart」，
+// 由 systemd 统一完成"停旧起新"，新二进制在重启前就已就位。
+func PanelSelfUpdateOnce() (newVersion string, upgraded bool, err error) {
+	repo := strings.TrimSpace(os.Getenv("EYVESCLOUD_REPO"))
+	if repo == "" {
+		repo = version.Repo
+	}
+	assetName, err := releaseArchiveAssetName(runtime.GOARCH)
+	if err != nil {
+		return "", false, err
+	}
+	current := version.Current()
+
+	release, err := fetchLatestRelease(repo, assetName)
+	if err != nil {
+		return "", false, fmt.Errorf("检查 GitHub 最新版本失败: %w", err)
+	}
+	latest := strings.TrimSpace(release.TagName)
+	if latest == "" {
+		return "", false, fmt.Errorf("GitHub Release 没有 tag_name，无法判断最新版本")
+	}
+	if sameVersion(current, latest) {
+		return latest, false, nil
+	}
+	assetURL := findReleaseAsset(release, assetName)
+	if assetURL == "" {
+		return "", false, fmt.Errorf("最新 Release 没有找到 %s，无法自动升级", assetName)
+	}
+	if err := upgradeFromReleaseAssetInPlace(assetURL, latest, assetName); err != nil {
+		return "", false, err
+	}
+	return latest, true, nil
+}
+
+// upgradeFromReleaseAssetInPlace 与 upgradeFromReleaseAsset 功能相同，
+// 但先替换二进制、后触发 systemctl restart，避免先停服务导致自身进程被杀、
+// 替换动作无法完成。替换成功后用 detached 命令触发 restart（不阻塞、不等待），
+// 由 systemd 完成新旧进程切换。
+func upgradeFromReleaseAssetInPlace(assetURL, latest, assetName string) error {
+	if !commandExists("systemctl") {
+		return fmt.Errorf("未检测到 systemctl，无法在面板内自动重启服务；请使用 install.sh 或 CLI 升级")
+	}
+	tmpDir, err := os.MkdirTemp("", "eyvescloud-upgrade-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	archivePath := filepath.Join(tmpDir, assetName)
+	cliPrintln("正在下载升级包...")
+	if err := downloadFile(assetURL, archivePath); err != nil {
+		return err
+	}
+
+	cliPrintln("正在解压升级包...")
+	if out, err := exec.Command("tar", "-xzf", archivePath, "-C", tmpDir).CombinedOutput(); err != nil {
+		return fmt.Errorf("解压失败: %v, output: %s", err, string(out))
+	}
+
+	newBinary, err := findFile(tmpDir, "eyvescloud")
+	if err != nil {
+		return err
+	}
+
+	backupDir := eyvescloudBackupDir
+	if err := os.MkdirAll(backupDir, 0700); err != nil {
+		return err
+	}
+	backupName := fmt.Sprintf("eyvescloud.%s.%s", safeReleaseBackupComponent(latest), time.Now().Format("20060102-150405"))
+	if _, err := os.Stat("/usr/local/bin/eyvescloud"); err == nil {
+		backupPath, err := copyFileToBackup("/usr/local/bin/eyvescloud", backupName, 0755)
+		if err != nil {
+			return fmt.Errorf("备份旧二进制失败: %w", err)
+		}
+		cliPrintf("旧版本已备份: %s\n", backupPath)
+	}
+
+	// 就地替换：先写入临时文件再 rename 覆盖，正在运行的进程不受影响。
+	tmpBin := eyvescloudNewBinaryPath
+	if err := copyFileToUpgradeTemp(newBinary, 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpBin, "/usr/local/bin/eyvescloud"); err != nil {
+		return err
+	}
+	if err := os.Chmod("/usr/local/bin/eyvescloud", 0755); err != nil {
+		return err
+	}
+
+	// detached 触发 systemctl restart：不等待，避免本进程被杀导致调用栈中断。
+	cliPrintln("已替换二进制，正在重启 Web 服务...")
+	cmd := exec.Command("systemctl", "restart", "eyvescloud")
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("二进制已替换，但触发重启失败: %w", err)
+	}
+	return nil
+}
+
 // CheckUpdateResult 描述一次版本检查的结论，供面板 API 展示，无需改动二进制。
 type CheckUpdateResult struct {
 	Current string `json:"current"`

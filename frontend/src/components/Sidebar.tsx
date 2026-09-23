@@ -29,7 +29,7 @@ import {
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import { useTheme } from '../contexts/ThemeContext'
-import { checkUpdate, getVersion } from '../services/api'
+import { checkUpdate, getVersion, updatePanel } from '../services/api'
 import AppIcon from './AppIcon'
 
 interface SidebarProps {
@@ -75,6 +75,8 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
   const [version, setVersion] = useState('')
   const [hasUpdate, setHasUpdate] = useState(false)
   const [latestVersion, setLatestVersion] = useState('')
+  const [upgrading, setUpgrading] = useState(false)
+  const [upgradeMsg, setUpgradeMsg] = useState('')
 
   useEffect(() => {
     getVersion()
@@ -99,6 +101,25 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
       })
       .catch(() => {})
   }, [isSubUser])
+
+  // 面板内直接升级：点击后触发后端升级（下载→解压→备份→替换→重启）。
+  // 升级期间免确认由用户交互承担；重复点击由后端以 409 拒绝。
+  const handleUpdate = async () => {
+    if (upgrading) return
+    setUpgrading(true)
+    setUpgradeMsg('')
+    try {
+      const res = await updatePanel()
+      const msg = res.data?.data?.message || res.data?.message || '升级已开始'
+      setUpgradeMsg(msg)
+    } catch (err: unknown) {
+      const data = (err as { response?: { data?: { message?: string } } })?.response?.data
+      setUpgradeMsg(data?.message || '升级触发失败')
+    } finally {
+      // 升级会重启服务，连接会断开；这里保留信息提示，等刷新后重新校验版本。
+      setTimeout(() => setUpgrading(false), 4000)
+    }
+  }
 
   const isContainerPage =
     location.pathname.startsWith('/containers') ||
@@ -460,16 +481,18 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
                 </a>
                 <span className="shrink-0">v{version}</span>
                 {hasUpdate && (
-                  <a
-                    href={`https://github.com/FenhaoLost/VMCLOUD/releases/tag/${latestVersion || ''}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={`有可用更新：${latestVersion}`}
-                    className="shrink-0 inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                  <button
+                    onClick={handleUpdate}
+                    disabled={upgrading}
+                    title={`有可用更新：${latestVersion}（点击在面板内升级）`}
+                    className="shrink-0 inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-700 transition-colors hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-900/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
                   >
                     <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                    {t('有更新')}
-                  </a>
+                    {upgrading ? t('升级中') : t('有更新')}
+                  </button>
+                )}
+                {upgradeMsg && (
+                  <span className="shrink-0 text-[11px] text-amber-600 dark:text-amber-400">{upgradeMsg}</span>
                 )}
               </div>
             )}

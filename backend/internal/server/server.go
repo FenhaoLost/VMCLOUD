@@ -253,6 +253,9 @@ func setupRoutes(mux *http.ServeMux) {
 	// 面板版本检测：返回当前与最新版本（管理员；检测 + 缓存，不自动升级）
 	mux.HandleFunc("/api/check-update", corsMiddleware(api.AdminMiddleware(api.HandleCheckUpdate)))
 	mux.HandleFunc("/api/v1/check-update", corsMiddleware(api.AdminMiddleware(api.HandleCheckUpdate)))
+	// 面板内直接升级（管理员）：下载→解压→备份→就地替换→重启，返回"已开始"。
+	mux.HandleFunc("/api/update", corsMiddleware(api.AdminMiddleware(api.HandlePanelUpdate)))
+	mux.HandleFunc("/api/v1/update", corsMiddleware(api.AdminMiddleware(api.HandlePanelUpdate)))
 
 	// Static files
 	if webFS != nil {

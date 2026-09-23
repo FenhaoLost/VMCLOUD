@@ -1,11 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
 	"eyvescloud/internal/cli"
+	"eyvescloud/internal/config"
 	"eyvescloud/internal/version"
 )
 
@@ -51,4 +53,47 @@ func HandleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		"err":        result.Err,
 	}
 	jsonResponse(w, http.StatusOK, APIResponse{Success: true, Data: data})
+}
+
+// 面板内升级的状态锁：一次只允许一个升级任务，避免并发触发互相覆盖二进制。
+var (
+	panelUpgradeMu      sync.Mutex
+	panelUpgradeRunning bool
+	panelUpgradeStarted time.Time
+)
+
+// HandlePanelUpdate 提供「面板内直接升级」：立即在后台启动升级任务（下载→解压→
+// 备份→就地替换→重启），本请求同步返回"已开始"。升级完成后面板服务重启。
+// 由于升级会重启当前服务（自身进程），不能在请求内等待全部完成。
+func HandlePanelUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	panelUpgradeMu.Lock()
+	if panelUpgradeRunning {
+		panelUpgradeMu.Unlock()
+		jsonResponse(w, http.StatusConflict, APIResponse{Success: false, Message: "升级任务已在进行中，请稍候"})
+		return
+	}
+	panelUpgradeRunning = true
+	panelUpgradeStarted = time.Now()
+	panelUpgradeMu.Unlock()
+
+	go func() {
+		_, upgraded, err := cli.PanelSelfUpdateOnce()
+		panelUpgradeMu.Lock()
+		panelUpgradeRunning = false
+		panelUpgradeMu.Unlock()
+		if err != nil {
+			// 升级失败：记录日志，前端可通过再次 check-update 感知版本未变化。
+			fmt.Printf("面板升级失败: %v\n", err)
+			config.AddAuditLog("panel.update", version.Current(), "failed: "+err.Error(), requestUser(r))
+			return
+		}
+		if upgraded {
+			config.AddAuditLog("panel.update", version.Current(), "upgraded", requestUser(r))
+		}
+	}()
+	jsonResponse(w, http.StatusAccepted, APIResponse{Success: true, Message: "升级已开始，面板将在完成后自动重启"})
 }
