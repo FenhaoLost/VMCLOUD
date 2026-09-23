@@ -74,6 +74,22 @@ eyvescloud agent \
 
 这些操作由主控以被控节点 token 代理调用被控的 `/api/agent/*` 接口完成，被控会校验 token，未接入的节点无法被访问。
 
+### 在主控开通被控容器（发机）
+
+主控可以在被控上创建新容器（发机）：「节点管理 → 节点详情 → 开通容器」，代理调用被控的 `/api/agent/containers/create`，复用被控本地的 LXC/KVM 创建逻辑。节点不在线或未配置面板地址时会被拒绝。
+
+### 同步镜像
+
+被控会自动/手动同步主控的自定义镜像清单（`GET /api/nodes/{id}/images`）与镜像文件（`POST /api/nodes/{id}/images/sync`）。主控将自身 LXC/KVM 自定义镜像清单下发，被控对比 SHA256 后拉取缺失或已变更的镜像文件，保证被控上可用镜像与主控一致。
+
+### 被控节点自动更新
+
+被控 Agent 可在后台自动检查并更新自身二进制。通过环境变量 `EYVESCLOUD_AUTO_UPDATE` 以「分钟」为单位设定检查间隔，仅在 `>= 60` 时才会启用（避免频繁请求 GitHub）。一键安装脚本会通过该变量传入，默认 `1440`（每天一次）。检查到新版本并更新成功后，服务会自动重启生效。
+
+### 节点级冷备份
+
+主控可对被控执行「节点冷备份」（`POST /api/nodes/{id}/backup`）：被控对全部 LXC/KVM 容器逐个创建完整磁盘备份（写入被控 `instance-backups` 目录）。用于节点重装/迁移前的数据保全，备份内容包括容器磁盘、元数据与 keep-N 保留策略。
+
 ## 删除节点
 
 删除节点会从主控移除该节点记录。若被控的 systemd 服务仍在运行，它会继续尝试上报心跳，主控将不再显示。如需彻底吊销，请同时在被控上卸载服务：
@@ -101,6 +117,10 @@ systemctl disable --now eyvescloud-agent
 | POST | `/api/nodes/register` | 被控注册（安装密钥） |
 | POST | `/api/nodes/{id}/heartbeat` | 被控心跳（节点 token） |
 | GET | `/api/nodes/{id}/containers` | 代理查看被控容器（管理员） |
+| POST | `/api/nodes/{id}/containers` | 主控在被控开通容器（发机） |
 | POST | `/api/nodes/{id}/containers/{cid}/{action}` | 代理操作被控容器（管理员） |
+| GET | `/api/nodes/{id}/images` | 代理查看被控镜像清单 |
+| POST | `/api/nodes/{id}/images/sync` | 下发主控镜像清单并触发被控同步 |
+| POST | `/api/nodes/{id}/backup` | 节点级冷备份（被控全量容器备份） |
 | GET | `/api/agent/containers` | 被控容器列表（主控 token） |
 | POST | `/api/agent/containers/{cid}/{action}` | 被控容器操作（主控 token） |

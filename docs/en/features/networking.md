@@ -59,3 +59,44 @@ GET /api/v1/routing
 ```
 
 This endpoint shows runtime status for NAT, IPv4, IPv6, and port capacity.
+
+## Regions (Geographical Grouping)
+
+Regions group nodes, storage, and containers by geographical location, which helps in multi-datacenter / multi-region planning. A node can be assigned to a region through its `region_id`.
+
+```http
+GET    /api/regions
+POST   /api/regions
+DELETE /api/regions/{id}
+```
+
+Create-region request body:
+
+| Field | Description |
+| --- | --- |
+| `name` | Region name (required) |
+| `location` | Display location / datacenter info (optional) |
+
+A region object contains `id`, `name`, `location`, and `created_at`. These endpoints are administrator-only.
+
+## Elastic IP Groups and Failover
+
+An elastic IP group splits a set of public IPs into "active" (`enable`) and "standby" (`standby`). When a standby IP needs to be promoted to active, you trigger a manual failover and the panel applies the change to any container that referenced the demoted IP.
+
+```http
+GET     /api/ip-groups
+POST    /api/ip-groups
+PUT     /api/ip-groups/{id}
+DELETE  /api/ip-groups/{id}
+POST    /api/ip-groups/{id}/failover
+```
+
+Create/update request body:
+
+| Field | Description |
+| --- | --- |
+| `name` | Group name (required) |
+| `enable` | Currently active public IPs |
+| `standby` | Standby public IPs |
+
+`POST /api/ip-groups/{id}/failover` accepts `{"ip": "<standby-ip>"}` and promotes the given standby IP to active; the first currently-active IP is demoted to standby. An IP group object contains `id`, `name`, `enable`, `standby`, `fault_open` (the IP currently held open on failure), and `created_at`. These endpoints are administrator-only.

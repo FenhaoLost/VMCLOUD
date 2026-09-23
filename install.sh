@@ -1878,6 +1878,86 @@ release_asset_url() {
     printf '%s\n' "https://github.com/${REPO}/releases/latest/download/${asset_name}"
 }
 
+# 获取项目全部 Release 版本号（tag，按 GitHub API 返回顺序，最新的在前）。
+fetch_release_list() {
+    api_url="https://api.github.com/repos/${REPO}/releases?per_page=100"
+    if has_cmd curl; then
+        curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 120 "$api_url" 2>/dev/null
+        return
+    fi
+    if has_cmd wget; then
+        wget -qO- --tries=3 --timeout=30 "$api_url" 2>/dev/null
+        return
+    fi
+}
+
+# 输出所有版本号（tag_name），一行一个，按 API 顺序（新→旧）。
+release_tags_list() {
+    fetch_release_list | tr ',' '\n' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 100
+}
+
+# 交互式选择要安装/升级的版本。仅在交互终端且未显式指定 EYVESCLOUD_VERSION 时调用；
+# 直接回车默认安装最新版本（latest），也可以输入版本号精确安装。
+choose_version_interactively() {
+    [ -t 0 ] || return 0
+    # EYVESCLOUD_VERSION 已显式指定（非默认 latest）时不提示。
+    if [ -n "${EYVESCLOUD_VERSION:-}" ]; then
+        return 0
+    fi
+
+    tags="$(release_tags_list)"
+    if [ -z "$tags" ]; then
+        return 0
+    fi
+
+    {
+        echo "====================================="
+        echo "  请选择要安装的版本 / Select version to install"
+        echo "====================================="
+        i=1
+        printf '%s\n' "$tags" | while IFS= read -r tag; do
+            if [ "$i" -le 20 ]; then
+                printf '  %2d) %s\n' "$i" "$tag"
+            fi
+            i=$((i+1))
+        done
+        echo "  Enter) 最新版本 (latest)"
+        printf "  请输入版本号或编号 [Enter=latest]: "
+    } >&2
+    IFS= read -r answer || answer=""
+    answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
+    if [ -z "$answer" ]; then
+        return 0
+    fi
+    # 支持直接输入版本号（如 v1.1.30 / 1.1.30）或编号（1..n）。
+    case "$answer" in
+        *[!0-9]*)
+            # 非纯数字 → 视为版本号
+            picked="$answer"
+            case "$picked" in
+                v*) ;;
+                *) picked="v${picked}" ;;
+            esac
+            ;;
+        *)
+            # 纯数字 → 视为编号，取对应 tag
+            picked="$(printf '%s\n' "$tags" | sed -n "${answer}p")"
+            if [ -z "$picked" ]; then
+                picked="$answer"
+                case "$picked" in
+                    v*) ;;
+                    *) picked="v${picked}" ;;
+                esac
+            fi
+            ;;
+    esac
+    if [ -n "$picked" ]; then
+        EYVESCLOUD_INSTALL_VERSION="$picked"
+        log "已选择版本：${picked}"
+    fi
+    return 0
+}
+
 # 读取已安装可执行文件的版本号（`eyvescloud --version` 输出形如 "EyvesCloud 1.1.29"）。
 installed_eyvescloud_version() {
     if [ -x /usr/local/bin/eyvescloud ]; then
@@ -2239,6 +2319,7 @@ run_step "配置 libvirt default NAT 网络" setup_default_libvirt_network
 run_step "配置 UID/GID 映射" setup_subids
 run_step "配置 LXC 存储权限" configure_lxc_storage_access
 run_step "检查 project quota" try_enable_project_quota
+choose_version_interactively
 run_step "检查升级兼容性" check_upgrade_compatibility
 run_step "下载发行版包" download_release_if_needed
 run_step "安装 EYVESCLOUD 二进制" install_binary

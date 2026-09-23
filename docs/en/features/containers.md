@@ -81,3 +81,21 @@ POST /api/v1/vnc-ticket
 ```
 
 Tickets are short-lived. Use them immediately for WebSSH or WebVNC and do not persist them.
+
+## KVM Rescue Mode
+
+KVM Rescue Mode boots a VM from a rescue ISO instead of the system disk when the OS fails to start, which is useful for repairing boot issues, resetting passwords, or recovering data. Before entering rescue mode, prepare a rescue image (usually SystemRescue or another live system) in the ISO catalog.
+
+```http
+POST /api/containers/rescue
+```
+
+Request body:
+
+| Field | Description |
+| --- | --- |
+| `container_id` | Container ID (required) |
+| `enabled` | `true` to enter rescue mode; `false` to exit and restore normal system-disk boot |
+| `iso_id` | The ISO catalog entry ID to use when entering rescue mode (required when `enabled=true`) |
+
+Only Linux KVM VMs are supported; calling it on an LXC container returns an error. For Windows VMs, use ISO mounting instead. This endpoint is administrator-only.

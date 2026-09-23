@@ -915,6 +915,42 @@ func SelfUpdateOnce() (newVersion string, upgraded bool, err error) {
 	return latest, true, nil
 }
 
+// CheckUpdateResult 描述一次版本检查的结论，供面板 API 展示，无需改动二进制。
+type CheckUpdateResult struct {
+	Current string `json:"current"`
+	Latest  string `json:"latest"`
+	// HasUpdate 为 true 说明仓库存在比当前更新的版本；
+	// 仅在与最新版本比较有意义且不相等时为 true。
+	HasUpdate bool `json:"has_update"`
+	// Err 在检查失败（如网络不可达、API 限流）时非空，供调用方决定如何提示。
+	Err string `json:"err,omitempty"`
+}
+
+// CheckForUpdate 只做版本检测，不下载、不替换、不重启。
+// 该函数供面板「系统设置」的版本检测使用；真正的升级由菜单或 install.sh 完成。
+func CheckForUpdate() CheckUpdateResult {
+	repo := strings.TrimSpace(os.Getenv("EYVESCLOUD_REPO"))
+	if repo == "" {
+		repo = version.Repo
+	}
+	current := version.Current()
+	assetName, err := releaseArchiveAssetName(runtime.GOARCH)
+	if err != nil {
+		return CheckUpdateResult{Current: current, Err: err.Error()}
+	}
+	release, err := fetchLatestRelease(repo, assetName)
+	if err != nil {
+		return CheckUpdateResult{Current: current, Err: err.Error()}
+	}
+	latest := strings.TrimSpace(release.TagName)
+	if latest == "" {
+		return CheckUpdateResult{Current: current, Err: "Release 缺失 tag_name"}
+	}
+	// 主动将当前版本与“目标”版本比较（同为大版本路径），返回是否需要更新。
+	hasUpdate := !sameVersion(current, latest)
+	return CheckUpdateResult{Current: current, Latest: latest, HasUpdate: hasUpdate}
+}
+
 func downloadFile(url, dest string) error {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {

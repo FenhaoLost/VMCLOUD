@@ -59,3 +59,44 @@ GET /api/v1/routing
 ```
 
 该接口用于查看 NAT、IPv6、端口容量等运行时状态。
+
+## 区域（地域化分组）
+
+区域用于把节点、存储与容器按地域逻辑分组管理，便于多机房/多区域场景下的规划。节点可通过 `region_id` 归属到某个区域。
+
+```http
+GET    /api/regions
+POST   /api/regions
+DELETE /api/regions/{id}
+```
+
+创建区域请求体：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 区域名称（必填） |
+| `location` | 展示用地域/机房信息（可选） |
+
+区域对象包含 `id`、`name`、`location`、`created_at`。以上接口仅管理员可调。
+
+## 弹性 IP 组与故障切换
+
+弹性 IP 组把一组公网 IP 分为「生效」（`enable`）与「备用」（`standby`）。当需要把备用 IP 提升为生效时，触发手动故障切换，面板会把切换应用到引用了被降级 IP 的容器。
+
+```http
+GET     /api/ip-groups
+POST    /api/ip-groups
+PUT     /api/ip-groups/{id}
+DELETE  /api/ip-groups/{id}
+POST    /api/ip-groups/{id}/failover
+```
+
+创建/更新请求体：
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 组名称（必填） |
+| `enable` | 当前生效的公网 IP 列表 |
+| `standby` | 备用的公网 IP 列表 |
+
+`POST /api/ip-groups/{id}/failover` 携带 `{"ip": "<备用IP>"}`，将指定备用 IP 提升为生效，原生效的第一个 IP 自动降级为备用。IP 组对象包含 `id`、`name`、`enable`、`standby`、`fault_open`（当前故障保持的 IP）、`created_at`。以上接口仅管理员可调。

@@ -1422,6 +1422,16 @@ export const updateLanguage = (language: PanelLanguage) =>
 export const getVersion = () =>
   api.get<APIResponse<{ version: string }>>('/version')
 
+// 面板版本检测：返回当前与最新版本（管理员；检测 + 缓存，不自动升级）
+export interface CheckUpdateResult {
+  current?: string
+  latest?: string
+  has_update?: boolean
+  err?: string
+}
+export const checkUpdate = () =>
+  api.get<APIResponse<CheckUpdateResult>>('/v1/check-update')
+
 // ---- CPU/带宽策略 (Policy) ----
 export interface PolicyRule {
   id?: string

@@ -74,6 +74,10 @@ When a node is "Online" and a panel address is configured, the Controller can:
 
 These operations are performed by the Controller proxying the worker's `/api/agent/*` endpoints with the node token. The worker validates the token, so unregistered nodes cannot be accessed.
 
+### Worker Node Auto-Update
+
+The worker Agent can automatically check for and update its own binary in the background. Set the check interval in minutes with the environment variable `EYVESCLOUD_AUTO_UPDATE`; it only activates when the value is `>= 60` (to avoid hitting GitHub too frequently). The one-line install script passes this variable in, defaulting to `1440` (once a day). Once a new version is found and updated successfully, the service restarts automatically to apply it.
+
 ## Delete a Node
 
 Deleting a node removes its record from the Controller. If the worker's systemd service is still running, it keeps trying to report heartbeats, but the Controller will no longer show it. To fully revoke access, also uninstall the service on the worker:

@@ -346,6 +346,7 @@ print(resp.json())
 | POST | `/api/v1/batch-action` | 批量开关机/删除/重装 |
 | POST | `/api/v1/ssh-ticket` | 创建 WebSSH 票据 |
 | POST | `/api/v1/vnc-ticket` | 创建 WebVNC 票据 |
+| GET | `/api/v1/check-update` | 面板版本检测（管理员）：`{ current, latest, has_update, err }`；仅检测 + 10 分钟缓存，不升级 |
 
 ### 存储 / 策略 / 迁移
 
@@ -382,6 +383,9 @@ print(resp.json())
 | GET | `/api/agent/containers` | 被控容器列表 |
 | POST | `/api/agent/containers/{cid}/{action}` | 被控容器开关机/重启 |
 | POST | `/api/agent/action` | 兼容的容器动作接口 |
+| GET | `/api/agent/images` | 被控镜像清单（主控 token） |
+| POST | `/api/agent/images/sync` | 被控同步回执（SHA256 对比后拉取缺失镜像） |
+| POST | `/api/agent/node-backup` | 被控对全部容器执行冷备份 |
 
 创建节点示例：
 

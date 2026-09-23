@@ -10,6 +10,12 @@ Node migration moves container configuration between servers. It works by "expor
 
 The export is a snapshot of the container configuration and does not include the rootfs data. To migrate data, create a snapshot on the source node or back up the container data directory yourself, then restore it on the target node.
 
+## Migration Enhancements
+
+- Integrity check: when exporting, the panel computes a SHA256 checksum over the container configuration (`checksum_sha256`) and verifies it on import, protecting the bundle from corruption or tampering during transfer/copy. A failed verification rejects the import and asks you to re-export/re-download.
+- Data disk migration: the bundle carries the data disk size (`data_disk_gb`) and mount path (`data_disk_mount_path`), so the data disk is recreated with the original configuration on import.
+- Bundle format and version: the export format is `eyvescloud-migrate`; the current bundle version is v2.
+
 ## Import a Migration Bundle
 
 1. On the target node's "Node Migration" page, select the exported `.migrate.json` file.

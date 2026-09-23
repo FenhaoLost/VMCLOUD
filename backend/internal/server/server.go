@@ -250,6 +250,10 @@ func setupRoutes(mux *http.ServeMux) {
 	// Version (public)
 	mux.HandleFunc("/api/version", corsMiddleware(api.HandleVersion))
 
+	// 面板版本检测：返回当前与最新版本（管理员；检测 + 缓存，不自动升级）
+	mux.HandleFunc("/api/check-update", corsMiddleware(api.AdminMiddleware(api.HandleCheckUpdate)))
+	mux.HandleFunc("/api/v1/check-update", corsMiddleware(api.AdminMiddleware(api.HandleCheckUpdate)))
+
 	// Static files
 	if webFS != nil {
 		fs := http.FileServer(webFS)

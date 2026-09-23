@@ -384,7 +384,7 @@ Mofang 模块是独立高风险面（webssh.php 无鉴权任意 WebSocket 代理
 ### 批次 3 —— 区域 / 弹性 IP / ISO / 分组故障 IP
 
 - **3a 区域（region）层**：`config.Region` 模型 + `GET/POST /api/regions`、`DELETE /api/regions/{id}`（`HandleRegions`/`HandleRegionItem`），逻辑分组节点/存储/容器；前端「区域管理」页（`Regions.tsx`）。
-- **3b 弹性 IP / 3d 分组与故障 IP**：`config.IPGroup` 模型（enable 生效 / standby 备用 / fault_open 当前生效）。`GET/POST /api/ip-groups`、`PUT/DELETE /api/ip-groups/{id}`、`POST /api/ip-groups/{id}/failover`（`HandleIPGroups`/`HandleIPGroupItem`/`HandleIPGroupSubRoutes`/`HandleIPGroupFailover`）。故障切换：把目标备用 IP 提升为生效、原首个生效 IP 降级为备用，并把依赖该 IP 的容器公网 IP 尽力同步替换（运行时经重启生效）。IP 均做 `validPublicIPLoose` 非空校验；前端「IP 组」页（`IPGroups.tsx`）每行提供「切换到 <ip>」按钮。
+- **3b 弹性 IP / 3d 分组与故障 IP**：`config.IPGroup` 模型（enable 生效 / standby 备用 / fault_open 当前生效）。`GET/POST /api/ip-groups`、`PUT/DELETE /api/ip-groups/{id}`、`POST /api/ip-groups/{id}/failover`（`HandleIPGroups`/`HandleIPGroupItem`/`HandleIPGroupSubRoutes`/`HandleIPGroupFailover`）。故障切换：把目标备用 IP 提升为生效、原首个生效 IP 降级为备用，并把依赖该 IP 的容器公网 IP 尽力同步替换（运行时经重启生效）。IP 均做 `validPublicIPLoose` 非空校验；前端「IP 组」页（`IPGroups.tsx`）每行提供「切换到 `ip`」按钮。
 - **3c ISO 管理**：`config.ISOFile` 模型 + 挂载到 KVM。`GET/POST /api/isos`（POST 走 `safehttp` SSRF 防护下载，20GiB 上限、URL≤4096、写入 isos 目录、空文件拒绝）、`DELETE /api/isos/{id}`（仅允许删除 isos 目录内文件，路径前缀校验防任意删除）、`POST /api/isos/attach`（仅 KVM，`virsh attach-disk/detach-disk`，cdrom readonly）。前端「ISO 镜像」页（`ISOs.tsx`）。
 - 全部接口 `AdminMiddleware` 门禁 + 审计；模型经 `config.MutateGlobal` 加锁写并 `SaveConfig`（SQLite），无数据竞争（`-race` 验证）。
 

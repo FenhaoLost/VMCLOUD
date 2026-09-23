@@ -81,3 +81,21 @@ POST /api/v1/vnc-ticket
 ```
 
 票据只适合短时间使用，返回后应立即用于 WebSSH 或 WebVNC 连接，不要持久化保存。
+
+## KVM 救援模式
+
+KVM 救援模式用于在系统启动失败时，从救援 ISO 引导而非系统盘，便于修复启动、重置密码或恢复数据。进入救援前需要在 ISO 目录中准备好救援镜像（多为 SystemRescue / live 系统）。
+
+```http
+POST /api/containers/rescue
+```
+
+请求体：
+
+| 字段 | 说明 |
+| --- | --- |
+| `container_id` | 容器 ID（必填） |
+| `enabled` | `true`=进入救援，`false`=退出救援恢复系统盘引导 |
+| `iso_id` | 进入救援时使用的 ISO 条目 ID（`enabled=true` 时必填） |
+
+仅支持 Linux KVM 虚拟机；对 LXC 容器调用会返回错误。Windows 虚拟机请改用 ISO 挂载方式。该接口仅管理员可调。

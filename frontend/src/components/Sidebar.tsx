@@ -29,7 +29,7 @@ import {
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import { useTheme } from '../contexts/ThemeContext'
-import { getVersion } from '../services/api'
+import { checkUpdate, getVersion } from '../services/api'
 import AppIcon from './AppIcon'
 
 interface SidebarProps {
@@ -73,6 +73,8 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
   const { theme, toggleTheme } = useTheme()
   const { toggleLanguage, t } = useLanguage()
   const [version, setVersion] = useState('')
+  const [hasUpdate, setHasUpdate] = useState(false)
+  const [latestVersion, setLatestVersion] = useState('')
 
   useEffect(() => {
     getVersion()
@@ -83,6 +85,20 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
       })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    // 版本更新检测（管理员登录态才有该端点；子用户静默跳过）。
+    if (isSubUser) return
+    checkUpdate()
+      .then(res => {
+        const d = res.data?.data
+        if (d && d.has_update) {
+          setHasUpdate(true)
+          setLatestVersion(d.latest || '')
+        }
+      })
+      .catch(() => {})
+  }, [isSubUser])
 
   const isContainerPage =
     location.pathname.startsWith('/containers') ||
@@ -443,6 +459,18 @@ export default function Sidebar({ collapsed, onToggle, mobileOpen }: SidebarProp
                   <span className="truncate">EyvesCloud</span>
                 </a>
                 <span className="shrink-0">v{version}</span>
+                {hasUpdate && (
+                  <a
+                    href={`https://github.com/FenhaoLost/VMCLOUD/releases/tag/${latestVersion || ''}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`有可用更新：${latestVersion}`}
+                    className="shrink-0 inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                    {t('有更新')}
+                  </a>
+                )}
               </div>
             )}
           </div>

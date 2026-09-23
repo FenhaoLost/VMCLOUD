@@ -23,7 +23,7 @@ curl http://127.0.0.1:8999/api/version
 
 ## 使用安装脚本升级
 
-安装脚本默认使用最新 Release：
+安装脚本默认使用最新 Release；在交互终端不指定版本时，会列出项目全部版本供选择：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD sh
@@ -32,8 +32,16 @@ curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh 
 指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.29 sh
+curl -fsSL https://raw.githubusercontent.com/FenhaoLost/VMCLOUD/main/install.sh | sudo EYVESCLOUD_REPO=FenhaoLost/VMCLOUD EYVESCLOUD_VERSION=v1.1.31 sh
 ```
+
+交互式选择详情见「安装 → 列出所有版本并交互式选择」。
+
+## 面板自动检测版本更新
+
+面板（系统设置 / 侧边栏版本区）会调用 `GET /api/v1/check-update` 后台检测 GitHub 最新版本（10 分钟缓存，仅检测、不自动升级），当发现比当前更新的版本时，会在侧边栏版本号旁显示 **「有更新」** 高亮徽标，点击可跳转到对应 Release 页面。
+
+正式级升级仍推荐通过安装脚本或 `eyvescloud cli` 的「检查并升级」完成（会更换二进制并保留配置、容器数据）。
 
 ## 被控节点升级
 
