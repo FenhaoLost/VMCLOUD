@@ -163,7 +163,7 @@ export default defineConfig({
         returnToTopLabel: 'Return to Top',
         footer: {
           message: 'EyvesCloud documentation for deployment, usage, operations, and integration.',
-          copyright: 'Copyright © EyvesCloud contributors',
+          copyright: 'Copyright © FenhaoLost',
         },
       },
     },
@@ -178,7 +178,7 @@ export default defineConfig({
     ],
     footer: {
       message: 'EyvesCloud 文档面向部署、使用、运维和二次开发场景。',
-      copyright: 'Copyright © EyvesCloud contributors',
+      copyright: 'Copyright © FenhaoLost',
     },
   },
 })
